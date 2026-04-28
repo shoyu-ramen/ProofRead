@@ -134,9 +134,17 @@ class ClaudeHealthWarningExtractor:
                 timeout=timeout if timeout is not None else DEFAULT_SECOND_PASS_TIMEOUT_S
             )
             if model is None:
-                model = settings.anthropic_model
+                # Prefer the dedicated second-pass model — a small/fast
+                # vision model is the right pick for one-paragraph re-reads
+                # where the only job is to produce an independent
+                # transcription. Fall back to the primary model only when
+                # the dedicated setting is unset (older configs).
+                model = (
+                    getattr(settings, "anthropic_health_warning_model", None)
+                    or settings.anthropic_model
+                )
         self._client = client
-        self._model = model or "claude-opus-4-7"
+        self._model = model or "claude-haiku-4-5-20251001"
         self._max_tokens = max_tokens
 
     def read_warning(

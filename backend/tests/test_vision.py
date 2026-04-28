@@ -71,23 +71,35 @@ def _png_bytes() -> bytes:
     )
 
 
-def test_extract_sends_adaptive_thinking_and_cached_system_prompt():
-    """Regression: /v1/verify must hit the model with adaptive thinking and
-    cache the system prompt. Dropping either is the silent kind of regression
-    that wouldn't show up in functional tests but would tank reasoning
-    quality on degraded labels."""
+def test_extract_sends_deterministic_call_with_cached_system_prompt():
+    """Regression: /v1/verify must hit the model with a cached system prompt
+    (so the static OCR instructions don't pay the prefix cost on every
+    request) and a deterministic temperature (so identical bytes produce
+    identical transcriptions, which the in-process verify cache and any
+    upstream cache tier rely on).
+
+    Adaptive thinking was intentionally removed: on a structured-JSON
+    transcription task the schema already disciplines the model, and the
+    end-to-end latency budget rewards a fast, deterministic single pass
+    plus the redundant Government-Warning second-pass running concurrently
+    in `verify()`.
+    """
     fake = _FakeClient(_VALID_RESPONSE)
-    extractor = ClaudeVisionExtractor(client=fake, model="claude-opus-4-7")
+    extractor = ClaudeVisionExtractor(client=fake, model="claude-sonnet-4-6")
 
     result = extractor.extract(_png_bytes(), media_type="image/png")
     assert "brand_name" in result.fields
 
     [call] = fake.messages.calls
-    assert call["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert "thinking" not in call, (
+        "Adaptive thinking was dropped from the verify-path extractor; the "
+        "presence of `thinking` here implies a regression that re-introduces "
+        "the latency it was removed to save."
+    )
+    assert call["temperature"] == 0.0
     [system_block] = call["system"]
     assert system_block["cache_control"] == {"type": "ephemeral"}
-    assert call["model"] == "claude-opus-4-7"
-    # max_tokens has to leave headroom for thinking on top of the JSON output.
+    assert call["model"] == "claude-sonnet-4-6"
     assert call["max_tokens"] >= 4096
 
 

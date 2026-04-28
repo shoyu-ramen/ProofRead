@@ -55,8 +55,6 @@ from app.services.health_warning_second_pass import (
     HealthWarningExtractor,
     cross_check,
 )
-
-logger = logging.getLogger(__name__)
 from app.services.sensor_check import (
     CaptureQualityReport,
     SurfaceCaptureQuality,
@@ -69,6 +67,8 @@ if TYPE_CHECKING:
     # Type-only — avoids the same circular concern that pushed VerifyReport
     # out of `verify_cache`'s runtime imports.
     from app.services.verify_cache import VerifyCache
+
+logger = logging.getLogger(__name__)
 
 # Field-level confidence cap (matches the rule engine threshold). Once a
 # field has been pulled out of a degraded surface, its model-supplied
@@ -379,6 +379,77 @@ def verify(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _run_extractors_concurrently(
+    *,
+    extractor: VisionExtractor,
+    health_warning_reader: HealthWarningExtractor | None,
+    image_bytes: bytes,
+    media_type: str,
+    capture: CaptureQualityReport,
+    producer_record: dict[str, Any] | None,
+    beverage_type: str,
+    container_size_ml: int,
+    is_imported: bool,
+):
+    """Dispatch the primary extractor and the optional second-pass reader on
+    independent threads so their wall-clock cost overlaps.
+
+    Returns `(primary_extraction, second_warning_read | None)`.
+
+    The primary extractor's failure propagates — the verify path cannot
+    serve a verdict without it. The second-pass reader's failure is logged
+    and swallowed: the cross-check tolerates a missing secondary by leaving
+    the engine's verdict alone, which is the same behaviour the previous
+    serial path had.
+    """
+    capture_kwarg = capture if capture.surfaces else None
+
+    def _primary():
+        return extractor.extract(
+            image_bytes,
+            media_type=media_type,
+            capture_quality=capture_kwarg,
+            producer_record=producer_record,
+            beverage_type=beverage_type,
+            container_size_ml=container_size_ml,
+            is_imported=is_imported,
+        )
+
+    def _secondary():
+        if health_warning_reader is None:
+            return None
+        try:
+            return health_warning_reader.read_warning(
+                image_bytes, media_type=media_type
+            )
+        except Exception as exc:
+            # Same swallow-and-log behaviour as the prior serial path —
+            # the cross-check tolerates a None secondary read.
+            logger.warning(
+                "Health-warning second-pass failed; falling back to "
+                "primary-only verdict: %s",
+                exc,
+            )
+            return None
+
+    # max_workers=2 is the upper bound we ever need (one primary + one
+    # secondary). Building the pool inline keeps thread lifetimes scoped
+    # to a single request — no shared state survives the call.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        primary_future = pool.submit(_primary)
+        secondary_future = (
+            pool.submit(_secondary) if health_warning_reader is not None else None
+        )
+        # Resolve the primary first: any extractor exception (including
+        # ExtractorUnavailable from the chain) must surface to the caller
+        # before we even look at the secondary.
+        primary_result = primary_future.result()
+        secondary_result = (
+            secondary_future.result() if secondary_future is not None else None
+        )
+    return primary_result, secondary_result
 
 
 def _finalize(

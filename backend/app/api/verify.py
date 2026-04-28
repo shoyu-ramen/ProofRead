@@ -6,6 +6,7 @@ response: per-rule verdict, extracted fields, overall status.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 
@@ -14,6 +15,10 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.services.anthropic_client import ExtractorUnavailable
+from app.services.health_warning_second_pass import (
+    ClaudeHealthWarningExtractor,
+    HealthWarningExtractor,
+)
 from app.services.verify import VerifyInput, verify
 from app.services.verify_cache import VerifyCache
 from app.services.vision import VisionExtractor, get_default_extractor
@@ -68,6 +73,12 @@ class VerifyResponse(BaseModel):
 # or by patching this attribute directly.
 _extractor_cache: VisionExtractor | None = None
 
+# Same idea for the redundant Government-Warning second-pass reader. The
+# Anthropic SDK pools HTTP connections under the hood, so reusing one
+# client across requests keeps TLS/keep-alive warm — that matters because
+# the second pass runs concurrently with the primary on every cold call.
+_health_warning_extractor_cache: HealthWarningExtractor | None = None
+
 # Process-wide verify-result cache. Lazily constructed so importing this
 # module doesn't allocate the LRU on cold start. Tests reset it via the
 # autouse fixture in `tests/test_verify_api.py`. The lock guards the
@@ -96,6 +107,38 @@ def _override_extractor(extractor: VisionExtractor | None) -> None:
     """Test hook: install (or clear with None) a custom extractor."""
     global _extractor_cache
     _extractor_cache = extractor
+
+
+def get_health_warning_extractor() -> HealthWarningExtractor | None:
+    """Lazily construct the redundant Government-Warning reader.
+
+    Returns None when the feature flag is off or the API key is missing —
+    `verify()` already tolerates a None reader by falling back to the
+    primary-only verdict, so an absent second pass degrades gracefully
+    rather than failing the request.
+    """
+    global _health_warning_extractor_cache
+    if not settings.enable_health_warning_second_pass:
+        return None
+    if not settings.anthropic_api_key:
+        # No key → no second pass; primary path still serves verdicts.
+        return None
+    if _health_warning_extractor_cache is None:
+        try:
+            _health_warning_extractor_cache = ClaudeHealthWarningExtractor()
+        except ExtractorUnavailable:
+            # Same handling as the missing-key branch above: degrade to
+            # primary-only rather than failing the verify request.
+            return None
+    return _health_warning_extractor_cache
+
+
+def _override_health_warning_extractor(
+    extractor: HealthWarningExtractor | None,
+) -> None:
+    """Test hook: install (or clear with None) a custom second-pass reader."""
+    global _health_warning_extractor_cache
+    _health_warning_extractor_cache = extractor
 
 
 def get_verify_cache() -> VerifyCache | None:
@@ -190,8 +233,22 @@ async def verify_label(
         application=application_obj,
     )
 
+    # `verify()` is a synchronous orchestrator that issues blocking HTTP
+    # calls (Anthropic SDK + the second-pass reader). Run it off the event
+    # loop so a single in-flight verification doesn't park every other
+    # request on this worker — the cold path can take 2–4 s, and FastAPI
+    # serves async handlers on the loop directly. Inside `verify()` the
+    # primary extractor and the second-pass reader run concurrently on
+    # their own thread pool.
+    second_pass = get_health_warning_extractor()
     try:
-        report = verify(inp, extractor=extractor, cache=get_verify_cache())
+        report = await asyncio.to_thread(
+            verify,
+            inp,
+            extractor=extractor,
+            health_warning_reader=second_pass,
+            cache=get_verify_cache(),
+        )
     except ExtractorUnavailable as exc:
         # Every backend in the chain failed at request time (e.g. Anthropic
         # rate-limit + Qwen socket error). Same 503 shape as the construction
