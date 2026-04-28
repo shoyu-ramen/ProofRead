@@ -6,8 +6,14 @@
 #   gracefully via the `if:` guard.
 #
 # Triggers:
-#   - PRs to main: backend + mobile + docker jobs (no deploy).
+#   - PRs to main: backend + mobile + docker (fly & railway) jobs (no deploy).
 #   - Pushes to main: same checks, plus deploy on green.
+#
+# The two docker jobs cover the two build contexts:
+#   - docker-fly:     backend/ context, backend/Dockerfile (used by Fly).
+#   - docker-railway: repo-root context, ./Dockerfile (used by Railway,
+#                     which auto-deploys via its own GitHub integration —
+#                     this job catches breakage before Railway sees it).
 
 name: ci
 
@@ -77,8 +83,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
 
-  docker:
-    name: docker build (backend image)
+  docker-fly:
+    name: docker build (fly image)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -93,13 +99,35 @@ jobs:
         with:
           context: backend
           push: false
-          tags: proofread-backend:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: proofread-backend:ci-fly
+          cache-from: type=gha,scope=fly
+          cache-to: type=gha,mode=max,scope=fly
+
+  docker-railway:
+    name: docker build (railway image)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Builds the repo-root Dockerfile (Railway path). Railway's GitHub
+      # integration auto-deploys on push to main, so this job catches a
+      # broken Railway image before Railway's builder does. Separate cache
+      # scope from docker-fly because the build context differs.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: proofread-backend:ci-railway
+          cache-from: type=gha,scope=railway
+          cache-to: type=gha,mode=max,scope=railway
 
   deploy:
     name: deploy (fly.io)
-    needs: [backend, mobile, docker]
+    needs: [backend, mobile, docker-fly, docker-railway]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # Serialize prod deploys: a newer push waits rather than racing.

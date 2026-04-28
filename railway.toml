@@ -5,9 +5,19 @@
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+# Only rebuild when something the image actually depends on changes.
+# Skips rebuilds for mobile/, artwork/, screenshots, top-level docs.
+watchPatterns = [
+    "backend/**",
+    "Dockerfile",
+    "railway.toml",
+    ".dockerignore",
+]
 
 [deploy]
 healthcheckPath = "/healthz"
-healthcheckTimeout = 30
+# 100s leaves headroom for image pull + cold boot on the first deploy;
+# the app itself answers /healthz in well under a second.
+healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
