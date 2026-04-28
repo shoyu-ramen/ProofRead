@@ -31,12 +31,23 @@ dev = [
     "aiosqlite>=0.20",
     "ruff>=0.3",
     "mypy>=1.9",
+    "types-PyYAML>=6.0",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.12"
+
+# boto3 has no first-party stubs; google-cloud-vision ships without a
+# py.typed marker. Both are external SDKs we don't control — silence the
+# "missing stubs" noise so real type errors aren't drowned out.
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "google.cloud", "google.cloud.*"]
+ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100
