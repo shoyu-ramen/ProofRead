@@ -16,6 +16,7 @@ import {
   CreateScanRequest,
   CreateScanResponse,
   FlagRuleResultRequest,
+  HistoryResponse,
   ProblemDetails,
   ReportResponse,
   ScanStatusResponse,
@@ -25,6 +26,10 @@ import {
 const DEFAULT_BASE_URL = 'http://localhost:8000';
 
 function resolveBaseUrl(): string {
+  const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL;
+  if (typeof fromEnv === 'string' && fromEnv.length > 0) {
+    return fromEnv.replace(/\/$/, '');
+  }
   const fromExtra = Constants.expoConfig?.extra?.apiBaseUrl;
   if (typeof fromExtra === 'string' && fromExtra.length > 0) {
     return fromExtra.replace(/\/$/, '');
@@ -141,6 +146,20 @@ export class ApiClient {
     return this.request<ReportResponse>(`/v1/scans/${scanId}/report`, {
       method: 'GET',
     });
+  }
+
+  /**
+   * GET /v1/scans (paginated history).
+   *
+   * TODO(history-endpoint): the backend doesn't expose this route yet
+   * (current scans.py only has per-scan endpoints). This method is a
+   * placeholder so the UI can wire its loading / error / empty / list
+   * states ahead of the backend implementation. Today it makes a real
+   * request and surfaces whatever the server returns — until the route
+   * lands, that will be a 404 the screen renders as the error state.
+   */
+  getHistory(): Promise<HistoryResponse> {
+    return this.request<HistoryResponse>('/v1/scans', { method: 'GET' });
   }
 
   /**

@@ -4,30 +4,23 @@
     "slug": "proofread",
     "version": "0.1.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
     "scheme": "proofread",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": false,
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0E1116"
-    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.proofread.app",
       "infoPlist": {
         "NSCameraUsageDescription": "ProofRead uses your camera to capture beverage labels for TTB compliance review.",
         "NSPhotoLibraryUsageDescription": "ProofRead saves captured labels for review.",
-        "NSPhotoLibraryAddUsageDescription": "ProofRead can save reviewed labels back to your photo library."
+        "NSPhotoLibraryAddUsageDescription": "ProofRead can save reviewed labels back to your photo library.",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
       }
     },
     "android": {
       "package": "com.proofread.app",
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#0E1116"
-      },
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
@@ -35,8 +28,7 @@
     },
     "web": {
       "bundler": "metro",
-      "output": "static",
-      "favicon": "./assets/favicon.png"
+      "output": "static"
     },
     "plugins": [
       "expo-router",
@@ -54,7 +46,7 @@
       "router": {
         "origin": false
       },
-      "apiBaseUrl": "http://localhost:8000",
+      "apiBaseUrl": "http://192.168.1.208:8000",
       "eas": {
         "projectId": ""
       }

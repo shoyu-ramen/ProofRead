@@ -10,37 +10,61 @@ export interface RuleResultCardProps {
 }
 
 export function RuleResultCard({ result, onPress }: RuleResultCardProps) {
+  const isAdvisory = result.status === 'advisory';
+
   const inner = (
     <>
-      <View style={styles.headerRow}>
-        <View style={styles.titleCol}>
-          <Text style={styles.ruleId} numberOfLines={1}>
-            {humanizeRuleId(result.rule_id)}
-          </Text>
-          <Text style={styles.citation}>{result.citation}</Text>
+      {isAdvisory ? <AdvisoryBanner /> : null}
+      <View style={styles.body}>
+        <View style={styles.headerRow}>
+          <View style={styles.titleCol}>
+            <Text style={styles.ruleId} numberOfLines={1}>
+              {humanizeRuleId(result.rule_id)}
+            </Text>
+            <Text style={styles.citation}>{result.citation}</Text>
+          </View>
+          <StatusBadge status={result.status} size="sm" />
         </View>
-        <StatusBadge status={result.status} size="sm" />
+        {result.finding ? (
+          <Text style={styles.finding} numberOfLines={2}>
+            {result.finding}
+          </Text>
+        ) : null}
       </View>
-      {result.finding ? (
-        <Text style={styles.finding} numberOfLines={2}>
-          {result.finding}
-        </Text>
-      ) : null}
     </>
   );
+
+  const cardStyle = [styles.card, isAdvisory && styles.cardAdvisory];
 
   if (onPress) {
     return (
       <Pressable
         onPress={onPress}
         accessibilityRole="button"
-        style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+        accessibilityHint={
+          isAdvisory ? "Couldn't verify with confidence. Rescan recommended." : undefined
+        }
+        style={({ pressed }) => [...cardStyle, pressed && styles.pressed]}
       >
         {inner}
       </Pressable>
     );
   }
-  return <View style={styles.card}>{inner}</View>;
+  return <View style={cardStyle}>{inner}</View>;
+}
+
+function AdvisoryBanner(): React.ReactElement {
+  return (
+    <View style={styles.advisoryBanner} accessible accessibilityRole="text">
+      <Text style={styles.advisoryIcon} accessibilityElementsHidden>
+        ⚠
+      </Text>
+      <View style={styles.advisoryTextCol}>
+        <Text style={styles.advisoryTitle}>Couldn't verify with confidence</Text>
+        <Text style={styles.advisorySubtitle}>Rescan recommended</Text>
+      </View>
+    </View>
+  );
 }
 
 function humanizeRuleId(ruleId: string): string {
@@ -62,13 +86,49 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,
-    padding: spacing.md,
     borderWidth: 1,
     borderColor: colors.border,
-    gap: spacing.sm,
+    overflow: 'hidden',
+  },
+  // Advisory cards get a left accent stripe so the "couldn't verify"
+  // state reads as a distinct visual class — not a softer fail.
+  cardAdvisory: {
+    borderLeftWidth: 3,
+    borderLeftColor: colors.advisory,
   },
   pressed: {
     opacity: 0.85,
+  },
+  body: {
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  advisoryBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: 'rgba(244,184,96,0.12)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.advisory,
+  },
+  advisoryIcon: {
+    ...typography.body,
+    color: colors.advisory,
+    fontWeight: '700',
+  },
+  advisoryTextCol: {
+    flex: 1,
+  },
+  advisoryTitle: {
+    ...typography.caption,
+    color: colors.advisory,
+    fontWeight: '700',
+  },
+  advisorySubtitle: {
+    ...typography.caption,
+    color: colors.textMuted,
   },
   headerRow: {
     flexDirection: 'row',

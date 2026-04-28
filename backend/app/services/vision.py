@@ -256,14 +256,61 @@ def _parse_vision_response(text: str) -> VisionExtraction:
 
 
 def get_default_extractor() -> VisionExtractor:
+    """Build the configured verify-path extractor chain.
+
+    Walks the configured backends in preference order and returns whichever
+    are constructable:
+
+      1. Claude — when `vision_extractor=claude` AND `ANTHROPIC_API_KEY` is set.
+      2. Qwen3-VL — when `enable_qwen_fallback=True` AND `qwen_vl_base_url` is set.
+
+    A single configured backend is returned as-is; two or more are wrapped in
+    a `ChainedVerifyExtractor`. When *no* backend is constructable the function
+    raises `ExtractorUnavailable` so the API layer can return a clean 503
+    rather than a leaky 500. Critically, a missing Anthropic key no longer
+    short-circuits before Qwen has a chance to handle the request — that was
+    the original "fallback" only triggering once Claude was at least partially
+    healthy.
+    """
+    if settings.vision_extractor not in {"claude", "mock"}:
+        raise RuntimeError(
+            f"Unknown vision_extractor {settings.vision_extractor!r}; "
+            "expected 'claude' or 'mock'."
+        )
+
+    extractors: list[VisionExtractor] = []
+    misconfig_notes: list[str] = []
+
     if settings.vision_extractor == "claude":
-        if not settings.anthropic_api_key:
-            raise ExtractorUnavailable(
-                "ANTHROPIC_API_KEY is not set; required for vision_extractor=claude. "
-                "Set the env var or override VISION_EXTRACTOR for tests."
+        if settings.anthropic_api_key:
+            extractors.append(ClaudeVisionExtractor())
+        else:
+            misconfig_notes.append(
+                "ANTHROPIC_API_KEY is not set (required for the Claude extractor)"
             )
-        return ClaudeVisionExtractor()
-    raise RuntimeError(
-        f"Unknown vision_extractor {settings.vision_extractor!r}; "
-        "expected 'claude'."
-    )
+
+    if settings.enable_qwen_fallback and settings.qwen_vl_base_url:
+        from app.services.qwen_vl import QwenVLExtractor
+
+        try:
+            extractors.append(QwenVLExtractor())
+        except ExtractorUnavailable as exc:
+            # A misconfigured Qwen shouldn't take down a healthy Claude path.
+            misconfig_notes.append(f"Qwen3-VL fallback unavailable: {exc}")
+
+    if not extractors:
+        hint = "; ".join(misconfig_notes) if misconfig_notes else (
+            "no vision backend is enabled"
+        )
+        raise ExtractorUnavailable(
+            "No vision extractor is configured. "
+            "Set ANTHROPIC_API_KEY for Claude, or ENABLE_QWEN_FALLBACK=true "
+            f"with QWEN_VL_BASE_URL for Qwen3-VL ({hint})."
+        )
+
+    if len(extractors) == 1:
+        return extractors[0]
+
+    from app.services.vision_chain import ChainedVerifyExtractor
+
+    return ChainedVerifyExtractor(extractors)

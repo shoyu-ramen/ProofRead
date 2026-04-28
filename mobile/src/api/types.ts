@@ -81,6 +81,20 @@ export interface ReportResponse {
   fields_summary: Record<string, FieldSummary | unknown>;
 }
 
+// History list item — one row in GET /v1/scans (SPEC §v1.9). The
+// backend route isn't implemented yet; this shape is what the mobile
+// client expects when the endpoint lands. Marked TODO at the call site.
+export interface HistoryItem {
+  scan_id: string;
+  label: string;
+  overall: OverallStatus;
+  scanned_at: string;
+}
+
+export interface HistoryResponse {
+  items: HistoryItem[];
+}
+
 // RFC 7807 problem-details (per SPEC §v1.9: errors as RFC 7807).
 export interface ProblemDetails {
   type?: string;

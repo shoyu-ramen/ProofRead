@@ -34,7 +34,7 @@ import { apiClient } from '@src/api/client';
 import { queryKeys } from '@src/state/queryClient';
 import { useScanStore } from '@src/state/scanStore';
 import { colors, radius, spacing, typography } from '@src/theme';
-import type { Surface } from '@src/api/types';
+import type { OverallStatus, Surface } from '@src/api/types';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function ReportScreen(): React.ReactElement {
@@ -90,16 +90,31 @@ export default function ReportScreen(): React.ReactElement {
       >
         <View style={styles.headerCard}>
           <View style={styles.headerRow}>
-            <Text style={styles.headerTitle}>Overall</Text>
+            <View style={styles.headerTitleRow}>
+              <OverallIcon status={data.overall} />
+              <Text style={styles.headerTitle}>Overall</Text>
+            </View>
             <StatusBadge status={data.overall} />
           </View>
           <Text style={styles.headerCaption}>
             {data.rule_results.length} rule
             {data.rule_results.length === 1 ? '' : 's'} evaluated
           </Text>
+          <View style={styles.headerCounts}>
+            <CountChip count={grouped.fail.length} label="failed" color={colors.fail} />
+            <Text style={styles.countSep}>·</Text>
+            <CountChip
+              count={grouped.advisory.length}
+              label="advisory"
+              color={colors.advisory}
+            />
+            <Text style={styles.countSep}>·</Text>
+            <CountChip count={grouped.pass.length} label="passing" color={colors.pass} />
+          </View>
         </View>
 
-        {/* Image strip — taps open rule detail with the relevant surface */}
+        {/* Image strip — tapping a thumbnail opens the per-surface
+            preview with all rule bboxes overlaid. */}
         <SectionHeader title="Captures" />
         <View style={styles.imageStrip}>
           {(['front', 'back'] as Surface[]).map((surface) => {
@@ -107,17 +122,32 @@ export default function ReportScreen(): React.ReactElement {
             return (
               <View key={surface} style={styles.imageThumb}>
                 <Text style={styles.imageLabel}>{surface}</Text>
-                <View style={styles.imageBox}>
-                  {cap ? (
+                {cap ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`View ${surface} capture with all rule regions`}
+                    onPress={() =>
+                      router.push({
+                        pathname: '/(app)/scan/captures/[surface]',
+                        params: { surface, scanId },
+                      })
+                    }
+                    style={({ pressed }) => [
+                      styles.imageBox,
+                      pressed && styles.imageBoxPressed,
+                    ]}
+                  >
                     <Image
                       source={{ uri: cap.uri }}
                       style={styles.imageInner}
                       resizeMode="cover"
                     />
-                  ) : (
+                  </Pressable>
+                ) : (
+                  <View style={styles.imageBox}>
                     <Text style={styles.imageMissing}>not local</Text>
-                  )}
-                </View>
+                  </View>
+                )}
               </View>
             );
           })}
@@ -148,6 +178,69 @@ export default function ReportScreen(): React.ReactElement {
         </View>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function OverallIcon({ status }: { status: OverallStatus }): React.ReactElement {
+  const palette = overallPalette(status);
+  return (
+    <View
+      accessibilityLabel={`Overall ${status}`}
+      style={[
+        styles.overallIcon,
+        { backgroundColor: palette.bg, borderColor: palette.border },
+      ]}
+    >
+      <Text style={[styles.overallGlyph, { color: palette.fg }]}>{palette.glyph}</Text>
+    </View>
+  );
+}
+
+function overallPalette(status: OverallStatus): {
+  fg: string;
+  bg: string;
+  border: string;
+  glyph: string;
+} {
+  switch (status) {
+    case 'pass':
+      return {
+        fg: colors.pass,
+        bg: 'rgba(61,220,151,0.15)',
+        border: colors.pass,
+        glyph: '✓',
+      };
+    case 'fail':
+      return {
+        fg: colors.fail,
+        bg: 'rgba(255,107,107,0.15)',
+        border: colors.fail,
+        glyph: '✕',
+      };
+    case 'advisory':
+      return {
+        fg: colors.advisory,
+        bg: 'rgba(244,184,96,0.15)',
+        border: colors.advisory,
+        glyph: '!',
+      };
+  }
+}
+
+function CountChip({
+  count,
+  label,
+  color,
+}: {
+  count: number;
+  label: string;
+  color: string;
+}): React.ReactElement {
+  return (
+    <Text style={styles.countText}>
+      <Text style={[styles.countNumber, { color }]}>{count}</Text>
+      <Text style={styles.countLabel}> {label}</Text>
+    </Text>
   );
 }
 
@@ -218,12 +311,50 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  headerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    flex: 1,
+  },
   headerTitle: {
     ...typography.title,
     color: colors.text,
   },
   headerCaption: {
     ...typography.caption,
+    color: colors.textMuted,
+  },
+  headerCounts: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+  },
+  overallIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  overallGlyph: {
+    fontSize: 18,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  countText: {
+    ...typography.body,
+  },
+  countNumber: {
+    fontWeight: '700',
+  },
+  countLabel: {
+    color: colors.textMuted,
+  },
+  countSep: {
+    ...typography.body,
     color: colors.textMuted,
   },
   imageStrip: {
@@ -248,6 +379,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  imageBoxPressed: {
+    opacity: 0.85,
   },
   imageInner: {
     width: '100%',

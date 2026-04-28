@@ -5,11 +5,12 @@
  * stub — all the structural pieces are wired, but several pieces of
  * the live pipeline are explicit TODOs:
  *
- *   - Frame-processor pre-checks (focus / glare / coverage / motion)
- *     per SPEC §v1.5 F1.3 are placeholders; the real implementation
- *     uses Vision Camera v4 frame processors + expo-ml-kit text
- *     recognition (SPEC §0 tech stack) feeding a worklet that
- *     surfaces a discrete pre-check verdict.
+ *   - Frame-processor pre-checks (focus / glare / coverage) per
+ *     SPEC §v1.5 F1.3 are simulated by a deterministic state machine
+ *     so the UI exercises every verdict realistically. The real
+ *     implementation uses Vision Camera v4 frame processors +
+ *     expo-ml-kit text recognition (SPEC §0 tech stack) feeding a
+ *     worklet that surfaces a discrete pre-check verdict.
  *   - HDR + low-light + thermal adaptation per SPEC §0.5 mitigation
  *     table are TODOs; this screen captures with default settings.
  *
@@ -17,10 +18,15 @@
  *   - Camera permission gating
  *   - Front/back surface routing through the dynamic [surface] param
  *   - Capture button + retake / continue flow into scanStore
- *   - Visible pre-check indicator placeholder so the layout is real
+ *   - Live pre-check verdict pipeline: deterministic script for
+ *     blur / glare / coverage / ready PLUS a real accelerometer-driven
+ *     motion verdict that overrides the script when the device is
+ *     shaking
+ *   - Light haptic on transition into ready, warning haptic on
+ *     transition into warn (expo-haptics)
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import {
@@ -29,6 +35,19 @@ import {
   useCameraDevice,
   useCameraPermission,
 } from 'react-native-vision-camera';
+import Animated, {
+  Easing,
+  interpolateColor,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import { Feather } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
+import { Accelerometer, type AccelerometerMeasurement } from 'expo-sensors';
 
 import { Button } from '@src/components';
 import { useScanStore } from '@src/state/scanStore';
@@ -41,12 +60,52 @@ function isValidSurface(s: string | undefined): s is SurfaceParam {
   return s === 'front' || s === 'back';
 }
 
-// Discrete pre-check verdict surfaced to the UI. Real values come
-// from a frame processor; in the scaffold we hardcode "ready".
+// Discrete pre-check verdict surfaced to the UI. Motion is real
+// (accelerometer-driven); blur / glare / coverage are still scripted
+// until a Vision Camera frame processor lands.
 type PreCheck =
   | { kind: 'unknown' }
   | { kind: 'ready' }
   | { kind: 'warn'; reason: 'blur' | 'glare' | 'coverage' | 'motion' };
+
+// Scripted sequence the state machine cycles through. Each step has
+// a duration (ms) the verdict is held before advancing. The sequence
+// gives the user a chance to see every warning state before it
+// settles into 'ready'. Motion is intentionally NOT scripted — it is
+// driven live from the accelerometer (see useMotionVerdict below) and
+// overrides the scripted verdict whenever the device is shaking.
+//
+// REAL IMPLEMENTATION for the still-scripted verdicts (SPEC §v1.5
+// F1.3 — once Reanimated worklets are configured):
+//
+//   - focus      → Laplacian variance over the label ROI; below a
+//                  threshold ⇒ {kind:'warn', reason:'blur'}.
+//   - glare      → ratio of saturated pixels (R&G&B > 250) inside
+//                  ROI; above threshold ⇒ {reason:'glare'}.
+//   - coverage   → bbox area of detected text labels / frame area;
+//                  below threshold ⇒ {reason:'coverage'}.
+//
+//   The frame processor would call a shared-value setter whose
+//   useAnimatedReaction would dispatch into this same setPreCheck.
+const VERDICT_SCRIPT: ReadonlyArray<{ verdict: PreCheck; durationMs: number }> = [
+  { verdict: { kind: 'unknown' }, durationMs: 500 },
+  { verdict: { kind: 'warn', reason: 'coverage' }, durationMs: 900 },
+  { verdict: { kind: 'warn', reason: 'blur' }, durationMs: 750 },
+  { verdict: { kind: 'warn', reason: 'glare' }, durationMs: 700 },
+  { verdict: { kind: 'ready' }, durationMs: 5000 },
+];
+
+// Accelerometer config. 10 Hz updates per the lead's brief — fast
+// enough to feel responsive, slow enough not to thrash a list.
+const ACCEL_INTERVAL_MS = 100;
+// Number of samples in the rolling window used to compute variance.
+// 10 samples @ 10 Hz ≈ 1 second of motion history.
+const ACCEL_WINDOW = 10;
+// High-pass: variance of |a| above this threshold ⇒ "shaking". Tuned
+// for hand-held use; bumping the device or walking with it crosses
+// this comfortably while a phone resting on a surface stays well
+// under it. Units are g^2 (gravitational-force squared).
+const MOTION_VARIANCE_THRESHOLD = 0.015;
 
 export default function CameraScreen(): React.ReactElement {
   const { surface } = useLocalSearchParams<{ surface: string }>();
@@ -60,19 +119,55 @@ export default function CameraScreen(): React.ReactElement {
   const setCapture = useScanStore((s) => s.setCapture);
   const captures = useScanStore((s) => s.captures);
 
-  const [preCheck, setPreCheck] = useState<PreCheck>({ kind: 'unknown' });
+  const [scriptedPreCheck, setScriptedPreCheck] = useState<PreCheck>({ kind: 'unknown' });
   const [busy, setBusy] = useState(false);
 
-  // TODO(prechecks): wire a Vision Camera v4 frame processor that
-  // computes Laplacian variance (focus), saturated-pixel ratio (glare),
-  // detected-label area (coverage) and reports a verdict back to RN.
-  // For now we just flip to 'ready' once the camera mounts so the UI
-  // exercises both states.
+  const script = useMemo(() => VERDICT_SCRIPT, []);
+  const motionDetected = useMotionVerdict(hasPermission);
+
+  // Real motion verdict (accelerometer) takes precedence over the
+  // scripted verdicts. Once a real frame processor lands the rest of
+  // these will also become live signals.
+  const preCheck: PreCheck = motionDetected
+    ? { kind: 'warn', reason: 'motion' }
+    : scriptedPreCheck;
+
+  // Drive the verdict state machine while the camera is live. The
+  // sequence loops indefinitely starting from the last 'ready' step,
+  // mimicking ambient jitter. Real verdicts will replace this once a
+  // frame processor lands (see comment on VERDICT_SCRIPT above for
+  // the per-verdict signal recipe).
   useEffect(() => {
-    if (!hasPermission) return;
-    const t = setTimeout(() => setPreCheck({ kind: 'ready' }), 600);
-    return () => clearTimeout(t);
-  }, [hasPermission]);
+    if (!hasPermission) return undefined;
+
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    // Once we exhaust the scripted bring-up, loop back to the index
+    // that holds 'ready' so subsequent cycles look like ambient
+    // jitter rather than a re-bring-up.
+    const loopAnchor = Math.max(
+      0,
+      script.findIndex((s) => s.verdict.kind === 'ready'),
+    );
+
+    const advance = (index: number): void => {
+      if (cancelled) return;
+      const step = script[index];
+      if (!step) return;
+      setScriptedPreCheck(step.verdict);
+      timeoutId = setTimeout(() => {
+        const next = index + 1 >= script.length ? loopAnchor : index + 1;
+        advance(next);
+      }, step.durationMs);
+    };
+
+    advance(0);
+
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    };
+  }, [hasPermission, script]);
 
   useEffect(() => {
     if (hasPermission === false) {
@@ -204,21 +299,182 @@ export default function CameraScreen(): React.ReactElement {
   );
 }
 
+// Subscribe to the accelerometer and report a boolean "is the device
+// shaking" signal. We compute the variance of |acceleration| over a
+// rolling window and compare to a tuned threshold; that high-passes
+// gravity (a constant ~1g offset) so a stationary phone reads as
+// steady regardless of orientation.
+function useMotionVerdict(active: boolean | undefined): boolean {
+  const [shaking, setShaking] = useState(false);
+
+  useEffect(() => {
+    if (!active) return undefined;
+
+    Accelerometer.setUpdateInterval(ACCEL_INTERVAL_MS);
+
+    const window: number[] = [];
+    const subscription = Accelerometer.addListener((m: AccelerometerMeasurement) => {
+      const magnitude = Math.sqrt(m.x * m.x + m.y * m.y + m.z * m.z);
+      window.push(magnitude);
+      if (window.length > ACCEL_WINDOW) window.shift();
+      if (window.length < ACCEL_WINDOW) return;
+
+      const mean = window.reduce((s, v) => s + v, 0) / window.length;
+      let acc = 0;
+      for (const v of window) acc += (v - mean) * (v - mean);
+      const variance = acc / window.length;
+
+      setShaking((prev) => {
+        const next = variance > MOTION_VARIANCE_THRESHOLD;
+        return prev === next ? prev : next;
+      });
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [active]);
+
+  return shaking;
+}
+
+// Numeric kind code drives Reanimated color interpolation. Keep
+// integer-spaced so interpolateColor's input range is trivial.
+const KIND_CODE = { unknown: 0, warn: 1, ready: 2 } as const;
+
+const CHIP_COLORS = {
+  unknown: 'rgba(0,0,0,0.55)',
+  warn: 'rgba(244,184,96,0.9)',
+  ready: 'rgba(61,220,151,0.85)',
+} as const;
+
+// Light impact on enter-ready, warning notification on enter-warn.
+// Promises are intentionally unawaited — the haptic is fire-and-forget
+// from the caller's perspective. Errors (e.g., simulator without a
+// haptics engine) are swallowed.
+function triggerHaptic(kind: 'ready' | 'warn'): void {
+  if (kind === 'ready') {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  } else {
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+  }
+}
+
 function PreCheckIndicator({ value }: { value: PreCheck }): React.ReactElement {
-  const { bg, label } = labelFor(value);
+  const { label, kindKey, accessibilityLabel } = describe(value);
+
+  // Drive both color and scale from a single shared value tracking
+  // the verdict kind. We animate to the target then settle with a
+  // spring on scale for a subtle "snap" when verdicts change.
+  const kindCode = useSharedValue<number>(KIND_CODE[kindKey]);
+  const scale = useSharedValue<number>(1);
+  const spinDeg = useSharedValue<number>(0);
+
+  // Track the previous kind so we can fire haptics only on edges.
+  const prevKindRef = useRef<'unknown' | 'warn' | 'ready'>(kindKey);
+
+  useEffect(() => {
+    kindCode.value = withTiming(KIND_CODE[kindKey], {
+      duration: 220,
+      easing: Easing.out(Easing.quad),
+    });
+
+    // Brief "pulse" scale: bump up then settle back via spring.
+    scale.value = withSequence(
+      withTiming(1.08, { duration: 120, easing: Easing.out(Easing.quad) }),
+      withSpring(1, { damping: 12, stiffness: 180 }),
+    );
+
+    // Haptic edge detection — only fire on enter, not on re-entry of
+    // the same kind. 'unknown' is silent.
+    const prev = prevKindRef.current;
+    if (prev !== kindKey) {
+      if (kindKey === 'ready') triggerHaptic('ready');
+      else if (kindKey === 'warn') triggerHaptic('warn');
+      prevKindRef.current = kindKey;
+    }
+  }, [kindKey, kindCode, scale]);
+
+  // Continuous rotation for the 'unknown' spinner. Driven separately
+  // so it doesn't fight the per-verdict transition animation.
+  useEffect(() => {
+    if (kindKey === 'unknown') {
+      spinDeg.value = 0;
+      spinDeg.value = withRepeat(
+        withTiming(360, { duration: 900, easing: Easing.linear }),
+        -1,
+        false,
+      );
+    } else {
+      spinDeg.value = withTiming(0, { duration: 120 });
+    }
+  }, [kindKey, spinDeg]);
+
+  const animatedChipStyle = useAnimatedStyle(() => {
+    const bg = interpolateColor(
+      kindCode.value,
+      [KIND_CODE.unknown, KIND_CODE.warn, KIND_CODE.ready],
+      [CHIP_COLORS.unknown, CHIP_COLORS.warn, CHIP_COLORS.ready],
+    );
+    return {
+      backgroundColor: bg,
+      transform: [{ scale: scale.value }],
+    };
+  });
+
+  const animatedSpinStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${spinDeg.value}deg` }],
+  }));
+
   return (
-    <View style={[styles.preCheck, { backgroundColor: bg }]}>
+    <Animated.View
+      accessibilityRole="text"
+      accessibilityLabel={accessibilityLabel}
+      style={[styles.preCheck, animatedChipStyle]}
+    >
+      <Animated.View style={animatedSpinStyle}>
+        <PreCheckIcon kindKey={kindKey} />
+      </Animated.View>
       <Text style={styles.preCheckText}>{label}</Text>
-    </View>
+    </Animated.View>
   );
 }
 
-function labelFor(p: PreCheck): { bg: string; label: string } {
+function PreCheckIcon({
+  kindKey,
+}: {
+  kindKey: 'unknown' | 'warn' | 'ready';
+}): React.ReactElement {
+  const iconColor = colors.background;
+  const size = 14;
+  switch (kindKey) {
+    case 'unknown':
+      return <Feather name="loader" size={size} color={iconColor} />;
+    case 'warn':
+      return <Feather name="alert-triangle" size={size} color={iconColor} />;
+    case 'ready':
+      return <Feather name="check" size={size} color={iconColor} />;
+  }
+}
+
+function describe(p: PreCheck): {
+  label: string;
+  kindKey: 'unknown' | 'warn' | 'ready';
+  accessibilityLabel: string;
+} {
   switch (p.kind) {
     case 'unknown':
-      return { bg: 'rgba(0,0,0,0.55)', label: 'Hold steady…' };
+      return {
+        label: 'Hold steady…',
+        kindKey: 'unknown',
+        accessibilityLabel: 'Pre-check pending. Hold steady.',
+      };
     case 'ready':
-      return { bg: 'rgba(61,220,151,0.85)', label: 'Ready' };
+      return {
+        label: 'Ready',
+        kindKey: 'ready',
+        accessibilityLabel: 'Pre-check ready. You can capture now.',
+      };
     case 'warn': {
       const map: Record<typeof p.reason, string> = {
         blur: 'Image is blurry',
@@ -226,7 +482,12 @@ function labelFor(p: PreCheck): { bg: string; label: string } {
         coverage: 'Move closer',
         motion: 'Hold steady',
       };
-      return { bg: 'rgba(244,184,96,0.9)', label: map[p.reason] };
+      const label = map[p.reason];
+      return {
+        label,
+        kindKey: 'warn',
+        accessibilityLabel: `Pre-check warning: ${label}.`,
+      };
     }
   }
 }
@@ -283,6 +544,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   preCheck: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.xs,
     borderRadius: radius.xl,

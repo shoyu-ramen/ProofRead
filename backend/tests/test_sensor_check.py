@@ -272,9 +272,16 @@ def test_motion_direction_named_for_horizontal_blur():
 def test_backlit_silhouette_is_flagged():
     """Bright background + dark central silhouette = SPEC §0.5 backlight.
     Different remedy than plain underexposure: reposition, don't add light."""
+    import numpy as np
     from PIL import Image, ImageDraw
 
-    img = Image.new("RGB", (1800, 1200), (250, 250, 250))  # bright frame
+    # Photographic noise across the bright background — a real "window
+    # behind bottle" frame has window/sky texture, not a clamped 250 wall.
+    # Without it the artwork capture-source detector catches the frame
+    # (uniform border) and the backlit check is bypassed.
+    rng_bk = np.random.default_rng(0xBACC1)
+    bg = rng_bk.integers(235, 252, size=(1200, 1800), dtype=np.uint8)
+    img = Image.fromarray(np.stack([bg, bg, bg], axis=-1), mode="RGB")
     draw = ImageDraw.Draw(img)
     # Dark "bottle" silhouette in the center.
     draw.rectangle((550, 200, 1250, 1100), fill=(20, 20, 20))
@@ -286,6 +293,9 @@ def test_backlit_silhouette_is_flagged():
     img.save(buf, format="PNG")
     report = assess_capture_quality({"front": buf.getvalue()})
     sq = report.surfaces[0]
+    assert sq.capture_source != "artwork", (
+        "photographic background variance must keep this off the artwork path"
+    )
     assert sq.backlit, "label region darker than surround should flag backlit"
     assert any("backlit" in i.lower() for i in sq.issues)
 
@@ -359,6 +369,25 @@ def test_screenshot_aspect_ratio_is_flagged_when_no_exif():
     )
 
 
+def test_software_exif_screenshot_overrides_camera_make():
+    """Android screenshots and many third-party screenshot tools tag the
+    file with EXIF Software='Screenshot' even when Make/Model are populated
+    by the OS shell. The sensor classifier must honour that tag rather than
+    waving the file through as a 'photo'."""
+    from app.services.sensor_check import (
+        SensorMetadata,
+        _classify_capture_source,
+    )
+
+    sensor = SensorMetadata(
+        make="Samsung", model="SM-S908U", software="Screenshot",
+    )
+    img = Image.new("RGB", (1080, 1920), (200, 200, 200))
+    assert (
+        _classify_capture_source(sensor, img, 1080, 1920) == "screenshot"
+    ), "EXIF Software=Screenshot must override Make/Model presence"
+
+
 def test_blob_occluded_field_downgrades_rule_to_advisory(glare_png):
     """A FAIL whose extracted-field bbox sits inside a major glare blob
     must downgrade to ADVISORY, even if the surface verdict is just
@@ -404,3 +433,137 @@ def test_blob_occluded_field_downgrades_rule_to_advisory(glare_png):
     assert hw.status.value in {"advisory", "fail"}, (
         f"got {hw.status.value}; rule must end as advisory when its input was occluded"
     )
+
+
+# ---------------------------------------------------------------------------
+# Digital-artwork capture-source path
+#
+# Brewers and distillers upload PNG/SVG exports from Esko / Adobe Illustrator,
+# not phone photos. Those have no EXIF and clean, uniform borders. The photo-
+# tuned glare/exposure/smudge/resolution checks false-positive on them; the
+# `artwork` capture-source path skips those checks while keeping sharpness +
+# contrast + colour-cast (text legibility still matters).
+# ---------------------------------------------------------------------------
+
+
+from pathlib import Path  # noqa: E402
+
+_LABELS_DIR = Path(__file__).resolve().parents[2] / "artwork" / "labels"
+
+
+def _build_artwork_png(*, width=1200, height=1500, glare_fraction=0.0) -> bytes:
+    """A clean PNG export — uniform white canvas + bold central text.
+
+    Mirrors how a design tool exports raster proofs: no speckle / film grain,
+    a perfectly uniform border, hard-edged anti-aliased typography.
+    `glare_fraction` lets the test push the saturated-pixel ratio above the
+    photo-glare threshold without changing the artwork classification.
+    """
+    from PIL import Image, ImageDraw
+
+    bg = (255, 255, 255) if glare_fraction > 0 else (250, 248, 242)
+    img = Image.new("RGB", (width, height), color=bg)
+    draw = ImageDraw.Draw(img)
+    # Hard text strokes so the sharpness measurement is high.
+    for y in range(int(height * 0.25), int(height * 0.7), 80):
+        draw.rectangle((width // 6, y, width - width // 6, y + 32), fill=(15, 15, 15))
+    draw.text((width // 6, int(height * 0.85)), "GOVERNMENT WARNING", fill=(0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_synthetic_good_fixture_is_not_classified_as_artwork(good_png):
+    """The synthetic 'good' fixture has speckle noise across the frame — its
+    border is NOT uniform. Artwork classification must not catch it."""
+    report = assess_capture_quality({"front": good_png})
+    sq = report.surfaces[0]
+    assert sq.capture_source != "artwork", (
+        "speckled synthetic should not be classified as artwork"
+    )
+
+
+def test_clean_artwork_export_is_classified_as_artwork():
+    """A clean uniform-canvas PNG export — no EXIF, no border noise — is the
+    primary artwork case."""
+    report = assess_capture_quality({"front": _build_artwork_png()})
+    sq = report.surfaces[0]
+    assert sq.capture_source == "artwork", (sq.capture_source, sq.issues)
+    assert sq.verdict == "good"
+
+
+def test_artwork_path_skips_glare_check():
+    """A near-pure-white artwork canvas trips the saturated-pixel glare
+    threshold — the artwork branch must not treat that as a glare failure."""
+    art = _build_artwork_png(glare_fraction=1.0)
+    report = assess_capture_quality({"front": art})
+    sq = report.surfaces[0]
+    assert sq.capture_source == "artwork"
+    # Frame-level metric still measures saturated pixels (we don't mutate it),
+    # but no `glare` issue is surfaced and the verdict is not driven by it.
+    assert not any("glare" in i.lower() for i in sq.issues), sq.issues
+    assert sq.verdict == "good"
+
+
+def test_artwork_path_skips_low_resolution_penalty():
+    """A 1.5 MP design proof is a normal artwork submission — must not trip
+    the photo-resolution lower bound."""
+    art = _build_artwork_png(width=1000, height=1500)  # 1.5 MP, well below 2.0
+    report = assess_capture_quality({"front": art})
+    sq = report.surfaces[0]
+    assert sq.capture_source == "artwork"
+    assert not any("resolution" in i.lower() for i in sq.issues), sq.issues
+
+
+def test_artwork_path_still_flags_blurry_label():
+    """Sharpness check is intentionally retained for artwork — even a clean
+    PNG export with too-soft text should be flagged for OCR risk."""
+    from PIL import Image, ImageFilter
+
+    art = _build_artwork_png()
+    img = Image.open(io.BytesIO(art)).filter(ImageFilter.GaussianBlur(radius=20))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    report = assess_capture_quality({"front": buf.getvalue()})
+    sq = report.surfaces[0]
+    assert sq.capture_source == "artwork"
+    assert any("blur" in i.lower() or "soft" in i.lower() for i in sq.issues), sq.issues
+
+
+@pytest.mark.skipif(
+    not _LABELS_DIR.exists() or not list(_LABELS_DIR.glob("*.png")),
+    reason="real-world artwork fixtures not present",
+)
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "01_pass_old_tom_distillery.png",
+        "02_warn_stones_throw_gin.png",
+        "03_fail_mountain_crest_ipa.png",
+    ],
+)
+def test_real_world_artwork_labels_classified_and_verdict_good(filename):
+    """The three design-export sample labels must (a) be detected as artwork
+    and (b) clear the sensor pre-check — the model needs to actually receive
+    these for content-level evaluation. Before this fix, the gin sample was
+    short-circuited as 'unreadable' on glare and the typography-warn case
+    never reached the model."""
+    path = _LABELS_DIR / filename
+    report = assess_capture_quality({"front": path.read_bytes()})
+    sq = report.surfaces[0]
+    assert sq.capture_source == "artwork", (filename, sq.capture_source, sq.issues)
+    assert sq.verdict == "good", (filename, sq.verdict, sq.issues)
+
+
+@pytest.mark.skipif(
+    not (_LABELS_DIR / "04_unreadable_heritage_vineyards.png").exists(),
+    reason="real-world photo fixture not present",
+)
+def test_real_world_photo_is_not_misclassified_as_artwork():
+    """The wine-bottle photograph (no EXIF, but real photographic background
+    variation) must NOT be classified as artwork — it has to keep going
+    through the photo-tuned checks."""
+    path = _LABELS_DIR / "04_unreadable_heritage_vineyards.png"
+    report = assess_capture_quality({"front": path.read_bytes()})
+    sq = report.surfaces[0]
+    assert sq.capture_source != "artwork", (sq.capture_source, sq.issues)

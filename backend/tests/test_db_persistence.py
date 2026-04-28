@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.api.scans import get_ocr_provider
+from app.api.scans import get_ocr_provider, get_vision_extractor
 from app.db import get_session_factory
 from app.main import app
 from app.models import (
@@ -57,6 +57,11 @@ def _build_provider(front: str, back: str):
 
 @pytest.fixture(autouse=True)
 def _wipe_overrides():
+    # Pin vision to None so the OCR fallback drives persistence: the API
+    # endpoint resolves a vision extractor from settings, which would otherwise
+    # call the real ClaudeVisionExtractor when ANTHROPIC_API_KEY is set in .env
+    # and skip the OCR row inserts these tests are asserting on.
+    app.dependency_overrides[get_vision_extractor] = lambda: None
     yield
     app.dependency_overrides.clear()
 

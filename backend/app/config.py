@@ -29,5 +29,16 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-opus-4-7"
     vision_extractor: str = "claude"  # "claude" | "mock"
 
+    # Local Qwen3-VL fallback. When `enable_qwen_fallback` is true and
+    # `qwen_vl_base_url` points at an OpenAI-compatible chat-completions
+    # endpoint (vLLM, Ollama, LM Studio, llama.cpp --api), the verify and
+    # scan extractors fall back to Qwen3-VL if the Anthropic call raises
+    # ExtractorUnavailable. Disabled by default so the prod deploy keeps
+    # the same code path until the env vars are explicitly set.
+    enable_qwen_fallback: bool = False
+    qwen_vl_base_url: str | None = None
+    qwen_vl_model: str = "qwen3-vl"
+    qwen_vl_api_key: str | None = None
+
 
 settings = Settings()
