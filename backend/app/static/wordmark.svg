@@ -1,0 +1,23 @@
+<svg viewBox="0 0 540 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Proofread">
+  <title>Proofread — Label verification</title>
+
+  <!-- Icon: magnifying glass with checkmark inside the lens -->
+  <g transform="translate(24,24)">
+    <!-- lens -->
+    <circle cx="48" cy="48" r="38" fill="none" stroke="#0E2A4A" stroke-width="7"/>
+    <!-- handle -->
+    <line x1="76" y1="76" x2="108" y2="108" stroke="#0E2A4A" stroke-width="11" stroke-linecap="round"/>
+    <!-- checkmark in amber (whiskey-tone accent) -->
+    <path d="M 30 50 L 42 62 L 66 36" fill="none" stroke="#C8923B" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="160" y="92" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-weight="800" font-size="64" fill="#0E2A4A"
+        letter-spacing="-2">Proofread</text>
+
+  <!-- Tagline -->
+  <text x="162" y="124" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-weight="600" font-size="13" fill="#0E2A4A"
+        letter-spacing="3" opacity="0.72">LABEL VERIFICATION  ·  TTB COMPLIANCE</text>
+</svg>

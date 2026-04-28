@@ -1,0 +1,19 @@
+<svg viewBox="0 0 540 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Proofread (dark background variant)">
+  <title>Proofread — dark background variant</title>
+
+  <rect width="540" height="160" fill="#0E2A4A"/>
+
+  <g transform="translate(24,24)">
+    <circle cx="48" cy="48" r="38" fill="none" stroke="#F7F0DC" stroke-width="7"/>
+    <line x1="76" y1="76" x2="108" y2="108" stroke="#F7F0DC" stroke-width="11" stroke-linecap="round"/>
+    <path d="M 30 50 L 42 62 L 66 36" fill="none" stroke="#C8923B" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <text x="160" y="92" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-weight="800" font-size="64" fill="#F7F0DC"
+        letter-spacing="-2">Proofread</text>
+
+  <text x="162" y="124" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-weight="600" font-size="13" fill="#F7F0DC"
+        letter-spacing="3" opacity="0.7">LABEL VERIFICATION  ·  TTB COMPLIANCE</text>
+</svg>

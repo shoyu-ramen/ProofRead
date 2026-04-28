@@ -1,0 +1,20 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Proofread app icon">
+  <title>Proofread</title>
+
+  <!-- Rounded square background, navy -->
+  <rect x="0" y="0" width="512" height="512" rx="112" ry="112" fill="#0E2A4A"/>
+
+  <!-- Subtle inner glow rim -->
+  <rect x="6" y="6" width="500" height="500" rx="106" ry="106"
+        fill="none" stroke="#1A3A5E" stroke-width="2"/>
+
+  <!-- Magnifying glass with checkmark -->
+  <g transform="translate(96,96)" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- lens -->
+    <circle cx="128" cy="128" r="108" stroke="#F7F0DC" stroke-width="22"/>
+    <!-- handle -->
+    <line x1="207" y1="207" x2="296" y2="296" stroke="#F7F0DC" stroke-width="30"/>
+    <!-- checkmark in amber -->
+    <path d="M 78 132 L 116 168 L 178 92" stroke="#C8923B" stroke-width="24"/>
+  </g>
+</svg>

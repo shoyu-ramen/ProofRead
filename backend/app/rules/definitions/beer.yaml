@@ -1,0 +1,125 @@
+# v1 beer rule set — 8 rules.
+# Citations reference 27 CFR (Code of Federal Regulations).
+# Each rule_id is versioned independently; reports record the version
+# used at evaluation time so historical reports remain reproducible.
+
+- id: beer.brand_name.presence
+  version: 1
+  beverage_types: [beer]
+  citation: 27 CFR 7.22
+  description: Brand name must be present on the label
+  severity: required
+  fix_suggestion: Add a clear brand name on the front of the label.
+  checks:
+    - type: presence
+      params:
+        field: brand_name
+    - type: cross_reference
+      params:
+        field: brand_name
+        record_key: brand
+        optional: true
+
+- id: beer.class_type.presence
+  version: 1
+  beverage_types: [beer]
+  citation: 27 CFR 7.24
+  description: Class/type designation must be present
+  severity: required
+  fix_suggestion: Add a recognized beer class/type designation (e.g. "Ale", "Lager", "IPA").
+  checks:
+    - type: presence
+      params:
+        field: class_type
+    - type: cross_reference
+      params:
+        field: class_type
+        record_key: class_type
+        optional: true
+
+- id: beer.alcohol_content.format
+  version: 1
+  beverage_types: [beer]
+  citation: 27 CFR 7.71
+  description: If declared, alcohol content must be in valid format
+  severity: required
+  fix_suggestion: Express ABV as a number followed by a percent sign (e.g. "5.5% ABV").
+  checks:
+    - type: regex
+      params:
+        field: alcohol_content
+        pattern: '^\d+(\.\d+)?\s*%(\s*(ABV|ALC\.?|ALCOHOL))?$'
+        flags: i
+        optional: true
+
+- id: beer.net_contents.presence
+  version: 1
+  beverage_types: [beer]
+  citation: 27 CFR 7.27
+  description: Net contents statement must be present
+  severity: required
+  fix_suggestion: Add a net contents statement (e.g. "12 FL OZ" or "355 mL").
+  checks:
+    - type: presence
+      params:
+        field: net_contents
+
+- id: beer.name_address.presence
+  version: 1
+  beverage_types: [beer]
+  citation: 27 CFR 7.25
+  description: Name and address of bottler/producer must be present
+  severity: required
+  fix_suggestion: 'Add bottler/producer name and address (e.g. "Brewed and bottled by [Name], [City], [State]").'
+  checks:
+    - type: presence
+      params:
+        field: name_address
+
+- id: beer.country_of_origin.presence_if_imported
+  version: 1
+  beverage_types: [beer]
+  citation: 27 CFR 7.25(b)
+  description: If imported, country of origin must be declared
+  severity: required
+  applies_if: is_imported == True
+  fix_suggestion: 'Add a country of origin statement (e.g. "Product of Germany").'
+  checks:
+    - type: presence
+      params:
+        field: country_of_origin
+
+- id: beer.health_warning.exact_text
+  version: 1
+  beverage_types: [beer]
+  citation: 27 CFR 16.21
+  description: Government Health Warning Statement must appear with exact statutory text
+  severity: required
+  fix_suggestion: |
+    The Health Warning must read exactly:
+    "GOVERNMENT WARNING: (1) According to the Surgeon General, women should
+    not drink alcoholic beverages during pregnancy because of the risk of
+    birth defects. (2) Consumption of alcoholic beverages impairs your
+    ability to drive a car or operate machinery, and may cause health
+    problems."
+  checks:
+    - type: exact_text
+      params:
+        field: health_warning
+        canonical_ref: health_warning
+        max_edit_distance: 0
+
+- id: beer.health_warning.size
+  version: 1
+  beverage_types: [beer]
+  citation: 27 CFR 16.22
+  description: Health Warning must meet minimum type-size requirements
+  severity: advisory
+  fix_suggestion: |
+    Health Warning text must be at least 1mm tall on containers ≤237mL,
+    and at least 2mm tall on larger containers. Type-size verification
+    requires camera calibration (planned for v2).
+  checks:
+    - type: advisory_note
+      params:
+        message: Type-size verification not available without calibration (v1).

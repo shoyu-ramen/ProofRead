@@ -1,0 +1,21 @@
+# Repo-wide ignores. Subdirectory-specific ignores live in
+# backend/.gitignore and mobile/.gitignore.
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python tool caches that can land at the repo root when running scripts
+# from here (e.g. prototype_review.py).
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Anything sensitive
+.env
+.env.local
+*.pem

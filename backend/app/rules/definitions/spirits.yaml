@@ -1,0 +1,148 @@
+# Distilled spirits rule set — covers the brief's bourbon example and the
+# matching cross-checks against the producer's submitted record.
+#
+# Rules with `cross_reference*` checks pull the "expected" value from
+# ctx.application.producer_record, which is the application data the agent
+# is reviewing the label against.
+
+- id: spirits.brand_name.matches_application
+  version: 1
+  beverage_types: [spirits]
+  citation: 27 CFR 5.32
+  description: Brand name must be present and match the producer record
+  severity: required
+  fix_suggestion: |
+    Make sure the brand name on the label exactly matches the application.
+    Trivial differences (case, punctuation) will surface for review rather
+    than being auto-rejected.
+  checks:
+    - type: presence
+      params:
+        field: brand_name
+    - type: cross_reference
+      params:
+        field: brand_name
+        record_key: brand_name
+
+- id: spirits.class_type.matches_application
+  version: 1
+  beverage_types: [spirits]
+  citation: 27 CFR 5.35
+  description: Class/type designation must be present and match the producer record
+  severity: required
+  fix_suggestion: |
+    Add the TTB class/type designation (e.g. "Kentucky Straight Bourbon
+    Whiskey") matching what was submitted in the application.
+  checks:
+    - type: presence
+      params:
+        field: class_type
+    - type: cross_reference
+      params:
+        field: class_type
+        record_key: class_type
+
+- id: spirits.alcohol_content.format
+  version: 1
+  beverage_types: [spirits]
+  citation: 27 CFR 5.37
+  description: Alcohol content statement must be in valid TTB format
+  severity: required
+  fix_suggestion: |
+    State alcohol content as a percentage with the suffix "Alc./Vol." or
+    equivalent (e.g. "45% Alc./Vol."). The proof figure may also appear
+    in parentheses (e.g. "(90 Proof)").
+  checks:
+    - type: regex
+      params:
+        field: alcohol_content
+        pattern: '\d+(\.\d+)?\s*%\s*(Alc\.?\s*\/\s*Vol\.?|ABV|ALCOHOL)'
+        flags: i
+
+- id: spirits.alcohol_content.matches_application
+  version: 1
+  beverage_types: [spirits]
+  citation: 27 CFR 5.37
+  description: Alcohol content must match the producer record (ABV ↔ proof equivalence)
+  severity: required
+  fix_suggestion: |
+    The first numeric value on the label should match the ABV submitted
+    in the application. A proof figure (e.g. "90 Proof") at 2× the ABV
+    is also accepted.
+  checks:
+    - type: cross_reference_numeric
+      params:
+        field: alcohol_content
+        record_key: alcohol_content
+        tolerance: 0.005
+        allow_proof_equivalence: true
+
+- id: spirits.net_contents.matches_application
+  version: 1
+  beverage_types: [spirits]
+  citation: 27 CFR 5.38
+  description: Net contents must be present and match the producer record (unit-aware)
+  severity: required
+  fix_suggestion: |
+    Add a net contents statement (e.g. "750 mL"). Units are normalised
+    so "750 mL" and "0.75 L" are treated as equivalent.
+  checks:
+    - type: presence
+      params:
+        field: net_contents
+    - type: cross_reference_volume
+      params:
+        field: net_contents
+        record_key: net_contents
+        tolerance: 0.01
+
+- id: spirits.name_address.presence
+  version: 1
+  beverage_types: [spirits]
+  citation: 27 CFR 5.36
+  description: Bottler/producer name and address must be present
+  severity: required
+  fix_suggestion: |
+    Add a producer/bottler statement (e.g. "Bottled by Old Tom Distilling
+    Co., Bardstown, Kentucky").
+  checks:
+    - type: presence
+      params:
+        field: name_address
+
+- id: spirits.country_of_origin.presence_if_imported
+  version: 1
+  beverage_types: [spirits]
+  citation: 27 CFR 5.36(d)
+  description: Imported spirits must declare country of origin
+  severity: required
+  applies_if: is_imported == True
+  fix_suggestion: |
+    Add a country-of-origin statement (e.g. "Product of Mexico"). Required
+    only for imported spirits.
+  checks:
+    - type: presence
+      params:
+        field: country_of_origin
+
+- id: spirits.health_warning.compliance
+  version: 1
+  beverage_types: [spirits]
+  citation: 27 CFR 16.21
+  description: Government Health Warning must include the verbatim ALL-CAPS prefix and full statement
+  severity: required
+  fix_suggestion: |
+    The Government Health Warning must read in full:
+      "GOVERNMENT WARNING: (1) According to the Surgeon General, women
+       should not drink alcoholic beverages during pregnancy because of
+       the risk of birth defects. (2) Consumption of alcoholic beverages
+       impairs your ability to drive a car or operate machinery, and may
+       cause health problems."
+    The "GOVERNMENT WARNING:" prefix must appear verbatim in capitals;
+    title case (e.g. "Government Warning:") is not acceptable.
+  checks:
+    - type: warning_compliance
+      params:
+        field: health_warning
+        canonical_ref: health_warning
+        max_body_edit_distance: 5

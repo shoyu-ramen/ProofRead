@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Proofread — Label Verification</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+<style>
+  :root {
+    --navy:    #0E2A4A;
+    --navy-2:  #1a3a5e;
+    --amber:   #AA7832;
+    --cream:   #F7F0DC;
+    --paper:   #FBF8EE;
+    --ink:     #1a1a1a;
+    --ink-2:   #4a4a4a;
+    --line:    #d8d2bd;
+    --pass:    #3F8B5A;
+    --pass-bg: #e6f1ea;
+    --warn:    #c79214;
+    --warn-bg: #fbf0d4;
+    --fail:    #b33a3a;
+    --fail-bg: #f7e0e0;
+    --advisory:#5b6577;
+    --advisory-bg:#e9ecf1;
+    --na:      #92897b;
+    --na-bg:   #efeae0;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink);
+    background: var(--paper);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    background: var(--navy);
+    color: var(--cream);
+    padding: 18px 32px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 4px solid var(--amber);
+  }
+  header img { height: 36px; }
+  .role-tag {
+    font-size: 12px; letter-spacing: 2px; text-transform: uppercase;
+    opacity: 0.7;
+  }
+  main {
+    max-width: 1200px; margin: 0 auto; padding: 32px 24px 80px;
+  }
+  h1, h2, h3 { color: var(--navy); margin: 0; font-weight: 700; }
+  h1 { font-size: 28px; letter-spacing: -0.5px; }
+  h2 { font-size: 18px; letter-spacing: -0.2px; }
+  .subtitle { color: var(--ink-2); margin: 4px 0 28px; font-size: 15px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+  @media (max-width: 880px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .card h2 { margin-bottom: 16px; }
+
+  /* drop zone */
+  .drop {
+    border: 2px dashed var(--line);
+    border-radius: 10px;
+    padding: 32px;
+    text-align: center;
+    cursor: pointer;
+    background: var(--paper);
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .drop:hover, .drop.over {
+    border-color: var(--amber);
+    background: white;
+  }
+  .drop p { margin: 6px 0; color: var(--ink-2); }
+  .drop strong { color: var(--navy); }
+  .drop input[type=file] { display: none; }
+
+  .preview { margin-top: 16px; text-align: center; }
+  .preview img {
+    max-width: 100%;
+    max-height: 360px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: white;
+  }
+  .filename {
+    font-size: 13px; color: var(--ink-2);
+    margin-top: 8px; word-break: break-all;
+  }
+
+  /* form */
+  label.row {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+    margin: 14px 0 6px;
+  }
+  label.row .req { color: var(--fail); }
+  input[type=text], input[type=number], select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font: inherit;
+    background: white;
+  }
+  input[type=text]:focus, input[type=number]:focus, select:focus {
+    outline: 2px solid var(--amber);
+    outline-offset: -1px;
+    border-color: var(--amber);
+  }
+  .checkbox {
+    display: flex; align-items: center; gap: 10px;
+    margin: 14px 0 6px;
+    font-size: 14px;
+  }
+  .checkbox input { width: 18px; height: 18px; }
+
+  /* sample buttons */
+  .samples {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    margin: 16px 0 20px;
+  }
+  .samples button {
+    background: var(--cream);
+    border: 1px solid var(--line);
+    color: var(--navy);
+    padding: 8px 12px;
+    border-radius: 999px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .samples button:hover { border-color: var(--amber); background: white; }
+
+  /* verify button */
+  .actions {
+    margin-top: 28px;
+    display: flex; align-items: center; gap: 16px;
+    flex-wrap: wrap;
+  }
+  button.primary {
+    background: var(--navy);
+    color: var(--cream);
+    border: none;
+    padding: 14px 32px;
+    border-radius: 10px;
+    font: inherit;
+    font-weight: 700;
+    font-size: 16px;
+    letter-spacing: 0.3px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button.primary:hover:not(:disabled) { background: var(--navy-2); }
+  button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .status-line { font-size: 14px; color: var(--ink-2); }
+
+  /* results */
+  .results { margin-top: 36px; }
+  .verdict {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 24px;
+    border-radius: 10px;
+    font-weight: 700;
+    font-size: 18px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 24px;
+  }
+  .verdict .dot {
+    width: 12px; height: 12px; border-radius: 50%;
+  }
+  .verdict.pass      { color: var(--pass);     background: var(--pass-bg); }
+  .verdict.pass .dot { background: var(--pass); }
+  .verdict.warn      { color: var(--warn);     background: var(--warn-bg); }
+  .verdict.warn .dot { background: var(--warn); }
+  .verdict.fail      { color: var(--fail);     background: var(--fail-bg); }
+  .verdict.fail .dot { background: var(--fail); }
+  .verdict.advisory  { color: var(--advisory); background: var(--advisory-bg); }
+  .verdict.advisory .dot { background: var(--advisory); }
+  .verdict.unreadable { color: var(--warn); background: var(--warn-bg); }
+  .verdict.unreadable .dot { background: var(--warn); }
+  .verdict.na        { color: var(--na);       background: var(--na-bg); }
+
+  .timing {
+    margin-left: 12px; font-size: 13px;
+    color: var(--ink-2); font-weight: 500;
+    text-transform: none; letter-spacing: 0;
+  }
+
+  .rules ul, .extracted ul { list-style: none; padding: 0; margin: 0; }
+  .rule {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 10px;
+    background: white;
+  }
+  .rule-head {
+    display: flex; align-items: center; gap: 12px;
+    flex-wrap: wrap;
+  }
+  .pill {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .pill.pass { color: var(--pass); background: var(--pass-bg); }
+  .pill.warn { color: var(--warn); background: var(--warn-bg); }
+  .pill.fail { color: var(--fail); background: var(--fail-bg); }
+  .pill.advisory { color: var(--advisory); background: var(--advisory-bg); }
+  .pill.na { color: var(--na); background: var(--na-bg); }
+  .rule-id {
+    font-family: ui-monospace, SF Mono, Menlo, monospace;
+    font-size: 13px;
+    color: var(--ink-2);
+  }
+  .citation {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+  .rule-desc { margin: 8px 0 0; font-size: 14px; }
+  .rule-finding {
+    margin-top: 8px; font-size: 13px;
+    color: var(--ink-2);
+    padding: 8px 10px;
+    background: var(--paper);
+    border-left: 3px solid var(--line);
+    border-radius: 0 4px 4px 0;
+  }
+  .rule-finding strong { color: var(--ink); }
+
+  .extracted-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+    margin-top: 8px;
+  }
+  .field {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 14px;
+    background: white;
+    font-size: 14px;
+  }
+  .field h4 {
+    margin: 0 0 6px;
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--ink-2);
+  }
+  .field-value { font-weight: 500; word-break: break-word; }
+  .field-value.unreadable { color: var(--warn); font-style: italic; }
+  .field-meta {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+
+  .error {
+    color: var(--fail);
+    background: var(--fail-bg);
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-top: 16px;
+  }
+
+  .section-head {
+    display: flex; align-items: baseline;
+    gap: 16px; margin: 24px 0 12px;
+  }
+  .section-head h2 { color: var(--navy); }
+  .section-head .hint { font-size: 13px; color: var(--ink-2); }
+</style>
+</head>
+<body>
+<header>
+  <img src="/static/wordmark.svg" alt="Proofread" />
+  <div class="role-tag">TTB Compliance Reviewer</div>
+</header>
+
+<main>
+  <h1>Verify a label</h1>
+  <p class="subtitle">
+    Drop a label image, paste the application metadata, click Verify.
+    The result lists each TTB rule with its citation and tells you what differs.
+  </p>
+
+  <section class="samples">
+    <strong style="font-size:13px;color:var(--ink-2);align-self:center;margin-right:8px;">SAMPLES</strong>
+    <button data-sample="pass">PASS — Old Tom Bourbon</button>
+    <button data-sample="warn">WARN — Stone's Throw Gin</button>
+    <button data-sample="fail">FAIL — Mountain Crest IPA</button>
+    <button data-sample="unreadable">UNREADABLE — Heritage Cabernet</button>
+  </section>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Label image</h2>
+      <label for="file" class="drop" id="drop">
+        <p><strong>Drop an image here</strong></p>
+        <p>or click to browse — PNG or JPEG</p>
+        <input type="file" id="file" accept="image/*" />
+      </label>
+      <div class="preview" id="preview" hidden>
+        <img id="previewImg" alt="label preview" />
+        <div class="filename" id="filename"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Application metadata</h2>
+
+      <label class="row" for="bevType">Beverage type <span class="req">*</span></label>
+      <select id="bevType">
+        <option value="spirits">Distilled spirits</option>
+        <option value="beer">Beer / malt beverage</option>
+        <option value="wine">Wine</option>
+      </select>
+
+      <label class="row" for="brandName">Brand name <span class="req">*</span></label>
+      <input type="text" id="brandName" placeholder="e.g. Old Tom Distillery" />
+
+      <label class="row" for="classType">Class / type <span class="req">*</span></label>
+      <input type="text" id="classType" placeholder="e.g. Kentucky Straight Bourbon Whiskey" />
+
+      <label class="row" for="alcoholContent">Alcohol content (ABV %) <span class="req">*</span></label>
+      <input type="text" id="alcoholContent" placeholder="e.g. 45 or 45.0" />
+
+      <label class="row" for="netContents">Net contents <span class="req">*</span></label>
+      <input type="text" id="netContents" placeholder="e.g. 750 mL" />
+
+      <label class="row" for="nameAddress">Bottler / producer name &amp; address</label>
+      <input type="text" id="nameAddress" placeholder="e.g. Old Tom Distilling Co., Bardstown, KY" />
+
+      <label class="row" for="containerSize">Container size (mL) <span class="req">*</span></label>
+      <input type="number" id="containerSize" value="750" min="1" max="10000" />
+
+      <div class="checkbox">
+        <input type="checkbox" id="isImported" />
+        <label for="isImported">Imported (requires country of origin)</label>
+      </div>
+
+      <label class="row" for="countryOrigin">Country of origin</label>
+      <input type="text" id="countryOrigin" placeholder="e.g. USA, Mexico, Scotland" />
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="primary" id="verifyBtn">Verify label</button>
+    <span class="status-line" id="status"></span>
+  </div>
+
+  <div class="results" id="results" hidden></div>
+</main>
+
+<script>
+const SAMPLES = {
+  pass: {
+    image: "/static/samples/01_pass_old_tom_distillery.png",
+    bev: "spirits",
+    brand: "Old Tom Distillery",
+    classType: "Kentucky Straight Bourbon Whiskey",
+    abv: "45",
+    net: "750 mL",
+    addr: "Old Tom Distilling Co., Bardstown, Kentucky",
+    container: 750,
+    imported: false,
+    country: "",
+  },
+  warn: {
+    image: "/static/samples/02_warn_stones_throw_gin.png",
+    bev: "spirits",
+    brand: "Stone's Throw",
+    classType: "London Dry Gin",
+    abv: "41.5",
+    net: "750 mL",
+    addr: "Stone's Throw Distilling Co., Portland, OR",
+    container: 750,
+    imported: false,
+    country: "",
+  },
+  fail: {
+    image: "/static/samples/03_fail_mountain_crest_ipa.png",
+    bev: "beer",
+    brand: "Mountain Crest",
+    classType: "IPA",
+    abv: "6.8",
+    net: "16 FL OZ",
+    addr: "Mountain Crest Brewing Co., Bend, Oregon",
+    container: 473,
+    imported: false,
+    country: "",
+  },
+  unreadable: {
+    image: "/static/samples/04_unreadable_heritage_vineyards.png",
+    bev: "wine",
+    brand: "Heritage Vineyards",
+    classType: "Cabernet Sauvignon",
+    abv: "14.2",
+    net: "750 mL",
+    addr: "Heritage Vineyards, Oakville, CA",
+    container: 750,
+    imported: false,
+    country: "",
+  },
+};
+
+let currentImageBlob = null;
+let currentImageType = "image/png";
+let currentImageName = null;
+
+const $ = (id) => document.getElementById(id);
+
+function setPreview(url, name) {
+  $("preview").hidden = false;
+  $("previewImg").src = url;
+  $("filename").textContent = name || "";
+}
+
+function setForm(s) {
+  $("bevType").value = s.bev;
+  $("brandName").value = s.brand;
+  $("classType").value = s.classType;
+  $("alcoholContent").value = s.abv;
+  $("netContents").value = s.net;
+  $("nameAddress").value = s.addr;
+  $("containerSize").value = s.container;
+  $("isImported").checked = s.imported;
+  $("countryOrigin").value = s.country;
+}
+
+async function loadSample(key) {
+  const s = SAMPLES[key];
+  setForm(s);
+  const res = await fetch(s.image);
+  const blob = await res.blob();
+  currentImageBlob = blob;
+  currentImageType = blob.type || "image/png";
+  currentImageName = s.image.split("/").pop();
+  setPreview(URL.createObjectURL(blob), currentImageName);
+  $("status").textContent = `Loaded sample: ${key.toUpperCase()}`;
+}
+
+document.querySelectorAll(".samples button").forEach((btn) => {
+  btn.addEventListener("click", () => loadSample(btn.dataset.sample));
+});
+
+const drop = $("drop");
+drop.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  drop.classList.add("over");
+});
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+$("file").addEventListener("change", (e) => {
+  if (e.target.files.length) handleFile(e.target.files[0]);
+});
+
+function handleFile(file) {
+  if (!file.type.startsWith("image/")) {
+    $("status").textContent = "Please choose an image file.";
+    return;
+  }
+  currentImageBlob = file;
+  currentImageType = file.type;
+  currentImageName = file.name;
+  setPreview(URL.createObjectURL(file), file.name);
+  $("status").textContent = "";
+}
+
+$("verifyBtn").addEventListener("click", verify);
+
+async function verify() {
+  if (!currentImageBlob) {
+    $("status").textContent = "Pick an image first (or click a sample).";
+    return;
+  }
+
+  const application = {
+    producer_record: {
+      brand_name: $("brandName").value,
+      class_type: $("classType").value,
+      alcohol_content: $("alcoholContent").value,
+      net_contents: $("netContents").value,
+      name_address: $("nameAddress").value,
+      country_of_origin: $("countryOrigin").value || null,
+    },
+  };
+
+  const fd = new FormData();
+  fd.append("image", currentImageBlob, currentImageName || "label.png");
+  fd.append("beverage_type", $("bevType").value);
+  fd.append("container_size_ml", $("containerSize").value);
+  fd.append("is_imported", $("isImported").checked ? "true" : "false");
+  fd.append("application", JSON.stringify(application));
+
+  $("verifyBtn").disabled = true;
+  $("status").textContent = "Verifying…";
+  $("results").hidden = true;
+
+  const t0 = performance.now();
+  try {
+    const res = await fetch("/v1/verify", { method: "POST", body: fd });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`HTTP ${res.status}: ${text}`);
+    }
+    const data = await res.json();
+    renderResults(data, performance.now() - t0);
+  } catch (err) {
+    $("results").hidden = false;
+    $("results").innerHTML = `<div class="error"><strong>Verification failed.</strong> ${escapeHtml(err.message)}</div>`;
+  } finally {
+    $("verifyBtn").disabled = false;
+    $("status").textContent = "";
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]
+  ));
+}
+
+function renderResults(data, clientMs) {
+  const r = $("results");
+  r.hidden = false;
+  const v = (data.overall || "na").toLowerCase();
+  const verdictWord = ({
+    pass: "PASS",
+    warn: "WARN — review",
+    fail: "FAIL",
+    advisory: "ADVISORY",
+    unreadable: "UNREADABLE",
+    na: "NO RULES MATCHED",
+  })[v] || v.toUpperCase();
+
+  let html = `
+    <div class="verdict ${v}">
+      <span class="dot"></span>${verdictWord}
+      <span class="timing">server ${data.elapsed_ms} ms · round-trip ${Math.round(clientMs)} ms</span>
+    </div>
+  `;
+
+  // Per-rule list
+  html += `<div class="section-head"><h2>Rule results</h2><span class="hint">${data.rule_results.length} rule(s) evaluated</span></div>`;
+  html += `<div class="rules"><ul>`;
+  for (const rr of data.rule_results) {
+    const status = (rr.status || "na").toLowerCase();
+    html += `
+      <li class="rule">
+        <div class="rule-head">
+          <span class="pill ${status}">${status}</span>
+          <span class="rule-id">${escapeHtml(rr.rule_id)}</span>
+          <span class="citation">${escapeHtml(rr.citation || "")}</span>
+        </div>
+        <p class="rule-desc">${escapeHtml(rr.fix_suggestion ? "" : "")}</p>
+        ${rr.finding ? `<div class="rule-finding"><strong>Finding:</strong> ${escapeHtml(rr.finding)}</div>` : ""}
+        ${rr.expected ? `<div class="rule-finding"><strong>Expected:</strong> ${escapeHtml(rr.expected)}</div>` : ""}
+      </li>`;
+  }
+  html += `</ul></div>`;
+
+  // Extracted fields
+  html += `<div class="section-head"><h2>Extracted from label</h2><span class="hint">${data.unreadable_fields.length} unreadable</span></div>`;
+  html += `<div class="extracted-grid">`;
+  const order = ["brand_name","class_type","alcohol_content","net_contents","name_address","country_of_origin","health_warning"];
+  for (const key of order) {
+    const f = data.extracted[key];
+    if (!f) continue;
+    const val = f.unreadable ? "(unreadable)" : (f.value || "(empty)");
+    html += `
+      <div class="field">
+        <h4>${escapeHtml(key.replace(/_/g," "))}</h4>
+        <div class="field-value ${f.unreadable ? "unreadable" : ""}">${escapeHtml(val)}</div>
+        ${!f.unreadable ? `<div class="field-meta">confidence ${(f.confidence*100).toFixed(0)}%</div>` : ""}
+      </div>`;
+  }
+  html += `</div>`;
+
+  r.innerHTML = html;
+  r.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+</script>
+</body>
+</html>

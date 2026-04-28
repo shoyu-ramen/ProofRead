@@ -1,0 +1,33 @@
+# Scoped to this directory; do not modify repo-wide gitignore.
+
+# Dependencies
+node_modules/
+
+# Expo / Metro / build artifacts
+.expo/
+.expo-shared/
+dist/
+web-build/
+
+# Native build outputs (when prebuild is run)
+ios/build/
+android/build/
+android/app/build/
+android/.gradle/
+android/.idea/
+
+# Env / local config
+.env
+.env.local
+.env.*.local
+
+# Logs / debug
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# Misc
+.DS_Store
+*.pem
+*.tsbuildinfo
