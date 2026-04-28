@@ -7,12 +7,15 @@ response: per-rule verdict, extracted fields, overall status.
 from __future__ import annotations
 
 import json
+import threading
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from app.config import settings
 from app.services.anthropic_client import ExtractorUnavailable
 from app.services.verify import VerifyInput, verify
+from app.services.verify_cache import VerifyCache
 from app.services.vision import VisionExtractor, get_default_extractor
 
 router = APIRouter(prefix="/verify", tags=["verify"])
@@ -53,12 +56,26 @@ class VerifyResponse(BaseModel):
     image_quality: str = "good"
     image_quality_notes: str | None = None
     elapsed_ms: int
+    # True when this verdict came from the in-process cache rather than a
+    # fresh VLM call. The UI uses it to render an "instant" affordance
+    # during the iterative-design workflow (re-submitting the same
+    # artwork export) and to suppress the spinner that the cold path needs.
+    cache_hit: bool = False
 
 
 # Module-level extractor cache so we don't recreate the Anthropic client per
 # request. Set by `get_extractor()`; tests can override via dependency_overrides
 # or by patching this attribute directly.
 _extractor_cache: VisionExtractor | None = None
+
+# Process-wide verify-result cache. Lazily constructed so importing this
+# module doesn't allocate the LRU on cold start. Tests reset it via the
+# autouse fixture in `tests/test_verify_api.py`. The lock guards the
+# check-then-set against concurrent cold requests racing into the
+# factory and each constructing their own cache (one would survive,
+# the others' puts would silently disappear).
+_verify_cache: VerifyCache | None = None
+_verify_cache_lock = threading.Lock()
 
 
 def get_extractor() -> VisionExtractor:
@@ -79,6 +96,45 @@ def _override_extractor(extractor: VisionExtractor | None) -> None:
     """Test hook: install (or clear with None) a custom extractor."""
     global _extractor_cache
     _extractor_cache = extractor
+
+
+def get_verify_cache() -> VerifyCache | None:
+    """Lazily build the per-process verify cache.
+
+    Sized for a typical iterative session (a brewer re-submitting the
+    same Illustrator export 10–50 times across an hour) and several
+    such sessions in parallel. 1024 entries × ~100 KB each is well
+    inside the per-machine RSS budget. Returns None when
+    `verify_cache_max_entries` is 0 — the operator's escape hatch when
+    they need to debug a stuck cache without redeploying.
+
+    Construction is double-checked under a lock so two concurrent cold
+    requests can't each create their own cache (the second would
+    overwrite the first's puts).
+    """
+    global _verify_cache
+    if settings.verify_cache_max_entries <= 0:
+        return None
+    if _verify_cache is not None:
+        return _verify_cache
+    with _verify_cache_lock:
+        if _verify_cache is None:
+            _verify_cache = VerifyCache(
+                max_entries=settings.verify_cache_max_entries
+            )
+    return _verify_cache
+
+
+def _reset_verify_cache() -> None:
+    """Test hook: drop the process-wide verify cache.
+
+    Tests assert behavior on cold→warm transitions and stale-rule
+    invalidation, which means each test must start with an empty
+    cache. Production code never calls this.
+    """
+    global _verify_cache
+    with _verify_cache_lock:
+        _verify_cache = None
 
 
 @router.post("", response_model=VerifyResponse)
@@ -135,7 +191,7 @@ async def verify_label(
     )
 
     try:
-        report = verify(inp, extractor=extractor)
+        report = verify(inp, extractor=extractor, cache=get_verify_cache())
     except ExtractorUnavailable as exc:
         # Every backend in the chain failed at request time (e.g. Anthropic
         # rate-limit + Qwen socket error). Same 503 shape as the construction
@@ -183,4 +239,5 @@ async def verify_label(
         image_quality=report.image_quality,
         image_quality_notes=report.image_quality_notes,
         elapsed_ms=report.elapsed_ms,
+        cache_hit=report.cache_hit,
     )

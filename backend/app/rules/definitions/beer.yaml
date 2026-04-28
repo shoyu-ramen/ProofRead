@@ -48,7 +48,7 @@
     - type: regex
       params:
         field: alcohol_content
-        pattern: '^\d+(\.\d+)?\s*%(\s*(ABV|ALC\.?|ALCOHOL))?$'
+        pattern: '(?:ALC\.?|ALCOHOL)?\s*\d+(\.\d+)?\s*%\s*(?:ABV|ALC\.?(\s*\/|\s+BY)?\s*VOL(UME)?|ALCOHOL)?'
         flags: i
         optional: true
 

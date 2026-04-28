@@ -157,6 +157,8 @@ class RuleResultRow(Base):
     citation: Mapped[str] = mapped_column(String(64))
     fix_suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
     bbox: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_flagged: Mapped[bool] = mapped_column(Boolean, default=False)
+    flag_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("scan_images.id"), nullable=True
     )

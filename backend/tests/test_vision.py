@@ -14,7 +14,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.vision import ClaudeVisionExtractor, _parse_vision_response
+from app.services.vision import (
+    ClaudeVisionExtractor,
+    _parse_vision_response,
+)
 
 _VALID_RESPONSE = json.dumps(
     {
@@ -37,6 +40,14 @@ _VALID_RESPONSE = json.dumps(
 )
 
 
+def _response_namespace(scripted: str) -> SimpleNamespace:
+    """Pack a scripted JSON string into the same shape `messages.create`
+    returns: a list of content blocks the extractor concatenates."""
+    return SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=scripted)],
+    )
+
+
 class _FakeMessages:
     def __init__(self, scripted: str) -> None:
         self._scripted = scripted
@@ -44,9 +55,7 @@ class _FakeMessages:
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(
-            content=[SimpleNamespace(type="text", text=self._scripted)]
-        )
+        return _response_namespace(self._scripted)
 
 
 class _FakeClient:
@@ -94,11 +103,11 @@ def test_extract_attaches_image_with_correct_media_type():
     assert image_block["source"]["media_type"] == "image/jpeg"
 
 
-def test_extract_filters_thinking_blocks_from_response():
-    """When adaptive thinking is on, the SDK returns content blocks of type
-    'thinking' alongside the actual JSON 'text' block. The extractor must
-    only concatenate 'text' blocks before parsing — feeding a thinking
-    summary to the JSON parser would crash the request."""
+def test_extract_concatenates_text_blocks_from_response():
+    """`messages.create` returns a list of content blocks; thinking and tool
+    blocks may be interleaved. The extractor must concatenate only the
+    text blocks before parsing JSON — picking up a thinking block as
+    body would tank parse rates."""
 
     class _FakeMessagesWithThinking:
         def __init__(self) -> None:
@@ -108,10 +117,7 @@ def test_extract_filters_thinking_blocks_from_response():
             self.calls.append(kwargs)
             return SimpleNamespace(
                 content=[
-                    SimpleNamespace(
-                        type="thinking",
-                        thinking="Considering the label looks fine; brand is large and clear.",
-                    ),
+                    SimpleNamespace(type="thinking", thinking="…"),
                     SimpleNamespace(type="text", text=_VALID_RESPONSE),
                 ]
             )

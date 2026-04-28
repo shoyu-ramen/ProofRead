@@ -24,11 +24,18 @@ from tests.conftest import _make_synthetic_png
 
 @pytest.fixture(autouse=True)
 def _clear_extractor_cache():
-    """Reset the verify module's process-wide extractor cache between tests
-    so one test's monkey-patched factory doesn't leak into the next."""
+    """Reset both module-level caches between tests.
+
+    The extractor cache is reset because monkey-patched factories must
+    not leak. The verify cache is reset because tests rely on cold-path
+    behavior (e.g. assertions on which extractor was called) which a
+    leftover entry would short-circuit.
+    """
     verify_api._extractor_cache = None
+    verify_api._reset_verify_cache()
     yield
     verify_api._extractor_cache = None
+    verify_api._reset_verify_cache()
     app.dependency_overrides.clear()
 
 
@@ -77,7 +84,7 @@ def test_verify_returns_503_when_extractor_fails_mid_request(monkeypatch):
     handles a single transient failure mode."""
 
     class _FlakyExtractor:
-        def extract(self, image_bytes: bytes, media_type: str = "image/png"):
+        def extract(self, image_bytes: bytes, media_type: str = "image/png", **_: object):
             raise ExtractorUnavailable("upstream rate limit (429)")
 
     monkeypatch.setattr(
@@ -149,3 +156,62 @@ def test_verify_returns_200_when_extractor_succeeds(monkeypatch):
     body = res.json()
     assert "overall" in body
     assert "rule_results" in body
+    # Cold path: cache_hit must be False. Asserts the field is wired into
+    # the response model and not silently dropped by Pydantic.
+    assert body.get("cache_hit") is False
+
+
+def test_verify_second_identical_request_hits_cache(monkeypatch):
+    """End-to-end: two POSTs with identical body must produce the same
+    verdict; the second comes back with `cache_hit=True` and elapses well
+    under the 50 ms iterative-design budget. This is the user-facing
+    contract — a brewer re-submitting the same Illustrator export gets
+    an instant verdict."""
+
+    fixture = {
+        "brand_name": "Old Tom Distillery",
+        "class_type": "Kentucky Straight Bourbon Whiskey",
+        "alcohol_content": "45% Alc./Vol.",
+        "net_contents": "750 mL",
+        "name_address": "Bottled by Old Tom Distilling Co., Bardstown, Kentucky",
+        "health_warning": (
+            "GOVERNMENT WARNING: (1) According to the Surgeon General, women "
+            "should not drink alcoholic beverages during pregnancy because of "
+            "the risk of birth defects. (2) Consumption of alcoholic beverages "
+            "impairs your ability to drive a car or operate machinery, and may "
+            "cause health problems."
+        ),
+    }
+    monkeypatch.setattr(
+        verify_api, "get_default_extractor", lambda: MockVisionExtractor(fixture)
+    )
+
+    client = TestClient(app)
+    # Same image bytes for both requests so they share a cache key.
+    image_bytes = _make_synthetic_png()
+
+    payload = _form_payload()
+    cold = client.post(
+        "/v1/verify",
+        data=payload,
+        files={"image": ("label.png", io.BytesIO(image_bytes), "image/png")},
+    )
+    warm = client.post(
+        "/v1/verify",
+        data=payload,
+        files={"image": ("label.png", io.BytesIO(image_bytes), "image/png")},
+    )
+
+    assert cold.status_code == 200
+    assert warm.status_code == 200
+    cold_body = cold.json()
+    warm_body = warm.json()
+
+    assert cold_body["cache_hit"] is False
+    assert warm_body["cache_hit"] is True
+    assert cold_body["overall"] == warm_body["overall"]
+    # The reported elapsed_ms must reflect the warm path, not the cold one.
+    # Sensor pre-check is ~60 ms on the cold path; the warm path skips it.
+    assert warm_body["elapsed_ms"] < 50, (
+        f"warm path elapsed_ms={warm_body['elapsed_ms']} exceeds 50 ms budget"
+    )
