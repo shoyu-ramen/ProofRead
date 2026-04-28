@@ -16,6 +16,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual trigger from the Actions UI / `gh workflow run ci.yml`. Does NOT
+  # run the deploy job — the `if:` guard on `deploy` requires push-to-main.
+  workflow_dispatch:
 
 # Cancel superseded PR runs to keep the queue short. Pushes to main are
 # allowed to complete so an in-flight deploy is never killed mid-flight.
