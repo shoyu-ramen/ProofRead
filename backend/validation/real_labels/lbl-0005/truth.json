@@ -1,0 +1,34 @@
+{
+  "id": "lbl-0005",
+  "beverage_type": "beer",
+  "container_size_ml": 473,
+  "is_imported": false,
+  "capture_conditions": {
+    "lighting": "studio_artwork",
+    "surface": "flat_artwork",
+    "container": "1pint_can",
+    "device": "TTB COLA submission scan",
+    "notes": "Source: TTB Public COLA Registry, TTB ID 19122001000872. TTB COLA composite artwork. Brewer: Calvert Brewing Company, LLC. Class/type \"Golden Lager\" not in TTB classic taxonomy; reasonable taxonomy mapping is \"Lager\". Image is the unrolled label artwork as submitted to TTB (not a photograph of a physical container); front.jpg and back.jpg are duplicates of the same composite. Capture conditions matrix in SPEC §0.5 not directly applicable."
+  },
+  "ground_truth": {
+    "beer.brand_name.presence": "pass",
+    "beer.class_type.presence": "pass",
+    "beer.alcohol_content.format": "pass",
+    "beer.net_contents.presence": "pass",
+    "beer.name_address.presence": "pass",
+    "beer.country_of_origin.presence_if_imported": "na",
+    "beer.health_warning.exact_text": "pass",
+    "beer.health_warning.size": "advisory"
+  },
+  "label_spec": {
+    "brand": "7TH STATE",
+    "class_type": "Golden Lager",
+    "abv": "4.99% ALC./VOL",
+    "net_contents": "1 PINT/16 FL. OZ.",
+    "name_address": "Brewed and canned by Calvert Brewing Company, Upper Marlboro, MD",
+    "health_warning_text": "GOVERNMENT WARNING: (1) According to the Surgeon General, women should not drink alcoholic beverages during pregnancy because of the risk of birth defects. (2) Consumption of alcoholic beverages impairs your ability to drive a car or operate machinery, and may cause health problems.",
+    "country": null
+  },
+  "annotator": "rosskuehl@gmail.com",
+  "annotated_at": "2026-04-28"
+}
