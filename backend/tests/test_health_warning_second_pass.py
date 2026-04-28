@@ -9,12 +9,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
-from app.rules.types import CheckOutcome, ExtractedField, ExtractionContext
+from app.rules.types import CheckOutcome
 from app.services.health_warning_second_pass import (
     ClaudeHealthWarningExtractor,
-    CrossCheckResult,
     MockHealthWarningExtractor,
     WarningRead,
     _parse_response,

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import io
 
-import pytest
 from PIL import Image
 
 from app.services.adversarial import (

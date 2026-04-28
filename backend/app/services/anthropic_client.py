@@ -37,7 +37,7 @@ DEFAULT_SECOND_PASS_TIMEOUT_S = 8.0
 DEFAULT_MAX_RETRIES = 2
 
 
-class ExtractorUnavailable(RuntimeError):
+class ExtractorUnavailable(RuntimeError):  # noqa: N818  # established public name; ~15 call sites
     """Raised when the Anthropic extractor cannot be reached or used.
 
     Pipeline callers catch this to fall back to OCR. Tests assert against

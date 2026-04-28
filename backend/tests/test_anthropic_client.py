@@ -6,9 +6,8 @@ properties we want — exercised here with stubs so no API key is required.
 
 from __future__ import annotations
 
-import pytest
-
 import anthropic
+import pytest
 
 from app.services import anthropic_client
 from app.services.anthropic_client import (
@@ -18,7 +17,6 @@ from app.services.anthropic_client import (
     build_client,
     call_with_resilience,
 )
-
 
 # ---------------------------------------------------------------------------
 # build_client
