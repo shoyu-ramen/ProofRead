@@ -11,10 +11,17 @@ import json
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from app.services.anthropic_client import ExtractorUnavailable
 from app.services.verify import VerifyInput, verify
 from app.services.vision import VisionExtractor, get_default_extractor
 
 router = APIRouter(prefix="/verify", tags=["verify"])
+
+# 503 payload shape returned when every configured vision extractor is
+# unreachable (or none is configured). The mobile/web UI maps the `code`
+# to a friendly message rather than dumping `detail` verbatim, so the
+# detail is allowed to be developer-facing.
+_SERVICE_UNAVAILABLE_CODE = "vision_unavailable"
 
 
 _BEVERAGE_TYPES = {"beer", "wine", "spirits"}
@@ -55,6 +62,13 @@ _extractor_cache: VisionExtractor | None = None
 
 
 def get_extractor() -> VisionExtractor:
+    """Lazily construct (and cache) the configured vision chain.
+
+    `ExtractorUnavailable` is intentionally NOT cached — that lets a missing
+    env var be fixed and recovered without restarting the process. A
+    `RuntimeError` (config-bug like an unknown extractor name) IS effectively
+    cached because this function will keep raising it on every call.
+    """
     global _extractor_cache
     if _extractor_cache is None:
         _extractor_cache = get_default_extractor()
@@ -97,6 +111,17 @@ async def verify_label(
 
     try:
         extractor = get_extractor()
+    except ExtractorUnavailable as exc:
+        # No backend is currently configurable / reachable. 503 (not 500) so
+        # the client treats this as transient and the UI can show a clean
+        # retry affordance rather than an ominous 500-with-stack-trace.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": _SERVICE_UNAVAILABLE_CODE,
+                "message": str(exc),
+            },
+        ) from exc
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
 
@@ -111,6 +136,20 @@ async def verify_label(
 
     try:
         report = verify(inp, extractor=extractor)
+    except ExtractorUnavailable as exc:
+        # Every backend in the chain failed at request time (e.g. Anthropic
+        # rate-limit + Qwen socket error). Same 503 shape as the construction
+        # failure above so the client only handles one transient mode.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": _SERVICE_UNAVAILABLE_CODE,
+                "message": (
+                    "Every vision backend is currently unreachable. "
+                    f"Last error: {exc}"
+                ),
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:  # pragma: no cover — defensive fallback

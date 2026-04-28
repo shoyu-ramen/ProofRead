@@ -2,14 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Proofread — Label Verification</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Proofread — Scan a label</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
 <style>
   :root {
     --navy:    #0E2A4A;
     --navy-2:  #1a3a5e;
     --amber:   #AA7832;
+    --amber-2: #BC8B43;
     --cream:   #F7F0DC;
     --paper:   #FBF8EE;
     --ink:     #1a1a1a;
@@ -38,192 +39,410 @@
   header {
     background: var(--navy);
     color: var(--cream);
-    padding: 18px 32px;
+    padding: 16px 28px;
     display: flex; align-items: center; justify-content: space-between;
     border-bottom: 4px solid var(--amber);
   }
-  header img { height: 36px; }
+  header img { height: 32px; }
   .role-tag {
-    font-size: 12px; letter-spacing: 2px; text-transform: uppercase;
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
     opacity: 0.7;
   }
   main {
-    max-width: 1200px; margin: 0 auto; padding: 32px 24px 80px;
+    max-width: 720px; margin: 0 auto;
+    padding: 32px 24px max(80px, env(safe-area-inset-bottom));
   }
+
   h1, h2, h3 { color: var(--navy); margin: 0; font-weight: 700; }
-  h1 { font-size: 28px; letter-spacing: -0.5px; }
-  h2 { font-size: 18px; letter-spacing: -0.2px; }
-  .subtitle { color: var(--ink-2); margin: 4px 0 28px; font-size: 15px; }
+  h1 { font-size: 30px; letter-spacing: -0.5px; }
+  h2 { font-size: 20px; letter-spacing: -0.2px; }
+  h3 { font-size: 14px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--ink-2); }
 
-  .grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 24px;
+  /* Views — only one visible at a time. */
+  .view { animation: fadeIn 0.22s ease; }
+  [hidden] { display: none !important; }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
-  @media (max-width: 880px) {
-    .grid { grid-template-columns: 1fr; }
-  }
-  .card {
+
+  /* ─── Scan view ──────────────────────────────────────────── */
+  .scan-card {
     background: white;
     border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 24px;
-  }
-  .card h2 { margin-bottom: 16px; }
-
-  /* drop zone */
-  .drop {
-    border: 2px dashed var(--line);
-    border-radius: 10px;
-    padding: 32px;
+    border-radius: 16px;
+    padding: 32px 28px;
     text-align: center;
-    cursor: pointer;
-    background: var(--paper);
-    transition: border-color 0.15s, background 0.15s;
   }
-  .drop:hover, .drop.over {
-    border-color: var(--amber);
-    background: white;
+  .scan-card .lede {
+    font-size: 15px; color: var(--ink-2);
+    margin: 8px 0 24px;
   }
-  .drop p { margin: 6px 0; color: var(--ink-2); }
-  .drop strong { color: var(--navy); }
-  .drop input[type=file] { display: none; }
-
-  .preview { margin-top: 16px; text-align: center; }
-  .preview img {
-    max-width: 100%;
-    max-height: 360px;
+  .scan-illo {
+    margin: 8px auto 28px;
+    width: 132px; height: 132px;
+    border-radius: 50%;
+    background: var(--cream);
+    display: flex; align-items: center; justify-content: center;
     border: 1px solid var(--line);
-    border-radius: 8px;
-    background: white;
   }
-  .filename {
-    font-size: 13px; color: var(--ink-2);
-    margin-top: 8px; word-break: break-all;
+  .scan-illo svg {
+    width: 64px; height: 64px;
+    stroke: var(--navy);
+    fill: none;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .scan-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: stretch;
+    max-width: 320px;
+    margin: 0 auto;
   }
 
-  /* form */
-  label.row {
-    display: block;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--ink);
-    margin: 14px 0 6px;
-  }
-  label.row .req { color: var(--fail); }
-  input[type=text], input[type=number], select {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
+  button.btn {
     font: inherit;
+    font-weight: 600;
+    border-radius: 10px;
+    cursor: pointer;
+    padding: 14px 22px;
+    border: 1px solid var(--line);
     background: white;
+    color: var(--navy);
+    transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.05s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
   }
-  input[type=text]:focus, input[type=number]:focus, select:focus {
-    outline: 2px solid var(--amber);
-    outline-offset: -1px;
-    border-color: var(--amber);
+  button.btn:hover { border-color: var(--amber); }
+  button.btn:active { transform: translateY(1px); }
+  button.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.btn.primary {
+    background: var(--navy);
+    color: var(--cream);
+    border-color: var(--navy);
+    font-size: 16px;
+    padding: 16px 24px;
+    letter-spacing: 0.3px;
   }
-  .checkbox {
-    display: flex; align-items: center; gap: 10px;
-    margin: 14px 0 6px;
-    font-size: 14px;
+  button.btn.primary:hover { background: var(--navy-2); border-color: var(--navy-2); }
+  button.btn svg {
+    width: 18px; height: 18px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
-  .checkbox input { width: 18px; height: 18px; }
 
-  /* sample buttons */
-  .samples {
-    display: flex; flex-wrap: wrap; gap: 8px;
-    margin: 16px 0 20px;
+  .samples-row {
+    margin-top: 28px;
+    padding-top: 22px;
+    border-top: 1px dashed var(--line);
   }
-  .samples button {
+  .samples-row .label {
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--na);
+    margin-bottom: 10px;
+  }
+  .samples-row .chips {
+    display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+  }
+  .samples-row button {
     background: var(--cream);
     border: 1px solid var(--line);
     color: var(--navy);
-    padding: 8px 12px;
+    padding: 7px 12px;
     border-radius: 999px;
     font: inherit;
-    font-size: 13px;
+    font-size: 12px;
     cursor: pointer;
+    font-weight: 500;
   }
-  .samples button:hover { border-color: var(--amber); background: white; }
+  .samples-row button:hover { border-color: var(--amber); background: white; }
+  .samples-row .chip-tag {
+    display: inline-block;
+    font-size: 10px;
+    letter-spacing: 1px;
+    margin-right: 6px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .chip-tag.pass { color: var(--pass); background: var(--pass-bg); }
+  .chip-tag.warn { color: var(--warn); background: var(--warn-bg); }
+  .chip-tag.fail { color: var(--fail); background: var(--fail-bg); }
+  .chip-tag.unreadable { color: var(--advisory); background: var(--advisory-bg); }
 
-  /* verify button */
-  .actions {
-    margin-top: 28px;
-    display: flex; align-items: center; gap: 16px;
+  .scan-error {
+    color: var(--fail);
+    background: var(--fail-bg);
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-top: 16px;
+    font-size: 13px;
+  }
+
+  /* ─── Progress view ──────────────────────────────────────── */
+  .progress-card {
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 32px 28px;
+    text-align: center;
+  }
+  .progress-thumb-wrap {
+    margin: 0 auto 22px;
+    width: 220px;
+    max-width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 14px;
+    overflow: hidden;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    position: relative;
+  }
+  .progress-thumb-wrap img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+  }
+  .progress-scanline {
+    position: absolute;
+    left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--amber), transparent);
+    box-shadow: 0 0 12px var(--amber);
+    animation: scan 1.4s ease-in-out infinite;
+  }
+  @keyframes scan {
+    0%   { top: 6%;  opacity: 0; }
+    10%  { opacity: 1; }
+    90%  { opacity: 1; }
+    100% { top: 94%; opacity: 0; }
+  }
+  .progress-title {
+    font-size: 18px;
+    color: var(--navy);
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .progress-sub {
+    color: var(--ink-2);
+    font-size: 13px;
+    margin-bottom: 22px;
+  }
+  .progress-steps {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    gap: 6px;
     flex-wrap: wrap;
   }
-  button.primary {
-    background: var(--navy);
-    color: var(--cream);
-    border: none;
-    padding: 14px 32px;
-    border-radius: 10px;
-    font: inherit;
-    font-weight: 700;
-    font-size: 16px;
-    letter-spacing: 0.3px;
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-  button.primary:hover:not(:disabled) { background: var(--navy-2); }
-  button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .status-line { font-size: 14px; color: var(--ink-2); }
-
-  /* results */
-  .results { margin-top: 36px; }
-  .verdict {
-    display: inline-flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 24px;
-    border-radius: 10px;
-    font-weight: 700;
-    font-size: 18px;
+  .progress-steps li {
+    font-size: 12px;
     letter-spacing: 1px;
     text-transform: uppercase;
-    margin-bottom: 24px;
+    color: var(--na);
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
   }
-  .verdict .dot {
-    width: 12px; height: 12px; border-radius: 50%;
+  .progress-steps li .pdot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--line);
   }
-  .verdict.pass      { color: var(--pass);     background: var(--pass-bg); }
-  .verdict.pass .dot { background: var(--pass); }
-  .verdict.warn      { color: var(--warn);     background: var(--warn-bg); }
-  .verdict.warn .dot { background: var(--warn); }
-  .verdict.fail      { color: var(--fail);     background: var(--fail-bg); }
-  .verdict.fail .dot { background: var(--fail); }
-  .verdict.advisory  { color: var(--advisory); background: var(--advisory-bg); }
-  .verdict.advisory .dot { background: var(--advisory); }
-  .verdict.unreadable { color: var(--warn); background: var(--warn-bg); }
-  .verdict.unreadable .dot { background: var(--warn); }
-  .verdict.na        { color: var(--na);       background: var(--na-bg); }
+  .progress-steps li.active {
+    color: var(--navy);
+    background: white;
+    border-color: var(--amber);
+  }
+  .progress-steps li.active .pdot {
+    background: var(--amber);
+    box-shadow: 0 0 0 3px rgba(170, 120, 50, 0.18);
+  }
+  .progress-steps li.done {
+    color: var(--pass);
+    background: var(--pass-bg);
+    border-color: var(--pass-bg);
+  }
+  .progress-steps li.done .pdot {
+    background: var(--pass);
+  }
 
-  .timing {
-    margin-left: 12px; font-size: 13px;
-    color: var(--ink-2); font-weight: 500;
-    text-transform: none; letter-spacing: 0;
+  /* ─── Result view ────────────────────────────────────────── */
+  .verdict-card {
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 28px 28px 24px;
+    text-align: center;
   }
+  .verdict-card.pass       { border-top: 6px solid var(--pass); }
+  .verdict-card.warn       { border-top: 6px solid var(--warn); }
+  .verdict-card.fail       { border-top: 6px solid var(--fail); }
+  .verdict-card.advisory   { border-top: 6px solid var(--advisory); }
+  .verdict-card.unreadable { border-top: 6px solid var(--warn); }
+  .verdict-card.na         { border-top: 6px solid var(--na); }
 
-  .rules ul, .extracted ul { list-style: none; padding: 0; margin: 0; }
-  .rule {
+  .verdict-glyph {
+    width: 72px; height: 72px;
+    border-radius: 50%;
+    margin: 0 auto 14px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .verdict-glyph svg {
+    width: 38px; height: 38px;
+    stroke: white;
+    fill: none;
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .verdict-card.pass       .verdict-glyph { background: var(--pass); }
+  .verdict-card.warn       .verdict-glyph { background: var(--warn); }
+  .verdict-card.fail       .verdict-glyph { background: var(--fail); }
+  .verdict-card.advisory   .verdict-glyph { background: var(--advisory); }
+  .verdict-card.unreadable .verdict-glyph { background: var(--warn); }
+  .verdict-card.na         .verdict-glyph { background: var(--na); }
+
+  .verdict-word {
+    font-size: 36px;
+    font-weight: 800;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    margin: 0;
+    line-height: 1;
+  }
+  .verdict-card.pass       .verdict-word { color: var(--pass); }
+  .verdict-card.warn       .verdict-word { color: var(--warn); }
+  .verdict-card.fail       .verdict-word { color: var(--fail); }
+  .verdict-card.advisory   .verdict-word { color: var(--advisory); }
+  .verdict-card.unreadable .verdict-word { color: var(--warn); }
+  .verdict-card.na         .verdict-word { color: var(--na); }
+
+  .verdict-headline {
+    margin: 14px 0 0;
+    font-size: 16px;
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .verdict-meta {
+    margin-top: 14px;
+    font-size: 12px;
+    color: var(--ink-2);
+    letter-spacing: 0.3px;
+  }
+  .verdict-meta .dotsep { margin: 0 6px; color: var(--line); }
+
+  .result-grid {
+    margin-top: 18px;
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 22px;
+    display: grid;
+    grid-template-columns: 168px 1fr;
+    gap: 22px;
+    align-items: start;
+  }
+  @media (max-width: 540px) {
+    .result-grid { grid-template-columns: 1fr; }
+  }
+  .result-thumb-wrap {
     border: 1px solid var(--line);
     border-radius: 10px;
-    padding: 14px 18px;
-    margin-bottom: 10px;
-    background: white;
+    overflow: hidden;
+    background: var(--paper);
+    aspect-ratio: 1 / 1;
   }
+  .result-thumb-wrap img {
+    width: 100%; height: 100%; object-fit: cover;
+  }
+  .result-info dl {
+    margin: 8px 0 0;
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    column-gap: 14px;
+    row-gap: 9px;
+  }
+  .result-info dt {
+    font-size: 11px;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    align-self: center;
+  }
+  .result-info dd {
+    margin: 0;
+    color: var(--ink);
+    font-weight: 500;
+    word-break: break-word;
+  }
+  .result-info dd.unreadable { color: var(--warn); font-style: italic; font-weight: 400; }
+  .result-info dd .conf {
+    margin-left: 8px;
+    font-size: 11px;
+    color: var(--na);
+    font-weight: 400;
+  }
+
+  details.findings {
+    margin-top: 16px;
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+  }
+  details.findings summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 16px 22px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    color: var(--navy);
+    user-select: none;
+  }
+  details.findings summary::-webkit-details-marker { display: none; }
+  details.findings summary::after {
+    content: "▾";
+    margin-left: auto;
+    color: var(--ink-2);
+    transition: transform 0.15s;
+  }
+  details.findings[open] summary::after { transform: rotate(180deg); }
+  details.findings .findings-body {
+    padding: 0 22px 18px;
+  }
+  .findings-body ul { list-style: none; padding: 0; margin: 0; }
+  .rule {
+    border-top: 1px solid var(--line);
+    padding: 12px 0;
+  }
+  .rule:first-child { border-top: none; }
   .rule-head {
-    display: flex; align-items: center; gap: 12px;
+    display: flex; align-items: center; gap: 10px;
     flex-wrap: wrap;
   }
   .pill {
     display: inline-block;
-    padding: 3px 10px;
+    padding: 3px 9px;
     border-radius: 999px;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 1px;
     text-transform: uppercase;
@@ -232,318 +451,954 @@
   .pill.warn { color: var(--warn); background: var(--warn-bg); }
   .pill.fail { color: var(--fail); background: var(--fail-bg); }
   .pill.advisory { color: var(--advisory); background: var(--advisory-bg); }
+  .pill.unreadable { color: var(--warn); background: var(--warn-bg); }
   .pill.na { color: var(--na); background: var(--na-bg); }
   .rule-id {
     font-family: ui-monospace, SF Mono, Menlo, monospace;
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+  .rule-citation {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--ink-2);
+  }
+  .rule-finding, .rule-expected, .rule-fix {
+    margin-top: 6px;
     font-size: 13px;
     color: var(--ink-2);
+    padding-left: 10px;
+    border-left: 2px solid var(--line);
   }
-  .citation {
-    margin-left: auto;
-    font-size: 12px;
-    color: var(--ink-2);
+  .rule-finding strong, .rule-expected strong, .rule-fix strong {
+    color: var(--ink);
+    font-weight: 600;
+    margin-right: 4px;
   }
-  .rule-desc { margin: 8px 0 0; font-size: 14px; }
-  .rule-finding {
-    margin-top: 8px; font-size: 13px;
-    color: var(--ink-2);
-    padding: 8px 10px;
-    background: var(--paper);
-    border-left: 3px solid var(--line);
-    border-radius: 0 4px 4px 0;
-  }
-  .rule-finding strong { color: var(--ink); }
 
-  .extracted-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  .result-actions {
+    margin-top: 22px;
+    display: flex;
     gap: 12px;
-    margin-top: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
   }
-  .field {
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 12px 14px;
+
+  /* ─── Camera modal (preserved from prior build) ─────────── */
+  .cam-modal {
+    position: fixed;
+    inset: 0;
+    background: #000;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    overscroll-behavior: contain;
+  }
+  .cam-stage {
+    position: relative;
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .cam-stage video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: #000;
+  }
+  .cam-frame { position: absolute; inset: 0; pointer-events: none; }
+  .cam-frame::before {
+    content: "";
+    position: absolute;
+    top: 12%; left: 8%; right: 8%; bottom: 22%;
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 12px;
+    box-shadow: 0 0 0 9999px rgba(0,0,0,0.35);
+  }
+  .cam-frame .corner {
+    position: absolute;
+    width: 28px; height: 28px;
+    border-color: var(--amber);
+    border-style: solid;
+    border-width: 0;
+  }
+  .cam-frame .corner.tl { top: 12%; left: 8%; border-top-width: 3px; border-left-width: 3px; border-top-left-radius: 12px; transform: translate(-1px,-1px); }
+  .cam-frame .corner.tr { top: 12%; right: 8%; border-top-width: 3px; border-right-width: 3px; border-top-right-radius: 12px; transform: translate(1px,-1px); }
+  .cam-frame .corner.bl { bottom: 22%; left: 8%; border-bottom-width: 3px; border-left-width: 3px; border-bottom-left-radius: 12px; transform: translate(-1px,1px); }
+  .cam-frame .corner.br { bottom: 22%; right: 8%; border-bottom-width: 3px; border-right-width: 3px; border-bottom-right-radius: 12px; transform: translate(1px,1px); }
+  .cam-bar {
+    position: absolute;
+    left: 0; right: 0;
+    display: flex;
+    align-items: center;
+    padding: 16px 20px;
+    gap: 12px;
+    z-index: 1;
+  }
+  .cam-bar-top {
+    top: 0;
+    justify-content: space-between;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.55), transparent);
+  }
+  .cam-bar-bottom {
+    bottom: 0;
+    flex-direction: column;
+    background: linear-gradient(to top, rgba(0,0,0,0.55), transparent);
+    padding-bottom: max(28px, env(safe-area-inset-bottom));
+  }
+  .cam-icon-btn {
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.4);
+    border: 1px solid rgba(255,255,255,0.25);
+    color: white;
+    font: inherit;
+    font-size: 20px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+  .cam-icon-btn:hover { background: rgba(0,0,0,0.6); }
+  .cam-icon-btn[aria-pressed="true"] {
+    background: var(--amber);
+    border-color: var(--amber);
+  }
+  .cam-shutter {
+    width: 72px; height: 72px;
+    border-radius: 50%;
+    border: 4px solid white;
     background: white;
+    cursor: pointer;
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.25);
+    transition: transform 0.08s;
+  }
+  .cam-shutter:hover { transform: scale(1.04); }
+  .cam-shutter:active { transform: scale(0.94); }
+  .cam-shutter:disabled { opacity: 0.5; cursor: not-allowed; }
+  .cam-hint {
+    color: white;
+    font-size: 13px;
+    letter-spacing: 0.3px;
+    margin-bottom: 18px;
+    background: rgba(0,0,0,0.45);
+    padding: 6px 14px;
+    border-radius: 999px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+  }
+  .cam-error {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.85);
+    color: white;
+    text-align: center;
+    padding: 32px;
+    z-index: 2;
+  }
+  .cam-error-inner { max-width: 320px; }
+  .cam-error h3 { color: white; margin: 0 0 8px; font-size: 17px; }
+  .cam-error p { margin: 0 0 18px; color: rgba(255,255,255,0.8); font-size: 14px; }
+  .cam-error button {
+    background: white; color: var(--navy);
+    border: none; border-radius: 8px;
+    padding: 10px 20px; font: inherit;
+    font-weight: 600; cursor: pointer;
+  }
+  .cam-spinner {
+    color: rgba(255,255,255,0.85);
     font-size: 14px;
+    background: rgba(0,0,0,0.5);
+    padding: 8px 14px;
+    border-radius: 999px;
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
   }
-  .field h4 {
-    margin: 0 0 6px;
-    font-size: 11px;
-    letter-spacing: 1.5px;
-    text-transform: uppercase;
-    color: var(--ink-2);
-  }
-  .field-value { font-weight: 500; word-break: break-word; }
-  .field-value.unreadable { color: var(--warn); font-style: italic; }
-  .field-meta {
-    margin-top: 6px;
-    font-size: 12px;
-    color: var(--ink-2);
-  }
-
-  .error {
-    color: var(--fail);
-    background: var(--fail-bg);
-    padding: 12px 16px;
-    border-radius: 8px;
-    margin-top: 16px;
-  }
-
-  .section-head {
-    display: flex; align-items: baseline;
-    gap: 16px; margin: 24px 0 12px;
-  }
-  .section-head h2 { color: var(--navy); }
-  .section-head .hint { font-size: 13px; color: var(--ink-2); }
+  body.cam-open { overflow: hidden; }
 </style>
 </head>
 <body>
 <header>
   <img src="/static/wordmark.svg" alt="Proofread" />
-  <div class="role-tag">TTB Compliance Reviewer</div>
+  <div class="role-tag">Label Scanner</div>
 </header>
 
 <main>
-  <h1>Verify a label</h1>
-  <p class="subtitle">
-    Drop a label image, paste the application metadata, click Verify.
-    The result lists each TTB rule with its citation and tells you what differs.
-  </p>
+  <!-- ── View 1: Scan ──────────────────────────────────────────── -->
+  <section class="view" id="view-scan">
+    <div class="scan-card">
+      <div class="scan-illo" aria-hidden="true">
+        <!-- can outline -->
+        <svg viewBox="0 0 64 64">
+          <path d="M20 12 q12 -3 24 0 v40 q-12 3 -24 0 z" />
+          <path d="M20 12 q12 3 24 0" />
+          <path d="M20 52 q12 3 24 0" />
+          <path d="M27 22 h10 M27 30 h10 M27 38 h6" />
+        </svg>
+      </div>
+      <h1>Scan a label</h1>
+      <p class="lede">
+        Point your camera at the front of the can. We'll read the label and
+        check it against the TTB requirements for malt beverages.
+      </p>
 
-  <section class="samples">
-    <strong style="font-size:13px;color:var(--ink-2);align-self:center;margin-right:8px;">SAMPLES</strong>
-    <button data-sample="pass">PASS — Old Tom Bourbon</button>
-    <button data-sample="warn">WARN — Stone's Throw Gin</button>
-    <button data-sample="fail">FAIL — Mountain Crest IPA</button>
-    <button data-sample="unreadable">UNREADABLE — Heritage Cabernet</button>
+      <div class="scan-actions">
+        <button type="button" class="btn primary" id="cameraBtn">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h3l2-2h6l2 2h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          Open camera
+        </button>
+        <button type="button" class="btn" id="browseBtn">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 5 17 10"/>
+            <line x1="12" y1="5" x2="12" y2="15"/>
+          </svg>
+          Upload a photo
+        </button>
+        <input type="file" id="file" accept="image/*" hidden />
+        <input type="file" id="fileCapture" accept="image/*" capture="environment" hidden />
+      </div>
+
+      <div class="samples-row">
+        <div class="label">Or try a sample</div>
+        <div class="chips">
+          <button type="button" data-sample="pass"><span class="chip-tag pass">PASS</span>Old Tom Bourbon</button>
+          <button type="button" data-sample="warn"><span class="chip-tag warn">WARN</span>Stone's Throw Gin</button>
+          <button type="button" data-sample="fail"><span class="chip-tag fail">FAIL</span>Mountain Crest IPA</button>
+          <button type="button" data-sample="unreadable"><span class="chip-tag unreadable">UNREAD</span>Heritage Cabernet</button>
+        </div>
+      </div>
+
+      <div class="scan-error" id="scanError" hidden></div>
+    </div>
   </section>
 
-  <div class="grid">
-    <div class="card">
-      <h2>Label image</h2>
-      <label for="file" class="drop" id="drop">
-        <p><strong>Drop an image here</strong></p>
-        <p>or click to browse — PNG or JPEG</p>
-        <input type="file" id="file" accept="image/*" />
-      </label>
-      <div class="preview" id="preview" hidden>
-        <img id="previewImg" alt="label preview" />
-        <div class="filename" id="filename"></div>
+  <!-- ── View 2: Progress (identifying → verifying) ────────────── -->
+  <section class="view" id="view-progress" hidden>
+    <div class="progress-card">
+      <div class="progress-thumb-wrap">
+        <img id="progressThumb" alt="captured label" />
+        <div class="progress-scanline"></div>
+      </div>
+      <div class="progress-title" id="progressTitle">Reading the label…</div>
+      <div class="progress-sub" id="progressSub">Identifying brand, class, ABV, net contents, and the Government Warning.</div>
+      <ol class="progress-steps" id="progressSteps">
+        <li data-step="capture"><span class="pdot"></span>Captured</li>
+        <li data-step="identify"><span class="pdot"></span>Identifying</li>
+        <li data-step="verify"><span class="pdot"></span>Verifying</li>
+        <li data-step="result"><span class="pdot"></span>Result</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ── View 3: Result ────────────────────────────────────────── -->
+  <section class="view" id="view-result" hidden>
+    <div class="verdict-card" id="verdictCard">
+      <div class="verdict-glyph" id="verdictGlyph"></div>
+      <p class="verdict-word" id="verdictWord">PASS</p>
+      <p class="verdict-headline" id="verdictHeadline"></p>
+      <div class="verdict-meta" id="verdictMeta"></div>
+    </div>
+
+    <div class="result-grid" id="resultGrid">
+      <div class="result-thumb-wrap">
+        <img id="resultThumb" alt="captured label" />
+      </div>
+      <div class="result-info">
+        <h3>Identified on the label</h3>
+        <dl id="resultFields"></dl>
       </div>
     </div>
 
-    <div class="card">
-      <h2>Application metadata</h2>
-
-      <label class="row" for="bevType">Beverage type <span class="req">*</span></label>
-      <select id="bevType">
-        <option value="spirits">Distilled spirits</option>
-        <option value="beer">Beer / malt beverage</option>
-        <option value="wine">Wine</option>
-      </select>
-
-      <label class="row" for="brandName">Brand name <span class="req">*</span></label>
-      <input type="text" id="brandName" placeholder="e.g. Old Tom Distillery" />
-
-      <label class="row" for="classType">Class / type <span class="req">*</span></label>
-      <input type="text" id="classType" placeholder="e.g. Kentucky Straight Bourbon Whiskey" />
-
-      <label class="row" for="alcoholContent">Alcohol content (ABV %) <span class="req">*</span></label>
-      <input type="text" id="alcoholContent" placeholder="e.g. 45 or 45.0" />
-
-      <label class="row" for="netContents">Net contents <span class="req">*</span></label>
-      <input type="text" id="netContents" placeholder="e.g. 750 mL" />
-
-      <label class="row" for="nameAddress">Bottler / producer name &amp; address</label>
-      <input type="text" id="nameAddress" placeholder="e.g. Old Tom Distilling Co., Bardstown, KY" />
-
-      <label class="row" for="containerSize">Container size (mL) <span class="req">*</span></label>
-      <input type="number" id="containerSize" value="750" min="1" max="10000" />
-
-      <div class="checkbox">
-        <input type="checkbox" id="isImported" />
-        <label for="isImported">Imported (requires country of origin)</label>
+    <details class="findings" id="findings">
+      <summary><span id="findingsSummary">Rule findings</span></summary>
+      <div class="findings-body">
+        <ul id="rulesList"></ul>
       </div>
+    </details>
 
-      <label class="row" for="countryOrigin">Country of origin</label>
-      <input type="text" id="countryOrigin" placeholder="e.g. USA, Mexico, Scotland" />
+    <div class="result-actions">
+      <button type="button" class="btn primary" id="scanAgainBtn">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+          <polyline points="21 3 21 8 16 8" />
+          <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+          <polyline points="3 21 3 16 8 16" />
+        </svg>
+        Scan another
+      </button>
     </div>
-  </div>
-
-  <div class="actions">
-    <button class="primary" id="verifyBtn">Verify label</button>
-    <span class="status-line" id="status"></span>
-  </div>
-
-  <div class="results" id="results" hidden></div>
+  </section>
 </main>
 
+<!-- ── Camera modal ────────────────────────────────────────────── -->
+<div class="cam-modal" id="camModal" hidden aria-modal="true" role="dialog" aria-label="Camera">
+  <div class="cam-stage">
+    <video id="camVideo" autoplay playsinline muted></video>
+    <div class="cam-frame" id="camGuide" hidden>
+      <span class="corner tl"></span>
+      <span class="corner tr"></span>
+      <span class="corner bl"></span>
+      <span class="corner br"></span>
+    </div>
+    <div class="cam-spinner" id="camSpinner">Starting camera…</div>
+    <div class="cam-bar cam-bar-top">
+      <button type="button" class="cam-icon-btn" id="camCancel" aria-label="Close camera">✕</button>
+      <button type="button" class="cam-icon-btn" id="camTorch" aria-label="Toggle torch" aria-pressed="false" hidden>⚡</button>
+      <button type="button" class="cam-icon-btn" id="camFlip" aria-label="Switch camera" hidden>⤺</button>
+    </div>
+    <div class="cam-bar cam-bar-bottom" id="camBottomBar" hidden>
+      <span class="cam-hint">Center the label inside the frame</span>
+      <button type="button" class="cam-shutter" id="camShutter" aria-label="Capture photo"></button>
+    </div>
+    <div class="cam-error" id="camError" hidden>
+      <div class="cam-error-inner">
+        <h3 id="camErrorTitle">Camera unavailable</h3>
+        <p id="camErrorMsg">We couldn't access the camera.</p>
+        <button type="button" id="camErrorClose">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
+// ─── Sample fixtures ───────────────────────────────────────────
 const SAMPLES = {
   pass: {
     image: "/static/samples/01_pass_old_tom_distillery.png",
-    bev: "spirits",
-    brand: "Old Tom Distillery",
-    classType: "Kentucky Straight Bourbon Whiskey",
-    abv: "45",
-    net: "750 mL",
-    addr: "Old Tom Distilling Co., Bardstown, Kentucky",
-    container: 750,
-    imported: false,
-    country: "",
+    bev: "spirits", container: 750, imported: false,
   },
   warn: {
     image: "/static/samples/02_warn_stones_throw_gin.png",
-    bev: "spirits",
-    brand: "Stone's Throw",
-    classType: "London Dry Gin",
-    abv: "41.5",
-    net: "750 mL",
-    addr: "Stone's Throw Distilling Co., Portland, OR",
-    container: 750,
-    imported: false,
-    country: "",
+    bev: "spirits", container: 750, imported: false,
   },
   fail: {
     image: "/static/samples/03_fail_mountain_crest_ipa.png",
-    bev: "beer",
-    brand: "Mountain Crest",
-    classType: "IPA",
-    abv: "6.8",
-    net: "16 FL OZ",
-    addr: "Mountain Crest Brewing Co., Bend, Oregon",
-    container: 473,
-    imported: false,
-    country: "",
+    bev: "beer", container: 473, imported: false,
   },
   unreadable: {
     image: "/static/samples/04_unreadable_heritage_vineyards.png",
-    bev: "wine",
-    brand: "Heritage Vineyards",
-    classType: "Cabernet Sauvignon",
-    abv: "14.2",
-    net: "750 mL",
-    addr: "Heritage Vineyards, Oakville, CA",
-    container: 750,
-    imported: false,
-    country: "",
+    bev: "wine", container: 750, imported: false,
   },
 };
 
-let currentImageBlob = null;
-let currentImageType = "image/png";
-let currentImageName = null;
+// ─── State ─────────────────────────────────────────────────────
+const state = {
+  imageBlob: null,
+  imageType: "image/png",
+  imageName: null,
+  imageUrl: null,        // object URL for preview (revoked on reset)
+  beverageType: "beer",  // default for live captures
+  containerMl: 355,      // 12 oz US can
+  isImported: false,
+};
 
 const $ = (id) => document.getElementById(id);
 
-function setPreview(url, name) {
-  $("preview").hidden = false;
-  $("previewImg").src = url;
-  $("filename").textContent = name || "";
+// ─── View switching ────────────────────────────────────────────
+function showView(name) {
+  for (const v of ["scan", "progress", "result"]) {
+    $("view-" + v).hidden = v !== name;
+  }
 }
 
-function setForm(s) {
-  $("bevType").value = s.bev;
-  $("brandName").value = s.brand;
-  $("classType").value = s.classType;
-  $("alcoholContent").value = s.abv;
-  $("netContents").value = s.net;
-  $("nameAddress").value = s.addr;
-  $("containerSize").value = s.container;
-  $("isImported").checked = s.imported;
-  $("countryOrigin").value = s.country;
-}
-
+// ─── Sample loading ────────────────────────────────────────────
 async function loadSample(key) {
   const s = SAMPLES[key];
-  setForm(s);
-  const res = await fetch(s.image);
-  const blob = await res.blob();
-  currentImageBlob = blob;
-  currentImageType = blob.type || "image/png";
-  currentImageName = s.image.split("/").pop();
-  setPreview(URL.createObjectURL(blob), currentImageName);
-  $("status").textContent = `Loaded sample: ${key.toUpperCase()}`;
+  if (!s) return;
+  hideScanError();
+  try {
+    const res = await fetch(s.image);
+    if (!res.ok) throw new Error(`couldn't load sample (${res.status})`);
+    const blob = await res.blob();
+    setImage(blob, s.image.split("/").pop(), blob.type || "image/png");
+    state.beverageType = s.bev;
+    state.containerMl = s.container;
+    state.isImported = s.imported;
+    runVerification();
+  } catch (err) {
+    showScanError(err.message || String(err));
+  }
 }
 
-document.querySelectorAll(".samples button").forEach((btn) => {
+document.querySelectorAll(".samples-row [data-sample]").forEach((btn) => {
   btn.addEventListener("click", () => loadSample(btn.dataset.sample));
 });
 
-const drop = $("drop");
-drop.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  drop.classList.add("over");
-});
-drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-drop.addEventListener("drop", (e) => {
-  e.preventDefault();
-  drop.classList.remove("over");
-  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
-});
+// ─── File / camera entry points ────────────────────────────────
+$("browseBtn").addEventListener("click", () => $("file").click());
 $("file").addEventListener("change", (e) => {
   if (e.target.files.length) handleFile(e.target.files[0]);
 });
+$("fileCapture").addEventListener("change", (e) => {
+  if (e.target.files.length) handleFile(e.target.files[0]);
+});
 
-function handleFile(file) {
-  if (!file.type.startsWith("image/")) {
-    $("status").textContent = "Please choose an image file.";
+window.addEventListener("paste", (e) => {
+  if (!e.clipboardData) return;
+  for (const item of e.clipboardData.items) {
+    if (item.type && item.type.startsWith("image/")) {
+      const file = item.getAsFile();
+      if (file) {
+        handleFile(file);
+        e.preventDefault();
+        return;
+      }
+    }
+  }
+});
+
+async function handleFile(file) {
+  hideScanError();
+  if (!file.type || !file.type.startsWith("image/")) {
+    showScanError("Please choose an image file.");
     return;
   }
-  currentImageBlob = file;
-  currentImageType = file.type;
-  currentImageName = file.name;
-  setPreview(URL.createObjectURL(file), file.name);
-  $("status").textContent = "";
+  resetLiveDefaults();
+  const normalized = await normalizeImage(file).catch(() => null);
+  const blob = normalized?.blob ?? file;
+  const name = normalized
+    ? renameExt(file.name || "label.jpg", "jpg")
+    : (file.name || "label.png");
+  setImage(blob, name, blob.type || file.type || "image/jpeg");
+  runVerification();
 }
 
-$("verifyBtn").addEventListener("click", verify);
+function resetLiveDefaults() {
+  state.beverageType = "beer";
+  state.containerMl = 355;
+  state.isImported = false;
+}
 
-async function verify() {
-  if (!currentImageBlob) {
-    $("status").textContent = "Pick an image first (or click a sample).";
+function setImage(blob, name, type) {
+  if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+  state.imageBlob = blob;
+  state.imageName = name;
+  state.imageType = type;
+  state.imageUrl = URL.createObjectURL(blob);
+}
+
+function renameExt(name, ext) {
+  return name.replace(/\.[^./\\]+$/, "") + "." + ext;
+}
+
+async function normalizeImage(source, { maxEdge = 2048, quality = 0.92 } = {}) {
+  // createImageBitmap with imageOrientation:"from-image" applies EXIF
+  // rotation so portrait phone shots arrive upright.
+  const bitmap = await createImageBitmap(source, { imageOrientation: "from-image" });
+  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+  const w = Math.round(bitmap.width * scale);
+  const h = Math.round(bitmap.height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
+  if (!blob) throw new Error("Encoder failed");
+  return { blob, width: w, height: h };
+}
+
+function showScanError(msg) {
+  const e = $("scanError");
+  e.hidden = false;
+  e.textContent = msg;
+}
+function hideScanError() {
+  $("scanError").hidden = true;
+  $("scanError").textContent = "";
+}
+
+// ─── Camera capture ────────────────────────────────────────────
+const SUPPORTS_GUM = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+const SUPPORTS_NATIVE_CAPTURE = (() => {
+  const i = document.createElement("input");
+  i.type = "file";
+  return "capture" in i;
+})();
+
+if (!SUPPORTS_GUM && !SUPPORTS_NATIVE_CAPTURE) {
+  // No camera path at all — hide the camera button so only Upload remains.
+  $("cameraBtn").hidden = true;
+}
+
+$("cameraBtn").addEventListener("click", () => {
+  if (SUPPORTS_GUM) openCamera();
+  else $("fileCapture").click();
+});
+
+let camStream = null;
+let camFacing = "environment";
+let camTrack = null;
+
+async function openCamera() {
+  const modal = $("camModal");
+  $("camError").hidden = true;
+  $("camSpinner").hidden = false;
+  $("camGuide").hidden = true;
+  $("camBottomBar").hidden = true;
+  $("camShutter").disabled = true;
+  modal.hidden = false;
+  document.body.classList.add("cam-open");
+  try {
+    await startStream(camFacing);
+    await waitForVideoReady($("camVideo"));
+    $("camSpinner").hidden = true;
+    $("camGuide").hidden = false;
+    $("camBottomBar").hidden = false;
+    $("camShutter").disabled = false;
+    await maybeShowFlip();
+    setupTorchControl();
+  } catch (err) {
+    showCamError(err);
+  }
+}
+
+async function startStream(facing) {
+  stopStream();
+  const constraints = {
+    audio: false,
+    video: {
+      facingMode: { ideal: facing },
+      width: { ideal: 1920 },
+      height: { ideal: 1440 },
+    },
+  };
+  camStream = await navigator.mediaDevices.getUserMedia(constraints);
+  camTrack = camStream.getVideoTracks()[0] || null;
+  $("camVideo").srcObject = camStream;
+  const settings = camTrack?.getSettings?.() || {};
+  if (settings.facingMode) camFacing = settings.facingMode;
+}
+
+function stopStream() {
+  if (camStream) {
+    camStream.getTracks().forEach((t) => t.stop());
+    camStream = null;
+    camTrack = null;
+  }
+  $("camVideo").srcObject = null;
+}
+
+function waitForVideoReady(v) {
+  if (v.readyState >= 2 && v.videoWidth > 0) return Promise.resolve();
+  return new Promise((res) => {
+    const done = () => {
+      v.removeEventListener("loadedmetadata", done);
+      v.removeEventListener("loadeddata", done);
+      res();
+    };
+    v.addEventListener("loadedmetadata", done, { once: true });
+    v.addEventListener("loadeddata", done, { once: true });
+  });
+}
+
+async function maybeShowFlip() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter((d) => d.kind === "videoinput");
+    $("camFlip").hidden = cams.length < 2;
+  } catch {
+    $("camFlip").hidden = true;
+  }
+}
+
+function setupTorchControl() {
+  const torchBtn = $("camTorch");
+  torchBtn.hidden = true;
+  torchBtn.setAttribute("aria-pressed", "false");
+  if (!camTrack || typeof camTrack.getCapabilities !== "function") return;
+  const caps = camTrack.getCapabilities();
+  if (caps && caps.torch) torchBtn.hidden = false;
+}
+
+$("camTorch").addEventListener("click", async () => {
+  if (!camTrack) return;
+  const btn = $("camTorch");
+  const on = btn.getAttribute("aria-pressed") === "true";
+  try {
+    await camTrack.applyConstraints({ advanced: [{ torch: !on }] });
+    btn.setAttribute("aria-pressed", String(!on));
+  } catch (err) {
+    console.warn("Torch toggle failed", err);
+  }
+});
+
+$("camFlip").addEventListener("click", async () => {
+  $("camShutter").disabled = true;
+  $("camSpinner").hidden = false;
+  try {
+    camFacing = camFacing === "environment" ? "user" : "environment";
+    await startStream(camFacing);
+    await waitForVideoReady($("camVideo"));
+    setupTorchControl();
+  } catch (err) {
+    showCamError(err);
+    return;
+  } finally {
+    $("camSpinner").hidden = true;
+    $("camShutter").disabled = false;
+  }
+});
+
+$("camCancel").addEventListener("click", closeCamera);
+$("camErrorClose").addEventListener("click", closeCamera);
+
+document.addEventListener("keydown", (e) => {
+  if ($("camModal").hidden) return;
+  if (e.key === "Escape") closeCamera();
+});
+
+$("camShutter").addEventListener("click", capturePhoto);
+
+async function capturePhoto() {
+  const v = $("camVideo");
+  const w = v.videoWidth;
+  const h = v.videoHeight;
+  if (!w || !h) return;
+  $("camShutter").disabled = true;
+  const maxEdge = 2048;
+  const scale = Math.min(1, maxEdge / Math.max(w, h));
+  const dw = Math.round(w * scale);
+  const dh = Math.round(h * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = dw;
+  canvas.height = dh;
+  const ctx = canvas.getContext("2d");
+  if (camFacing === "user") {
+    ctx.translate(dw, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(v, 0, 0, dw, dh);
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.92));
+  if (!blob) {
+    $("camShutter").disabled = false;
+    showCamError(new Error("Failed to capture frame."));
+    return;
+  }
+  const name = `capture-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
+  resetLiveDefaults();
+  setImage(blob, name, "image/jpeg");
+  closeCamera();
+  runVerification();
+}
+
+function closeCamera() {
+  stopStream();
+  $("camModal").hidden = true;
+  document.body.classList.remove("cam-open");
+  $("camError").hidden = true;
+}
+
+function showCamError(err) {
+  $("camSpinner").hidden = true;
+  $("camGuide").hidden = true;
+  $("camBottomBar").hidden = true;
+  const e = $("camError");
+  e.hidden = false;
+  const msg = $("camErrorMsg");
+  const title = $("camErrorTitle");
+  const name = err && err.name ? err.name : "";
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    title.textContent = "Camera permission denied";
+    msg.textContent = "Allow camera access in your browser settings, or upload a photo instead.";
+  } else if (name === "NotFoundError" || name === "OverconstrainedError") {
+    title.textContent = "No camera available";
+    msg.textContent = "We couldn't find a camera on this device. Try uploading a photo instead.";
+  } else if (name === "NotReadableError") {
+    title.textContent = "Camera busy";
+    msg.textContent = "Another app is using the camera. Close it and try again.";
+  } else {
+    title.textContent = "Camera unavailable";
+    msg.textContent = (err && err.message) || "We couldn't start the camera on this device.";
+  }
+  console.warn("Camera error:", err);
+}
+
+// ─── Verification flow ─────────────────────────────────────────
+const STEPS = ["capture", "identify", "verify", "result"];
+
+function setStepState(name, cls) {
+  // cls: "active" | "done" | ""  (clears any other progress class)
+  const el = $("progressSteps").querySelector(`[data-step="${name}"]`);
+  if (!el) return;
+  el.classList.remove("active", "done");
+  if (cls) el.classList.add(cls);
+}
+
+function setProgressLabel(title, sub) {
+  $("progressTitle").textContent = title;
+  $("progressSub").textContent = sub;
+}
+
+async function runVerification() {
+  if (!state.imageBlob) {
+    showScanError("Pick an image first, or tap a sample.");
     return;
   }
 
-  const application = {
-    producer_record: {
-      brand_name: $("brandName").value,
-      class_type: $("classType").value,
-      alcohol_content: $("alcoholContent").value,
-      net_contents: $("netContents").value,
-      name_address: $("nameAddress").value,
-      country_of_origin: $("countryOrigin").value || null,
-    },
-  };
+  // Move to progress view, prime the thumbnail.
+  $("progressThumb").src = state.imageUrl;
+  $("resultThumb").src = state.imageUrl;
+  showView("progress");
+  setStepState("capture", "done");
+  setStepState("identify", "active");
+  setStepState("verify", "");
+  setStepState("result", "");
+  setProgressLabel(
+    "Reading the label…",
+    "Identifying brand, class, ABV, net contents, and the Government Warning."
+  );
 
+  // The backend does identify+verify in one shot. We stage the UI so
+  // the user sees progress: flip to "Verifying" partway through.
+  let stagedToVerify = false;
+  const stageTimer = setTimeout(() => {
+    stagedToVerify = true;
+    setStepState("identify", "done");
+    setStepState("verify", "active");
+    setProgressLabel(
+      "Checking TTB rules…",
+      "Comparing each required element against 27 CFR."
+    );
+  }, 1100);
+
+  // Build the form payload. With no real filing, we send an empty
+  // producer_record — rules check label structure (presence, format,
+  // health-warning text) without cross-referencing a record.
   const fd = new FormData();
-  fd.append("image", currentImageBlob, currentImageName || "label.png");
-  fd.append("beverage_type", $("bevType").value);
-  fd.append("container_size_ml", $("containerSize").value);
-  fd.append("is_imported", $("isImported").checked ? "true" : "false");
-  fd.append("application", JSON.stringify(application));
-
-  $("verifyBtn").disabled = true;
-  $("status").textContent = "Verifying…";
-  $("results").hidden = true;
+  fd.append("image", state.imageBlob, state.imageName || "label.jpg");
+  fd.append("beverage_type", state.beverageType);
+  fd.append("container_size_ml", String(state.containerMl));
+  fd.append("is_imported", state.isImported ? "true" : "false");
+  fd.append("application", JSON.stringify({ producer_record: {} }));
 
   const t0 = performance.now();
   try {
     const res = await fetch("/v1/verify", { method: "POST", body: fd });
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`HTTP ${res.status}: ${text}`);
+      throw await buildVerifyError(res);
     }
     const data = await res.json();
-    renderResults(data, performance.now() - t0);
+    clearTimeout(stageTimer);
+
+    if (!stagedToVerify) {
+      // The response beat our staging timer — give the user a beat to
+      // see "Identifying" finish before showing the result.
+      setStepState("identify", "done");
+      setStepState("verify", "active");
+      setProgressLabel("Checking TTB rules…", "Comparing each required element against 27 CFR.");
+      await sleep(450);
+    }
+    setStepState("verify", "done");
+    setStepState("result", "active");
+    await sleep(220);
+
+    renderResult(data, performance.now() - t0);
+    showView("result");
   } catch (err) {
-    $("results").hidden = false;
-    $("results").innerHTML = `<div class="error"><strong>Verification failed.</strong> ${escapeHtml(err.message)}</div>`;
-  } finally {
-    $("verifyBtn").disabled = false;
-    $("status").textContent = "";
+    clearTimeout(stageTimer);
+    renderError(err);
+    showView("result");
   }
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// ─── Result rendering ──────────────────────────────────────────
+const VERDICT_DISPLAY = {
+  pass:       { word: "PASS",       headline: "Label meets every required TTB element." },
+  warn:       { word: "WARN",       headline: "Label has issues that should be reviewed." },
+  fail:       { word: "FAIL",       headline: "Label is missing or misstating a required element." },
+  advisory:   { word: "ADVISORY",   headline: "Some checks couldn't be made conclusively." },
+  unreadable: { word: "UNREADABLE", headline: "We couldn't read the label clearly. Reshoot, please." },
+  na:         { word: "NO RULES",   headline: "No applicable rules for this beverage type." },
+};
+
+function renderResult(data, clientMs) {
+  const v = (data.overall || "na").toLowerCase();
+  const disp = VERDICT_DISPLAY[v] || { word: v.toUpperCase(), headline: "" };
+
+  $("resultGrid").hidden = false;
+  $("findings").hidden = false;
+
+  const card = $("verdictCard");
+  card.className = "verdict-card " + v;
+  $("verdictGlyph").innerHTML = verdictGlyph(v);
+  $("verdictWord").textContent = disp.word;
+  $("verdictHeadline").textContent = disp.headline;
+
+  const ruleCount = data.rule_results.length;
+  const failed = data.rule_results.filter(r => r.status === "fail").length;
+  const warned = data.rule_results.filter(r => r.status === "warn").length;
+  const advisories = data.rule_results.filter(r => r.status === "advisory").length;
+
+  const metaBits = [
+    `${ruleCount} rule${ruleCount === 1 ? "" : "s"} checked`,
+    failed ? `${failed} failed` : null,
+    warned ? `${warned} warning${warned === 1 ? "" : "s"}` : null,
+    advisories ? `${advisories} advisory` : null,
+    `verified in ${(clientMs / 1000).toFixed(1)}s`,
+  ].filter(Boolean);
+  $("verdictMeta").innerHTML = metaBits.join('<span class="dotsep">•</span>');
+
+  // Identified fields
+  const fieldsEl = $("resultFields");
+  fieldsEl.innerHTML = "";
+  const FIELD_LABELS = {
+    brand_name: "Brand",
+    class_type: "Class / type",
+    alcohol_content: "ABV",
+    net_contents: "Net contents",
+    name_address: "Name & address",
+    country_of_origin: "Country of origin",
+    health_warning: "Health warning",
+  };
+  const order = Object.keys(FIELD_LABELS);
+  for (const key of order) {
+    const f = data.extracted[key];
+    if (!f) continue;
+    const dt = document.createElement("dt");
+    dt.textContent = FIELD_LABELS[key];
+    const dd = document.createElement("dd");
+    if (f.unreadable || f.value == null || f.value === "") {
+      dd.classList.add("unreadable");
+      dd.textContent = "(unreadable)";
+    } else {
+      dd.textContent = key === "health_warning" ? truncate(f.value, 80) : f.value;
+      if (typeof f.confidence === "number" && f.confidence > 0) {
+        const span = document.createElement("span");
+        span.className = "conf";
+        span.textContent = `${Math.round(f.confidence * 100)}%`;
+        dd.appendChild(span);
+      }
+    }
+    fieldsEl.appendChild(dt);
+    fieldsEl.appendChild(dd);
+  }
+
+  // Findings (rule-by-rule)
+  const findingsLabel = failed
+    ? `${failed} failing rule${failed === 1 ? "" : "s"} — view details`
+    : warned
+      ? `${warned} warning${warned === 1 ? "" : "s"} — view details`
+      : `${ruleCount} rule${ruleCount === 1 ? "" : "s"} checked — view details`;
+  $("findingsSummary").textContent = findingsLabel;
+
+  const ul = $("rulesList");
+  ul.innerHTML = "";
+  // Sort: fails first, then warns, then advisories, then passes.
+  const order2 = { fail: 0, warn: 1, advisory: 2, unreadable: 3, na: 4, pass: 5 };
+  const sorted = [...data.rule_results].sort(
+    (a, b) => (order2[a.status] ?? 9) - (order2[b.status] ?? 9)
+  );
+  for (const rr of sorted) {
+    const li = document.createElement("li");
+    li.className = "rule";
+    const status = (rr.status || "na").toLowerCase();
+    li.innerHTML = `
+      <div class="rule-head">
+        <span class="pill ${status}">${status}</span>
+        <span class="rule-id">${escapeHtml(rr.rule_id)}</span>
+        <span class="rule-citation">${escapeHtml(rr.citation || "")}</span>
+      </div>
+      ${rr.finding   ? `<div class="rule-finding"><strong>Finding:</strong>${escapeHtml(rr.finding)}</div>` : ""}
+      ${rr.expected  ? `<div class="rule-expected"><strong>Expected:</strong>${escapeHtml(rr.expected)}</div>` : ""}
+      ${rr.fix_suggestion && status !== "pass" ? `<div class="rule-fix"><strong>Fix:</strong>${escapeHtml(rr.fix_suggestion)}</div>` : ""}
+    `;
+    ul.appendChild(li);
+  }
+
+  $("findings").open = (failed > 0 || warned > 0);
+}
+
+// Map a fetch Response (or thrown Error) into something renderError can
+// display without leaking stack-trace-style detail to the user.
+async function buildVerifyError(res) {
+  // Try to parse the structured payload the API now returns ({code, message}).
+  // Any failure in parsing is treated as "no structured detail" — we still
+  // produce a useful Error using the HTTP status alone.
+  let payload = null;
+  try {
+    payload = await res.clone().json();
+  } catch {
+    payload = null;
+  }
+  const detail = payload && typeof payload === "object" ? payload.detail ?? payload : null;
+  const code = detail && typeof detail === "object" ? detail.code : null;
+  const developerMessage =
+    (detail && typeof detail === "object" ? detail.message : null)
+    ?? (typeof detail === "string" ? detail : null);
+
+  const e = new Error(developerMessage || res.statusText || `HTTP ${res.status}`);
+  e.status = res.status;
+  e.code = code;
+  e.developerMessage = developerMessage;
+  return e;
+}
+
+function renderError(err) {
+  const card = $("verdictCard");
+  card.className = "verdict-card fail";
+  $("verdictGlyph").innerHTML = verdictGlyph("fail");
+  $("verdictWord").textContent = "ERROR";
+
+  // Map the failure mode to user-facing copy. The API uses 503 with
+  // {code: "vision_unavailable"} when no extractor is reachable; older
+  // 500s and network failures fall through to the generic branch.
+  let headline;
+  if (err && err.code === "vision_unavailable") {
+    headline = "The label-reading service is temporarily unavailable. Please try again in a moment.";
+  } else if (err && err.status === 503) {
+    headline = "The verification service is temporarily unavailable. Please try again shortly.";
+  } else if (err && err.status >= 500) {
+    headline = "Something went wrong on our side. Please try again.";
+  } else if (err && err.status === 400) {
+    headline = err.developerMessage || "We couldn't process that request.";
+  } else {
+    headline = "We couldn't reach the verification service. Check your connection and try again.";
+  }
+  $("verdictHeadline").textContent = headline;
+
+  // Keep the raw detail available for debugging without showing it as the
+  // primary message — small, dimmed, only when there's something useful.
+  const meta = err && err.developerMessage
+    ? `${err.developerMessage}`
+    : (err && err.status ? `HTTP ${err.status}` : "");
+  $("verdictMeta").textContent = meta;
+
+  $("resultFields").innerHTML = "";
+  $("resultGrid").hidden = true;
+  $("findings").hidden = true;
+}
+
+function verdictGlyph(v) {
+  // Returns inline SVG path content for the chosen verdict.
+  const checkmark = '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="5 12 10 17 19 7"/></svg>';
+  const cross     = '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>';
+  const warn      = '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="7" x2="12" y2="13"/><circle cx="12" cy="17" r="0.6" fill="currentColor" stroke="white"/></svg>';
+  const dash      = '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" y1="12" x2="18" y2="12"/></svg>';
+  if (v === "pass") return checkmark;
+  if (v === "fail") return cross;
+  if (v === "warn" || v === "unreadable") return warn;
+  return dash;
+}
+
+function truncate(s, n) {
+  if (!s) return s;
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
 function escapeHtml(s) {
@@ -552,65 +1407,23 @@ function escapeHtml(s) {
   ));
 }
 
-function renderResults(data, clientMs) {
-  const r = $("results");
-  r.hidden = false;
-  const v = (data.overall || "na").toLowerCase();
-  const verdictWord = ({
-    pass: "PASS",
-    warn: "WARN — review",
-    fail: "FAIL",
-    advisory: "ADVISORY",
-    unreadable: "UNREADABLE",
-    na: "NO RULES MATCHED",
-  })[v] || v.toUpperCase();
-
-  let html = `
-    <div class="verdict ${v}">
-      <span class="dot"></span>${verdictWord}
-      <span class="timing">server ${data.elapsed_ms} ms · round-trip ${Math.round(clientMs)} ms</span>
-    </div>
-  `;
-
-  // Per-rule list
-  html += `<div class="section-head"><h2>Rule results</h2><span class="hint">${data.rule_results.length} rule(s) evaluated</span></div>`;
-  html += `<div class="rules"><ul>`;
-  for (const rr of data.rule_results) {
-    const status = (rr.status || "na").toLowerCase();
-    html += `
-      <li class="rule">
-        <div class="rule-head">
-          <span class="pill ${status}">${status}</span>
-          <span class="rule-id">${escapeHtml(rr.rule_id)}</span>
-          <span class="citation">${escapeHtml(rr.citation || "")}</span>
-        </div>
-        <p class="rule-desc">${escapeHtml(rr.fix_suggestion ? "" : "")}</p>
-        ${rr.finding ? `<div class="rule-finding"><strong>Finding:</strong> ${escapeHtml(rr.finding)}</div>` : ""}
-        ${rr.expected ? `<div class="rule-finding"><strong>Expected:</strong> ${escapeHtml(rr.expected)}</div>` : ""}
-      </li>`;
+// ─── Reset / scan again ────────────────────────────────────────
+$("scanAgainBtn").addEventListener("click", () => {
+  if (state.imageUrl) {
+    URL.revokeObjectURL(state.imageUrl);
+    state.imageUrl = null;
   }
-  html += `</ul></div>`;
+  state.imageBlob = null;
+  state.imageName = null;
+  $("file").value = "";
+  $("fileCapture").value = "";
+  hideScanError();
+  $("findings").hidden = false;
+  showView("scan");
+});
 
-  // Extracted fields
-  html += `<div class="section-head"><h2>Extracted from label</h2><span class="hint">${data.unreadable_fields.length} unreadable</span></div>`;
-  html += `<div class="extracted-grid">`;
-  const order = ["brand_name","class_type","alcohol_content","net_contents","name_address","country_of_origin","health_warning"];
-  for (const key of order) {
-    const f = data.extracted[key];
-    if (!f) continue;
-    const val = f.unreadable ? "(unreadable)" : (f.value || "(empty)");
-    html += `
-      <div class="field">
-        <h4>${escapeHtml(key.replace(/_/g," "))}</h4>
-        <div class="field-value ${f.unreadable ? "unreadable" : ""}">${escapeHtml(val)}</div>
-        ${!f.unreadable ? `<div class="field-meta">confidence ${(f.confidence*100).toFixed(0)}%</div>` : ""}
-      </div>`;
-  }
-  html += `</div>`;
-
-  r.innerHTML = html;
-  r.scrollIntoView({ behavior: "smooth", block: "start" });
-}
+// Boot
+showView("scan");
 </script>
 </body>
 </html>
