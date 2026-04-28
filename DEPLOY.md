@@ -32,11 +32,16 @@ The four sample-load buttons in the UI work without any further setup.
 ## What's already in the repo
 
 - `backend/Dockerfile` — python:3.12-slim, copies `app/`, `pip install -e .`,
-  runs uvicorn on `:8080`.
+  runs uvicorn on `:8080`. Build context: `backend/` (used by Fly).
 - `backend/fly.toml` — Fly v2 config: shared 1×CPU / 512 MB, auto-stop,
   HTTP health-check on `/healthz`.
 - `backend/.dockerignore` — keeps `.venv/`, `tests/`, `.git/`, etc. out of
   the image so cold-builds stay under ~120 MB.
+- `Dockerfile` (repo root) — same image, but `COPY`s `backend/pyproject.toml`
+  + `backend/app` and uses `${PORT}`. Build context: repo root (used by
+  Railway, which won't accept Dockerfiles in subdirectories).
+- `railway.toml`, `.dockerignore` (repo root) — Railway-specific build /
+  deploy config and ignore rules.
 
 ## Gotchas to know about
 
@@ -141,9 +146,19 @@ sleeps after 15 min idle (cold start ~30 s — slower than Fly).
 
 ## Alternative: Railway
 
-`railway up` from `backend/` works directly — Railway auto-detects the
-Dockerfile, builds, and deploys. Set `ANTHROPIC_API_KEY` and `PORT=8080`
-in their dashboard. Pricing is consumption-based, no free tier as of 2024.
+Railway builds from a GitHub-linked repo using the **repo-root** `Dockerfile`
+and `railway.toml` (not `backend/Dockerfile` — Railway's Railpack rejects
+Dockerfiles nested in subdirs without a Root Directory override, which is
+why the two top-level files exist).
+
+```bash
+# One-time: link the repo in the Railway dashboard, then:
+railway variables --set ANTHROPIC_API_KEY=sk-ant-...
+git push   # Railway auto-deploys on push
+```
+
+`PORT` is injected by Railway and the root `Dockerfile`'s `CMD` expands it.
+Healthcheck is `/healthz`, configured in `railway.toml`.
 
 ## If something goes wrong
 
