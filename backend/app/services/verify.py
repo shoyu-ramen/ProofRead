@@ -33,8 +33,8 @@ from app.rules.types import (
 )
 from app.services.adversarial import (
     detect_foreign_language,
-    detect_screen_capture,
     merge_signals,
+    screenshot_signal_from_source,
 )
 from app.services.health_warning_second_pass import (
     CrossCheckResult,
@@ -170,8 +170,12 @@ def verify(
     foreign_language = detect_foreign_language(
         *(f.value for f in extraction.fields.values()),
     )
+    # Reuse the sensor pre-check's capture-source classification rather than
+    # re-decoding the image to inspect EXIF a second time. `front` is None
+    # only when `skip_capture_quality=True`, which already implies the caller
+    # has vetted (or synthesized) the frame.
     screenshot_signal = (
-        detect_screen_capture(inp.image_bytes) if not skip_capture_quality else None
+        screenshot_signal_from_source(front.capture_source) if front else None
     )
 
     if foreign_language is not None:

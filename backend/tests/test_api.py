@@ -3,7 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.scans import get_ocr_provider
+from app.api.scans import get_ocr_provider, get_vision_extractor
 from app.main import app
 from app.services.ocr import MockOCRProvider
 from tests.conftest import _make_synthetic_png
@@ -55,6 +55,13 @@ CANONICAL_HW = (
 
 @pytest.fixture(autouse=True)
 def _wipe_overrides():
+    # The API integration tests exercise the OCR + rule-engine path. The scan
+    # endpoint resolves a vision extractor from settings, so when an
+    # ANTHROPIC_API_KEY is present in the local .env the production
+    # ClaudeVisionExtractor would actually be called against the synthetic test
+    # PNG and (correctly) report it as unreadable. Pin vision to None for every
+    # test so the pipeline's OCR fallback drives the verdict.
+    app.dependency_overrides[get_vision_extractor] = lambda: None
     yield
     app.dependency_overrides.clear()
 

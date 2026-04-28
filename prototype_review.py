@@ -247,6 +247,14 @@ def _format_capture_block(capture: CaptureQualityReport) -> str:
             flags.append("backlit")
         if s.motion_blur_direction:
             flags.append(f"motion={s.motion_blur_direction}")
+        source = getattr(s, "capture_source", "photo")
+        if source == "artwork":
+            flags.append(
+                "digital artwork (no EXIF, uniform border) — photo-quality "
+                "checks (glare, exposure, smudge, low-resolution) skipped"
+            )
+        elif source == "screenshot":
+            flags.append("screenshot, not a camera frame")
         if flags:
             lines.append("    flags          : " + ", ".join(flags))
         lines.append(f"    issues         : {issues}")
@@ -378,8 +386,11 @@ def print_capture(capture: CaptureQualityReport) -> None:
             flags.append("smudge/fog")
         if getattr(s, "wet_bottle_likely", False):
             flags.append("wet")
-        if getattr(s, "capture_source", "photo") == "screenshot":
+        source = getattr(s, "capture_source", "photo")
+        if source == "screenshot":
             flags.append("screenshot")
+        elif source == "artwork":
+            flags.append("artwork")
         if flags:
             print(f"           flags  : {', '.join(flags)}")
         for issue in s.issues:

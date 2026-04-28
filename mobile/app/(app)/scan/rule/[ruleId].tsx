@@ -15,11 +15,12 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 
-import { Button, StatusBadge } from '@src/components';
+import { BBoxOverlay, Button, StatusBadge } from '@src/components';
 import { apiClient } from '@src/api/client';
 import { queryKeys } from '@src/state/queryClient';
 import { useScanStore } from '@src/state/scanStore';
-import type { BBox, RuleResultDTO } from '@src/api/types';
+import type { BBox, RuleResultDTO, RuleStatus } from '@src/api/types';
+import type { CapturedImage } from '@src/state/scanStore';
 import { colors, radius, spacing, typography } from '@src/theme';
 
 export default function RuleDetailScreen(): React.ReactElement {
@@ -82,6 +83,8 @@ export default function RuleDetailScreen(): React.ReactElement {
         </View>
         <Text style={styles.citation}>{rule.citation}</Text>
 
+        {rule.status === 'advisory' ? <AdvisoryBanner /> : null}
+
         <Section title="Expected">
           <Text style={styles.body}>{rule.expected ?? '—'}</Text>
         </Section>
@@ -91,7 +94,12 @@ export default function RuleDetailScreen(): React.ReactElement {
         </Section>
 
         <Section title="Bounding box">
-          <BoundingBoxView bbox={rule.bbox} surface={surface} hasImage={Boolean(cap)} />
+          <BoundingBoxView
+            bbox={rule.bbox}
+            surface={surface}
+            capture={cap}
+            status={rule.status}
+          />
         </Section>
 
         {rule.fix_suggestion ? (
@@ -140,14 +148,36 @@ function Section({
   );
 }
 
+function AdvisoryBanner(): React.ReactElement {
+  return (
+    <View style={styles.advisoryBanner} accessible accessibilityRole="text">
+      <Text style={styles.advisoryIcon} accessibilityElementsHidden>
+        ⚠
+      </Text>
+      <View style={styles.advisoryTextCol}>
+        <Text style={styles.advisoryTitle}>
+          Couldn't verify with confidence — rescan recommended
+        </Text>
+        <Text style={styles.advisorySubtitle}>
+          The label was readable but extraction confidence was low. The
+          finding below may be incomplete or off; capturing a sharper,
+          straighter shot usually resolves it.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 function BoundingBoxView({
   bbox,
   surface,
-  hasImage,
+  capture,
+  status,
 }: {
   bbox: BBox | null;
   surface: 'front' | 'back';
-  hasImage: boolean;
+  capture: CapturedImage | undefined;
+  status: RuleStatus;
 }): React.ReactElement {
   if (!bbox) {
     return <Text style={styles.muted}>No region recorded for this rule.</Text>;
@@ -161,29 +191,18 @@ function BoundingBoxView({
       <Text style={styles.muted}>
         x={x} y={y} w={w} h={h}
       </Text>
-      {!hasImage ? (
+      {!capture ? (
         <Text style={styles.muted}>
           Original image not on device — overlay drawing skipped. The
           server-side report still has the region; reload after a
           fresh scan to see the overlay.
         </Text>
       ) : (
-        // TODO(bbox-overlay): render the captured image with a scaled
-        // bbox overlay (Reanimated / SVG). The scaffold draws a
-        // schematic instead so the layout is honest.
-        <View style={styles.bboxSchematic}>
-          <View
-            style={[
-              styles.bboxSchematicFrame,
-              {
-                left: `${(x / Math.max(1, x + w + 1)) * 100}%`,
-                top: `${(y / Math.max(1, y + h + 1)) * 100}%`,
-                width: `${Math.max(10, w / 4)}%`,
-                height: `${Math.max(10, h / 4)}%`,
-              },
-            ]}
-          />
-        </View>
+        <BBoxOverlay
+          image={capture}
+          items={[{ bbox, status }]}
+          style={styles.bboxOverlay}
+        />
       )}
     </View>
   );
@@ -244,18 +263,37 @@ const styles = StyleSheet.create({
   bboxCard: {
     gap: spacing.xs,
   },
-  bboxSchematic: {
-    aspectRatio: 0.65,
-    backgroundColor: colors.surfaceAlt,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: radius.sm,
+  bboxOverlay: {
     marginTop: spacing.sm,
   },
-  bboxSchematicFrame: {
-    position: 'absolute',
-    borderColor: colors.fail,
-    borderWidth: 2,
-    borderRadius: 2,
+  advisoryBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    padding: spacing.md,
+    backgroundColor: 'rgba(244,184,96,0.12)',
+    borderRadius: radius.md,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.advisory,
+    borderWidth: 1,
+    borderColor: colors.advisory,
+  },
+  advisoryIcon: {
+    ...typography.heading,
+    color: colors.advisory,
+    fontWeight: '700',
+    lineHeight: 22,
+  },
+  advisoryTextCol: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  advisoryTitle: {
+    ...typography.heading,
+    color: colors.advisory,
+  },
+  advisorySubtitle: {
+    ...typography.body,
+    color: colors.text,
   },
 });

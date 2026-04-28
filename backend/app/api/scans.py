@@ -113,20 +113,47 @@ def get_storage() -> StorageBackend:
 
 
 def get_vision_extractor() -> VisionExtractor | None:
-    """Construct a Claude vision extractor when configured; otherwise None.
+    """Construct the scan-path vision extractor chain when configured.
 
-    The pipeline accepts vision=None gracefully and falls back to OCR. This
-    keeps the test suite running without an Anthropic API key while still
-    making the production path use the SoTA vision agent when available.
+    Returns whichever backends are constructable, in preference order:
+
+      1. Claude — when `vision_extractor=claude` AND `ANTHROPIC_API_KEY` is set.
+      2. Qwen3-VL — when `enable_qwen_fallback=True` AND `qwen_vl_base_url` is set.
+
+    The pipeline accepts vision=None gracefully and falls back to OCR, so
+    when nothing is configurable we return None rather than raising — that
+    keeps the test suite running without an Anthropic key and the OCR
+    backstop remains the final tier even when the chain is exhausted at
+    request time.
     """
-    if settings.vision_extractor != "claude":
+    if settings.vision_extractor not in {"claude", "mock"}:
         return None
-    if not settings.anthropic_api_key:
+
+    extractors: list[VisionExtractor] = []
+
+    if settings.vision_extractor == "claude" and settings.anthropic_api_key:
+        try:
+            extractors.append(ClaudeVisionExtractor(model=settings.anthropic_model))
+        except Exception:
+            # Claude misconfigured — keep going so a healthy Qwen can still serve.
+            pass
+
+    if settings.enable_qwen_fallback and settings.qwen_vl_base_url:
+        from app.services.extractors.qwen_vl import QwenVLExtractor as QwenScan
+
+        try:
+            extractors.append(QwenScan())
+        except Exception:
+            pass
+
+    if not extractors:
         return None
-    try:
-        return ClaudeVisionExtractor(model=settings.anthropic_model)
-    except Exception:
-        return None
+    if len(extractors) == 1:
+        return extractors[0]
+
+    from app.services.vision_chain import ChainedScanExtractor
+
+    return ChainedScanExtractor(extractors)
 
 
 @router.post("", response_model=CreateScanResponse, status_code=status.HTTP_201_CREATED)

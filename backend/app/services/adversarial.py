@@ -170,80 +170,34 @@ def detect_foreign_language(
     )
 
 
-def detect_screen_capture(image_bytes: bytes) -> AdversarialSignal | None:
-    """Heuristic flag for screenshots / photo-of-screen uploads.
+def screenshot_signal_from_source(capture_source: str | None) -> AdversarialSignal | None:
+    """Lift the sensor pre-check's `capture_source` classification into an
+    `AdversarialSignal` for the verify path's `image_quality_notes`.
 
-    Three weak signals — any one of which fires returns the suspicion:
+    Sensor pre-check (`sensor_check._classify_capture_source`) is the single
+    source of truth for whether a frame looks like a phone screenshot — it
+    already inspects EXIF Software, Make/Model, and the aspect ratio while
+    decoding the image once for capture-quality analysis. Re-decoding here
+    purely for an EXIF check would burn ~10–30ms per request for no signal
+    the pre-check didn't already produce.
 
-      * Image lacks both EXIF Make and Model (real phone captures almost
-        always have at least one populated).
-      * Aspect ratio matches one of the common phone-screen aspect ratios
-        (19.5:9, 20:9, 16:9, 18:9) at typical screenshot resolutions.
-      * The PNG was produced by a software encoder commonly used for
-        screenshots (matches "Screenshot" text in metadata).
-
-    This is intentionally a "soft" signal — it's surfaced in
-    image_quality_notes rather than refusing the scan outright, because
-    plenty of legitimate uploads don't have EXIF (web uploads, certain
-    Android cameras). The rule engine still runs.
+    The signal stays "soft" — a screenshot still goes through the rule
+    engine; the user is told the upload looks like a screen capture so they
+    can rescan if appropriate. Plenty of legitimate uploads (web uploads,
+    certain Android cameras, browser-stripped EXIF) land here too.
     """
-    try:
-        import io
-
-        from PIL import Image
-
-        img = Image.open(io.BytesIO(image_bytes))
-        img.load()
-    except Exception:
+    if capture_source != "screenshot":
         return None
-
-    width, height = img.size
-    if width == 0 or height == 0:
-        return None
-
-    exif = {}
-    try:
-        raw = img.getexif()
-        if raw:
-            from PIL.ExifTags import TAGS
-
-            exif = {TAGS.get(tag, tag): raw.get(tag) for tag in raw}
-    except Exception:
-        pass
-
-    has_make = bool(exif.get("Make"))
-    has_model = bool(exif.get("Model"))
-    has_software_screenshot = bool(
-        exif.get("Software")
-        and "screenshot" in str(exif.get("Software")).lower()
+    return AdversarialSignal(
+        kind="screenshot_suspected",
+        detail=(
+            "Image looks like a screenshot or screen render rather than a "
+            "photo of the printed label (no camera EXIF metadata or a "
+            "phone-screen aspect ratio). Compliance verification expects a "
+            "photo of the printed label or original artwork."
+        ),
+        suggestion="Confirm the upload is a photo of the printed label.",
     )
-
-    aspect = max(width, height) / min(width, height)
-    common_screen_ratio = any(abs(aspect - r) < 0.05 for r in (16 / 9, 19.5 / 9, 20 / 9, 18 / 9))
-
-    if has_software_screenshot:
-        return AdversarialSignal(
-            kind="screenshot_suspected",
-            detail=(
-                "EXIF software field marks this image as a screenshot. "
-                "Compliance verification requires a photo of the printed "
-                "label, not a digital rendering."
-            ),
-            suggestion="Photograph the printed label and resubmit.",
-        )
-
-    if not has_make and not has_model and common_screen_ratio:
-        return AdversarialSignal(
-            kind="screenshot_suspected",
-            detail=(
-                "Image has no camera EXIF metadata and a phone-screen "
-                "aspect ratio — possibly a screenshot of a label rather "
-                "than a photo of the printed label."
-            ),
-            suggestion="Confirm the upload is a photo of the printed label.",
-        )
-
-    return None
 
 
 def _detect_non_latin_script(text: str) -> str | None:

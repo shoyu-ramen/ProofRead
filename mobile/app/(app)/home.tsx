@@ -4,33 +4,41 @@
  * Per SPEC §v1.7. The recent-scans rail is wired to a tanstack-query
  * fetch against the backend's history endpoint when one exists; today
  * the v1 API surface lists GET /v1/scans (history) but the current
- * scaffold backend only ships single-scan endpoints, so this renders
- * an empty state until the history endpoint lands.
- *
- * TODO(history-endpoint): replace the placeholder array with a query
- * once GET /v1/scans paginated history is implemented backend-side.
+ * scaffold backend only ships single-scan endpoints, so the query will
+ * 404 and the rail silently degrades to the empty state. (We do not
+ * surface errors on the home rail — it's a secondary surface; the full
+ * history screen is where retry lives.)
  */
 
-import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
-import { Button, Screen, SectionHeader, StatusBadge } from '@src/components';
+import { useQuery } from '@tanstack/react-query';
+
+import { Button, RecentScanRow, Screen, SectionHeader } from '@src/components';
+import { apiClient } from '@src/api/client';
+import { queryKeys } from '@src/state/queryClient';
 import { useScanStore } from '@src/state/scanStore';
-import type { OverallStatus } from '@src/api/types';
 import { colors, radius, spacing, typography } from '@src/theme';
 
-interface RecentScanSummary {
-  scan_id: string;
-  label: string;
-  overall: OverallStatus;
-  scanned_at: string;
-}
-
-// TODO(history-endpoint): swap for live data.
-const RECENT_PLACEHOLDER: RecentScanSummary[] = [];
+const HOME_RECENT_LIMIT = 3;
 
 export default function Home(): React.ReactElement {
   const reset = useScanStore((s) => s.reset);
+
+  // TODO(history-endpoint): backend GET /v1/scans isn't implemented
+  // yet — until it lands the query errors and we render the empty
+  // state. Sharing the queryKeys.history() cache so this rail and
+  // the full history screen stay in sync once the route exists.
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.history(),
+    queryFn: () => apiClient.getHistory(),
+  });
+
+  const items = data?.items ?? [];
+  const showSkeleton = isLoading;
+  // Error → empty (silent degradation). Real history screen handles retry.
+  const showEmpty = !showSkeleton && (error != null || items.length === 0);
 
   const handleStartScan = () => {
     reset();
@@ -73,7 +81,9 @@ export default function Home(): React.ReactElement {
 
       <SectionHeader title="Recent scans" subtitle="Last three" />
 
-      {RECENT_PLACEHOLDER.length === 0 ? (
+      {showSkeleton ? (
+        <RecentSkeletons count={HOME_RECENT_LIMIT} />
+      ) : showEmpty ? (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyTitle}>No scans yet</Text>
           <Text style={styles.emptyBody}>
@@ -82,7 +92,7 @@ export default function Home(): React.ReactElement {
         </View>
       ) : (
         <View style={styles.list}>
-          {RECENT_PLACEHOLDER.slice(0, 3).map((s) => (
+          {items.slice(0, HOME_RECENT_LIMIT).map((s) => (
             <RecentScanRow key={s.scan_id} scan={s} />
           ))}
         </View>
@@ -91,20 +101,47 @@ export default function Home(): React.ReactElement {
   );
 }
 
-function RecentScanRow({ scan }: { scan: RecentScanSummary }): React.ReactElement {
+function RecentSkeletons({ count }: { count: number }): React.ReactElement {
   return (
-    <Pressable
-      style={({ pressed }) => [styles.rowCard, pressed && { opacity: 0.85 }]}
-      onPress={() => router.push(`/(app)/scan/report/${scan.scan_id}`)}
+    <View
+      style={styles.list}
+      accessibilityRole="progressbar"
+      accessibilityLabel="Loading recent scans"
     >
-      <View style={{ flex: 1, gap: 2 }}>
-        <Text style={styles.rowTitle}>{scan.label}</Text>
-        <Text style={styles.rowMeta}>{scan.scanned_at}</Text>
-      </View>
-      <StatusBadge status={scan.overall} size="sm" />
-    </Pressable>
+      {Array.from({ length: count }).map((_, i) => (
+        <SkeletonRow key={i} delayMs={i * 120} />
+      ))}
+    </View>
   );
 }
+
+function SkeletonRow({ delayMs }: { delayMs: number }): React.ReactElement {
+  const opacity = useRef(new Animated.Value(0.4)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, {
+          toValue: 0.8,
+          duration: 700,
+          delay: delayMs,
+          useNativeDriver: true,
+        }),
+        Animated.timing(opacity, {
+          toValue: 0.4,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [opacity, delayMs]);
+
+  return <Animated.View style={[styles.skeletonRow, { opacity }]} />;
+}
+
+const SKELETON_HEIGHT = 64;
 
 const styles = StyleSheet.create({
   heroBlock: {
@@ -126,23 +163,12 @@ const styles = StyleSheet.create({
   list: {
     gap: spacing.sm,
   },
-  rowCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface,
+  skeletonRow: {
+    height: SKELETON_HEIGHT,
     borderRadius: radius.md,
-    padding: spacing.md,
+    backgroundColor: colors.surfaceAlt,
     borderWidth: 1,
     borderColor: colors.border,
-    gap: spacing.sm,
-  },
-  rowTitle: {
-    ...typography.heading,
-    color: colors.text,
-  },
-  rowMeta: {
-    ...typography.caption,
-    color: colors.textMuted,
   },
   emptyCard: {
     backgroundColor: colors.surface,

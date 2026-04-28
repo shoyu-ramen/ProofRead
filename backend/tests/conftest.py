@@ -20,6 +20,7 @@ import asyncio
 import io
 import random
 
+import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
@@ -174,7 +175,23 @@ def _make_synthetic_png(
     if dark:
         img = img.point(lambda p: max(0, p // 6))
     if bright:
-        img = img.point(lambda p: min(255, p + 200))
+        # Simulate photographic overexposure: high mean luminance with
+        # photo-style border noise. Pushing every pixel to 255 would fold
+        # three failure modes into one (overexposure, glare, AND artwork-
+        # like uniform borders) and the assertions can't distinguish
+        # them. Per-pixel noise centered around 235 puts the frame mean
+        # comfortably above BRIGHT_DEGRADED (220), keeps the saturated-
+        # pixel fraction below GLARE_DEGRADED (0.20), and leaves the
+        # border with >5 stddev so the artwork heuristic doesn't catch.
+        rng_b = np.random.default_rng(0xB16BD15)
+        noise = rng_b.integers(225, 247, size=(height, width), dtype=np.uint8)
+        img = Image.fromarray(np.stack([noise, noise, noise], axis=-1), mode="RGB")
+        bd = ImageDraw.Draw(img)
+        # Bright "label" content: high enough that the label region's mean
+        # also lands above BRIGHT_DEGRADED, with enough internal contrast
+        # for the gradient-density label-region detector to lock on.
+        for y in range(80, height - 80, 140):
+            bd.rectangle((80, y, width - 80, y + 40), fill=(225, 225, 225))
     if flat:
         img = Image.new("RGB", (width, height), color=(128, 128, 128))
 

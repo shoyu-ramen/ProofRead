@@ -261,6 +261,7 @@ class SensorMetadata:
     height_px: int | None = None
     captured_at: str | None = None
     lens_model: str | None = None
+    software: str | None = None
     tier: SensorTier = "unknown"
 
     @property
@@ -336,7 +337,7 @@ class SurfaceCaptureQuality:
     # frame-level scalars don't see.
     lens_smudge_likely: bool = False
     wet_bottle_likely: bool = False
-    capture_source: Literal["photo", "screenshot", "uncertain"] = "photo"
+    capture_source: Literal["photo", "screenshot", "uncertain", "artwork"] = "photo"
 
 
 @dataclass
@@ -407,6 +408,7 @@ def extract_sensor_metadata(img: Image.Image) -> SensorMetadata:
         height_px=height,
         captured_at=_clean_str(raw_exif.get("DateTimeOriginal")),
         lens_model=_clean_str(raw_exif.get("LensModel")),
+        software=_clean_str(raw_exif.get("Software")),
         tier=lookup_sensor_tier(make, model),
     )
 
@@ -888,19 +890,63 @@ def _classify_capture_source(
     img: Image.Image,
     width: int,
     height: int,
-) -> Literal["photo", "screenshot", "uncertain"]:
-    """Distinguish camera captures from screenshots / photos-of-photos.
+) -> Literal["photo", "screenshot", "uncertain", "artwork"]:
+    """Distinguish camera captures from screenshots, photos-of-photos, and
+    digital artwork (PNG/SVG exports from design tools — what brewers and
+    distillers actually upload from Esko / Adobe Illustrator).
 
     A screenshot has no EXIF make/model, no exposure data, often a
     suspicious aspect ratio (matching common phone screen dimensions:
     19.5:9, 18:9, 16:9 portrait), and frequently sRGB profile metadata
     indicating screen rendering rather than camera capture. A genuine
     camera frame has at least some EXIF camera fields populated.
+
+    Digital artwork is the fourth case: clean raster export from a design
+    tool. It strips EXIF (so it looks like a screenshot to the photo
+    classifier), but it differs from both photos and screenshots by
+    surrounding the design with a perfectly uniform canvas — a
+    photograph never produces a 0-variance border, even with a clean
+    backdrop. That uniform-border signal is the cleanest separator we
+    have without trusting filename or content-type.
+
+    The EXIF Software tag is checked FIRST: Android and many third-party
+    screenshot tools tag the file with Software="Screenshot" even when
+    Make/Model are populated by the OS. Honoring that tag prevents an
+    obvious screenshot from sneaking past as "photo".
     """
+    if sensor.software and "screenshot" in sensor.software.lower():
+        return "screenshot"
     if sensor.make or sensor.model or sensor.iso or sensor.exposure_time_s:
         return "photo"
     if not width or not height:
         return "uncertain"
+
+    # Digital-artwork heuristic: no EXIF + uniform border. Convert to L
+    # once and read a 5-pixel strip on each edge. Real photographs put
+    # background variation, vignetting, or sensor noise into those strips
+    # — design-tool exports leave them at a single canvas color.
+    try:
+        gray = np.asarray(img.convert("L"), dtype=np.uint8)
+        strip = max(2, min(8, min(width, height) // 50))
+        border = np.concatenate([
+            gray[:strip, :].ravel(),
+            gray[-strip:, :].ravel(),
+            gray[:, :strip].ravel(),
+            gray[:, -strip:].ravel(),
+        ])
+        # Empirical: real design exports observed at 0.0–1.3 border stddev;
+        # photographs with sensor noise (even bright ones with simulated
+        # sky / white-wall backgrounds) are reliably above 4. 2.5 keeps
+        # the real-world labels classified as artwork while leaving
+        # headroom so test fixtures that sprinkle photographic noise
+        # over a uniform canvas don't accidentally cross the boundary.
+        if border.size and float(border.std()) < 2.5:
+            return "artwork"
+    except Exception as e:
+        # Fall through to the screenshot/uncertain logic — better to
+        # mis-classify as photo than to crash the pre-check.
+        logger.debug("artwork border check failed: %s", e)
+
     aspect = max(width, height) / min(width, height)
     common_screen_aspects = [
         (19.5 / 9, 0.06),
@@ -927,7 +973,7 @@ def _evaluate(
     motion_dir: str | None,
     smudge_likely: bool = False,
     wet_likely: bool = False,
-    capture_source: Literal["photo", "screenshot", "uncertain"] = "photo",
+    capture_source: Literal["photo", "screenshot", "uncertain", "artwork"] = "photo",
 ) -> tuple[list[str], list[str], float, Verdict, Verdict | None]:
     """Map metrics + flags into issues, suggestions, score, and verdicts.
 
@@ -947,8 +993,23 @@ def _evaluate(
     forced_unreadable = False
     partial_scores: list[float] = []
 
-    target = metrics_label if metrics_label is not None else metrics_frame
-    target_scope = "label region" if metrics_label is not None else "frame"
+    # When the detected label bbox dominates the frame (>70% by area),
+    # the "label region" metric is essentially the same content as the
+    # frame metric — but with the very edges cropped out, which can
+    # nudge sharpness slightly upward and produce a confident "good"
+    # verdict on a photograph whose frame is genuinely soft. In that
+    # case, fall back to the frame metrics so the verdict is anchored
+    # in the most conservative reading.
+    label_dominates_frame = metrics_label is not None and (
+        metrics_label.width_px * metrics_label.height_px
+        > 0.70 * metrics_frame.width_px * metrics_frame.height_px
+    )
+    if metrics_label is not None and not label_dominates_frame:
+        target = metrics_label
+        target_scope = "label region"
+    else:
+        target = metrics_frame
+        target_scope = "frame"
 
     # --- Sharpness (label region) -------------------------------------------
     if target.sharpness < sharpness_unread:
@@ -981,50 +1042,97 @@ def _evaluate(
                 "Brace the phone or rest your wrist for a sharper frame."
             )
         partial_scores.append(_ramp(target.sharpness, sharpness_unread, sharpness_degraded))
+    elif (
+        capture_source != "artwork"
+        and target.sharpness < sharpness_degraded * 1.2
+    ):
+        # Borderline-soft photograph: clears the threshold but only by the
+        # margin of the device-tier relaxation. The cost of a false "good"
+        # is the model trusting fine print like the Health Warning that
+        # OCR may not recover. Surface as an advisory so the verdict is
+        # honest about the proximity rather than confidently good.
+        issues.append(
+            f"Borderline-soft {target_scope} "
+            f"(sharpness {target.sharpness:.0f}, just above the "
+            f"{sharpness_degraded:.0f} threshold) — fine print may not be "
+            f"reliably recoverable"
+        )
+        suggestions.append(
+            "Reshoot with a steadier grip and let autofocus settle on the label."
+        )
+        partial_scores.append(0.7)
     else:
         partial_scores.append(1.0)
 
     # --- Glare ---------------------------------------------------------------
-    if target.glare_fraction > GLARE_UNREADABLE:
-        # Localize when we can.
-        if glare_blobs and metrics_label is not None:
-            top = glare_blobs[0]
+    # Skipped for digital artwork: clean white/cream design backgrounds are
+    # almost entirely above the saturated-pixel threshold by construction
+    # (and there's no physical "glare" on a vector export).
+    #
+    # Force "unreadable" only when we can prove the GLARE COVERS THE LABEL —
+    # i.e. either we localized a label region and it's mostly clipped, or the
+    # frame is essentially nothing but glare. Frame-level glare without a
+    # localized label (e.g. a can held in front of a window) almost always
+    # leaves enough of the label intact for the model to extract — refusing
+    # to call the API in that case wastes a perfectly recoverable shot.
+    if capture_source != "artwork":
+        # `target_scope == "label region"` means the gradient-density detector
+        # found a believable bbox we're using locally — glare > GLARE_UNREADABLE
+        # there really is glare on the label, and the verdict should reflect it.
+        # `target_scope == "frame"` means either we couldn't localize, or the
+        # bbox covered >70% of the frame (label_dominates_frame). In that mode
+        # the glare fraction includes the surrounding scene; refusing on 40%
+        # frame glare wastes shots where the label itself is still readable.
+        # Only force unreadable when the frame is almost entirely glare.
+        label_glare_critical = (
+            target_scope == "label region"
+            and target.glare_fraction > GLARE_UNREADABLE
+        )
+        whole_frame_glare = (
+            target_scope == "frame" and target.glare_fraction > 0.75
+        )
+        if label_glare_critical or whole_frame_glare:
+            # Localize when we can.
+            if glare_blobs and metrics_label is not None:
+                top = glare_blobs[0]
+                issues.append(
+                    f"Excessive glare on the label "
+                    f"({target.glare_fraction * 100:.0f}% clipped; largest blob "
+                    f"covers {top.area_fraction_label * 100:.0f}% of label)"
+                )
+            else:
+                issues.append(
+                    f"Excessive glare — {target.glare_fraction * 100:.0f}% clipped"
+                )
+            suggestions.append(
+                "Tilt the bottle so direct light reflects away from the lens."
+            )
+            partial_scores.append(0.0)
+            forced_unreadable = True
+        elif target.glare_fraction > GLARE_DEGRADED:
             issues.append(
-                f"Excessive glare on the label "
-                f"({target.glare_fraction * 100:.0f}% clipped; largest blob "
-                f"covers {top.area_fraction_label * 100:.0f}% of label)"
+                f"Noticeable glare on the {target_scope} "
+                f"({target.glare_fraction * 100:.0f}% clipped)"
+            )
+            if glare_blobs:
+                tops = ", ".join(
+                    f"{b.area_fraction_label * 100:.0f}% blob"
+                    if metrics_label is not None
+                    else f"{b.area_fraction_frame * 100:.0f}% blob"
+                    for b in glare_blobs[:3]
+                )
+                issues[-1] += f" — blobs: {tops}"
+            suggestions.append("Move the bottle out of direct light or shade the label.")
+            partial_scores.append(
+                1.0 - _ramp(target.glare_fraction, GLARE_DEGRADED, GLARE_UNREADABLE)
             )
         else:
-            issues.append(
-                f"Excessive glare — {target.glare_fraction * 100:.0f}% clipped"
-            )
-        suggestions.append(
-            "Tilt the bottle so direct light reflects away from the lens."
-        )
-        partial_scores.append(0.0)
-        forced_unreadable = True
-    elif target.glare_fraction > GLARE_DEGRADED:
-        issues.append(
-            f"Noticeable glare on the {target_scope} "
-            f"({target.glare_fraction * 100:.0f}% clipped)"
-        )
-        if glare_blobs:
-            tops = ", ".join(
-                f"{b.area_fraction_label * 100:.0f}% blob"
-                if metrics_label is not None
-                else f"{b.area_fraction_frame * 100:.0f}% blob"
-                for b in glare_blobs[:3]
-            )
-            issues[-1] += f" — blobs: {tops}"
-        suggestions.append("Move the bottle out of direct light or shade the label.")
-        partial_scores.append(
-            1.0 - _ramp(target.glare_fraction, GLARE_DEGRADED, GLARE_UNREADABLE)
-        )
-    else:
-        partial_scores.append(1.0)
+            partial_scores.append(1.0)
 
     # --- Brightness / backlight ---------------------------------------------
-    if backlit:
+    # Backlight diagnoses "window behind bottle" — dark-on-light layout in a
+    # design export looks identical to the detector and false-positives.
+    if backlit and capture_source != "artwork":
         issues.append(
             f"Backlit subject — label region mean luminance "
             f"{target.brightness_mean:.0f} vs surround "
@@ -1051,7 +1159,7 @@ def _evaluate(
         partial_scores.append(
             _ramp(target.brightness_mean, BRIGHTNESS_DARK_UNREADABLE, BRIGHTNESS_DARK_DEGRADED)
         )
-    elif target.brightness_mean > BRIGHTNESS_BRIGHT_UNREADABLE:
+    elif capture_source != "artwork" and target.brightness_mean > BRIGHTNESS_BRIGHT_UNREADABLE:
         issues.append(
             f"Severely overexposed {target_scope} "
             f"(mean luminance {target.brightness_mean:.0f})"
@@ -1059,7 +1167,7 @@ def _evaluate(
         suggestions.append("Move out of direct sunlight or shade the bottle.")
         partial_scores.append(0.0)
         forced_unreadable = True
-    elif target.brightness_mean > BRIGHTNESS_BRIGHT_DEGRADED:
+    elif capture_source != "artwork" and target.brightness_mean > BRIGHTNESS_BRIGHT_DEGRADED:
         issues.append(
             f"Overexposed — possible direct sun or backlight "
             f"(mean luminance {target.brightness_mean:.0f})"
@@ -1099,7 +1207,12 @@ def _evaluate(
         partial_scores.append(1.0)
 
     # --- Resolution ---------------------------------------------------------
-    if metrics_frame.megapixels < resolution_unread:
+    # Resolution thresholds assume a phone-camera capture. A 1200×1500 design
+    # proof is genuinely large enough to read fine print at 200 DPI; only
+    # photo submissions need the camera-resolution lower bound.
+    if capture_source == "artwork":
+        partial_scores.append(1.0)
+    elif metrics_frame.megapixels < resolution_unread:
         issues.append(
             f"Resolution too low for label compliance "
             f"({metrics_frame.megapixels} MP, "
@@ -1149,14 +1262,17 @@ def _evaluate(
         )
 
     # --- Surface / capture-source signals (advisory) ------------------------
-    if smudge_likely:
+    # Smudge and wet-bottle are photographic artifacts; the heuristics
+    # false-positive on flat-color artwork (soft anti-aliased edges
+    # collapse the p95/mean gradient ratio that drives the smudge check).
+    if smudge_likely and capture_source != "artwork":
         issues.append(
             "Lens smudge or fogged bottle suspected — high-frequency detail "
             "is suppressed uniformly across the frame"
         )
         suggestions.append("Wipe the lens AND the bottle, then try again.")
         partial_scores.append(0.6)
-    if wet_likely:
+    if wet_likely and capture_source != "artwork":
         issues.append(
             "Wet bottle / condensation suspected — many small specular "
             "highlights distributed across the label"

@@ -1,8 +1,14 @@
+export { BBoxOverlay } from './BBoxOverlay';
+export type { BBoxOverlayItem, BBoxOverlayProps } from './BBoxOverlay';
+
 export { Button } from './Button';
 export type { ButtonProps, ButtonVariant, ButtonSize } from './Button';
 
 export { ProgressBar } from './ProgressBar';
 export type { ProgressBarProps } from './ProgressBar';
+
+export { RecentScanRow } from './RecentScanRow';
+export type { RecentScanRowProps } from './RecentScanRow';
 
 export { RuleResultCard } from './RuleResultCard';
 export type { RuleResultCardProps } from './RuleResultCard';

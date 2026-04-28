@@ -8,15 +8,11 @@ on.
 
 from __future__ import annotations
 
-import io
-
-from PIL import Image
-
 from app.services.adversarial import (
     AdversarialSignal,
     detect_foreign_language,
-    detect_screen_capture,
     merge_signals,
+    screenshot_signal_from_source,
 )
 from app.services.verify import VerifyInput, verify
 from app.services.vision import MockVisionExtractor
@@ -92,33 +88,41 @@ def test_diacritics_alone_do_not_trigger():
 
 
 # ---------------------------------------------------------------------------
-# detect_screen_capture
+# screenshot_signal_from_source
+#
+# Sensor pre-check (sensor_check._classify_capture_source) is the single
+# source of truth for whether a frame is a screenshot — it already inspects
+# EXIF and aspect ratio. The verify path lifts that string into a soft
+# adversarial signal via this helper rather than re-decoding the image.
 # ---------------------------------------------------------------------------
 
 
-def _png_bytes(*, width: int, height: int, software: str | None = None) -> bytes:
-    img = Image.new("RGB", (width, height), color=(200, 200, 200))
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-
-def test_no_exif_with_phone_aspect_ratio_is_flagged():
-    """16:9 portrait with no EXIF is suspicious — likely a screenshot."""
-    sig = detect_screen_capture(_png_bytes(width=1080, height=1920))
+def test_screenshot_classification_produces_signal():
+    sig = screenshot_signal_from_source("screenshot")
     assert sig is not None
     assert sig.kind == "screenshot_suspected"
+    assert "screenshot" in sig.detail.lower()
+    assert sig.suggestion
 
 
-def test_unusual_aspect_ratio_with_no_exif_is_not_flagged():
-    """A roughly square upload from a web form is not a phone screen."""
-    sig = detect_screen_capture(_png_bytes(width=1200, height=1500))
-    assert sig is None
+def test_photo_classification_produces_no_signal():
+    assert screenshot_signal_from_source("photo") is None
 
 
-def test_invalid_image_bytes_returns_none():
-    """The guard must never crash the request on a corrupt upload."""
-    assert detect_screen_capture(b"not-an-image") is None
+def test_artwork_classification_produces_no_signal():
+    assert screenshot_signal_from_source("artwork") is None
+
+
+def test_uncertain_classification_produces_no_signal():
+    """`uncertain` is the conservative default when sensor_check can't make
+    a call — we don't want to false-positive into a screenshot warning."""
+    assert screenshot_signal_from_source("uncertain") is None
+
+
+def test_none_classification_produces_no_signal():
+    """skip_capture_quality=True paths pass None through; the helper must
+    handle it without raising."""
+    assert screenshot_signal_from_source(None) is None
 
 
 # ---------------------------------------------------------------------------

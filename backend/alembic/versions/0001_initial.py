@@ -79,7 +79,7 @@ def upgrade() -> None:
             "is_imported",
             sa.Boolean(),
             nullable=False,
-            server_default=sa.text("0"),
+            server_default=sa.text("false"),
         ),
         sa.Column(
             "status", sa.String(length=16), nullable=False, server_default="uploading"
