@@ -32,16 +32,24 @@ def _ocr_fixture(text: str) -> dict:
 
 
 def _build_provider(front_text: str, back_text: str) -> object:
-    fixtures = {
-        "front": _ocr_fixture(front_text),
-        "back": _ocr_fixture(back_text),
-    }
+    """Build a panorama OCR provider from the legacy front/back inputs.
 
-    class _Multi:
+    Test fixtures still author the front and back panels separately
+    (that's how the labels are written in TTB regulations) but the v1
+    mobile pipeline only sees one unrolled-label panorama upload, so we
+    join the two texts into a single fixture keyed by `"panorama"`.
+    `extract_beer_fields` iterates over surfaces in any order; joining
+    front above back preserves the same anchor positions the rule
+    engine has always seen in test inputs.
+    """
+    panorama_text = front_text + "\n" + back_text
+    fixture = _ocr_fixture(panorama_text)
+
+    class _Single:
         def process(self, image_bytes: bytes, hint: str | None = None):
-            return MockOCRProvider(fixtures[hint]).process(image_bytes, hint)
+            return MockOCRProvider(fixture).process(image_bytes, hint)
 
-    return _Multi()
+    return _Single()
 
 
 CANONICAL_HW = (
@@ -142,11 +150,11 @@ def test_scan_lifecycle_typo_in_warning_fails(db_setup, temp_storage):
     assert hw["citation"] == "27 CFR 16.21"
     assert hw["expected"]
     assert hw["fix_suggestion"]
-    # The Health Warning rule reads from the `back` surface in the OCR
-    # pipeline; the rule_result should report it so mobile can highlight
-    # the right captured image when the user taps the failure.
-    assert hw["surface"] == "back", (
-        f"Health Warning rule_result should surface 'back'; got {hw.get('surface')!r}"
+    # v1 mobile uploads one unrolled-label panorama; rule_results carry
+    # `surface="panorama"` so mobile can highlight the captured image
+    # when the user taps the failure.
+    assert hw["surface"] == "panorama", (
+        f"Health Warning rule_result should surface 'panorama'; got {hw.get('surface')!r}"
     )
 
 
@@ -232,7 +240,7 @@ def test_scan_upload_rejects_oversized_body(db_setup, temp_storage, monkeypatch)
 
     big = b"\x00" * 4096  # 4 KiB > 1 KiB cap
     res = client.put(
-        f"/v1/scans/{scan_id}/upload/front",
+        f"/v1/scans/{scan_id}/upload/panorama",
         content=big,
         headers={"Content-Type": "image/png"},
     )

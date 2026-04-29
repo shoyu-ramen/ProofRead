@@ -12,6 +12,10 @@ the appropriate lifecycle steps:
   ``reports``, and ``rule_results``.
 * ``GET  /v1/scans/{id}`` and ``GET /v1/scans/{id}/report`` read from
   the DB.
+
+v1 mobile uploads a single unrolled-label panorama image. ``POST
+/v1/scans`` returns one entry in ``upload_urls`` with ``surface =
+"panorama"``; finalize expects exactly that one upload to be present.
 """
 
 from __future__ import annotations
@@ -46,7 +50,10 @@ from app.services.storage import StorageBackend, get_default_storage, scan_image
 
 router = APIRouter(prefix="/scans", tags=["scans"])
 
-_SUPPORTED_SURFACES = ("front", "back")
+# v1 mobile sends a single unrolled-label panorama. The pipeline still
+# accepts a per-surface dict, so adding a new surface here is the only
+# change required to extend (e.g. neck band) later.
+_SUPPORTED_SURFACES = ("panorama",)
 
 
 class ProducerRecordDTO(BaseModel):
@@ -92,10 +99,12 @@ class RuleResultDTO(BaseModel):
     expected: str | None
     fix_suggestion: str | None
     bbox: tuple[int, int, int, int] | None
-    # Which scan_image surface ("front"/"back"/...) the rule's evidence
-    # was read from. Mirrors the verify-path field so the mobile report
-    # screen can highlight the captured image when the user taps a result.
-    # `None` when the rule isn't tied to a specific extracted field.
+    # Which scan_image surface the rule's evidence was read from. v1
+    # mobile uploads only `"panorama"`; older rows in the DB may carry
+    # `"front"`/`"back"` from the pre-panorama flow. Mirrors the
+    # verify-path field so the mobile report screen can highlight the
+    # captured image when the user taps a result. `None` when the rule
+    # isn't tied to a specific extracted field.
     surface: str | None = None
 
 

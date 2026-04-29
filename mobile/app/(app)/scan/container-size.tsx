@@ -50,7 +50,7 @@ export default function ContainerSizePicker(): React.ReactElement {
 
   const handleNext = () => {
     if (containerSizeMl === null || containerSizeMl <= 0) return;
-    router.push('/(app)/scan/camera/front');
+    router.push('/(app)/scan/unwrap');
   };
 
   return (

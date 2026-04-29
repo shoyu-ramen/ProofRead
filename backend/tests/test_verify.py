@@ -234,12 +234,12 @@ def test_primary_failure_skips_pending_secondary():
 
 
 def test_rule_results_carry_surface_field():
-    """Item #8: every rule_result whose check references an extracted
-    field must carry the source panel id. Mobile uses this to know which
-    captured image to highlight when the user taps a result. The merge
-    step retags `source_image_id` from the mock's hard-coded "front" to
-    "panel_0" (the verify path's panel-indexed convention), so the
-    rule_result's surface should report `panel_0` for the single-shot
+    """Every rule_result whose check references an extracted field must
+    carry the source surface id. Mobile uses this to know which captured
+    image to highlight when the user taps a result. The v1 mobile happy
+    path uploads a single unrolled-label panorama; the merge step retags
+    `source_image_id` from the mock's hard-coded "front" to "panorama"
+    so the rule_result's surface reports "panorama" on the single-shot
     path."""
     report = _verify(
         {
@@ -256,9 +256,8 @@ def test_rule_results_carry_surface_field():
         "At least one rule_result should report a non-None surface — the "
         "MockVisionExtractor tags every field with source_image_id."
     )
-    # Single-image (legacy) path always assigns `panel_0`.
-    assert all(r.surface == "panel_0" for r in surfaced), (
-        f"All field-tied rule_results should carry surface 'panel_0' on "
+    assert all(r.surface == "panorama" for r in surfaced), (
+        f"All field-tied rule_results should carry surface 'panorama' on "
         f"the single-shot path; got {[r.surface for r in surfaced]}"
     )
 

@@ -2,6 +2,12 @@
 
 Multipart request: image + producer record (JSON) + beverage type. Synchronous
 response: per-rule verdict, extracted fields, overall status.
+
+v1 mobile happy path uploads a single unrolled-label panorama image
+(`images=[panorama.jpg]`); the response tags every rule result and field
+with `surface="panorama"` / `source_image_id="panorama"`. The web/agent
+UI may still post multiple panels via `images=`; those go through the
+multi-panel orchestrator and report per-panel `panel_N` ids.
 """
 
 from __future__ import annotations
@@ -62,11 +68,13 @@ class RuleResultDTO(BaseModel):
     expected: str | None = None
     fix_suggestion: str | None = None
     bbox: tuple[int, int, int, int] | None = None
-    # Which submitted panel this rule's evidence was read from. Matches
-    # the `source_image_id` shape on `FieldExtractionDTO` ("panel_0",
-    # "panel_1", …). `None` when the rule isn't tied to a specific field
-    # or when the field had no source_image_id. Mobile uses this to know
-    # which captured image to highlight when the user taps a result.
+    # Which submitted image this rule's evidence was read from. Matches
+    # the `source_image_id` shape on `FieldExtractionDTO`. The v1 mobile
+    # single-shot happy path reports `"panorama"`; the multi-panel path
+    # (web UI / agent) reports `"panel_0"`, `"panel_1"`, … in submission
+    # order. `None` when the rule isn't tied to a specific field or when
+    # the field had no source_image_id. Mobile uses this to know which
+    # captured image to highlight when the user taps a result.
     surface: str | None = None
 
 
@@ -75,12 +83,12 @@ class FieldExtractionDTO(BaseModel):
     confidence: float = 0.0
     bbox: list[int] | None = None
     unreadable: bool = False
-    # Which submitted panel this field's value came from. `panel_0` is
-    # the first image in the request (the legacy single-image path
-    # always reports `panel_0` here); subsequent panels are `panel_1`,
-    # `panel_2`, …, in submission order. The web UI uses this to render
-    # "Brand — front" / "Warning — back" alongside the extracted text,
-    # and to know which captured image the bbox is relative to.
+    # Which submitted image this field's value came from. The v1 mobile
+    # single-shot happy path reports `"panorama"` (one unrolled label
+    # image). The multi-panel path reports `"panel_0"`, `"panel_1"`, …
+    # in submission order. The UI uses this to know which captured
+    # image the bbox is relative to and (multi-panel) to render
+    # per-source labels alongside the extracted text.
     source_image_id: str | None = None
 
 
@@ -111,11 +119,6 @@ class VerifyResponse(BaseModel):
     # into why a warning rule was downgraded to advisory; dashboards key off
     # `outcome` to track inter-pass agreement rate over time.
     health_warning_cross_check: dict | None = None
-    # How many panels contributed to this verdict. `1` for the legacy
-    # single-image path, ≥ 2 when the multi-panel path was used. The UI
-    # uses this to decide whether to render per-field source labels and
-    # how to lay out the captured-image thumbnails.
-    panel_count: int = 1
 
 
 # Module-level extractor cache so we don't recreate the Anthropic client per
@@ -452,7 +455,6 @@ async def verify_label(
         elapsed_ms=report.elapsed_ms,
         cache_hit=report.cache_hit,
         health_warning_cross_check=report.health_warning_cross_check,
-        panel_count=len(panels),
     )
 
 
