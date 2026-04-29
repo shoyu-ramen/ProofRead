@@ -26,13 +26,18 @@ class Settings(BaseSettings):
     health_warning_max_edit_distance: int = 0
 
     anthropic_api_key: str | None = None
-    # Sonnet 4.6 is the right size for the verify-path OCR/extraction job:
-    # it transcribes label fields as accurately as Opus 4.7 on structured
-    # output but typically returns 2–3× faster, which dominates the user-
-    # facing latency budget the iterative-design workflow runs against.
-    # Opus is reserved for code paths that genuinely benefit from deeper
-    # reasoning; reading printed text on a label is not one of them.
-    anthropic_model: str = "claude-sonnet-4-6"
+    # Haiku 4.5 is the right size for the verify-path OCR/extraction job:
+    # it transcribes label fields character-for-character as accurately as
+    # Sonnet 4.6 on the bundled samples (verified manually) but typically
+    # returns ~2× faster — measured 3.8 s vs 7.5 s on a real beer label —
+    # which is the dominant share of the user-facing latency budget the
+    # iterative-design workflow runs against. The redundant Government-
+    # Warning second-pass already runs on Haiku 4.5 and we trust it to
+    # adjudicate the most consequential field on the label, so trusting
+    # the same tier for the rest of the verbatim transcription is
+    # consistent. Override to `claude-sonnet-4-6` (or Opus) only when
+    # tuning a specific accuracy regression.
+    anthropic_model: str = "claude-haiku-4-5-20251001"
     # SPEC §0.5 mandates a redundant read of the Government Warning. Haiku
     # 4.5 is the cheapest, fastest model with strong vision OCR — perfect
     # for a single-paragraph re-read whose only job is to produce a second

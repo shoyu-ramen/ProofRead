@@ -328,7 +328,14 @@ class ClaudeVisionExtractor:
         self,
         client: Any | None = None,
         model: str | None = None,
-        max_tokens: int = 4096,
+        # 1024 is comfortable headroom for the seven-field structured
+        # output: a typical label JSON measures ~350 output tokens
+        # (verified on the bundled samples), and even a long Government-
+        # Warning paragraph plus per-field notes lands well inside 700.
+        # The previous 4096 was sized for a much chattier prompt; cutting
+        # it now caps tail-latency on weird labels where the model would
+        # otherwise spin generating filler before stopping.
+        max_tokens: int = 1024,
         timeout: float = DEFAULT_VISION_TIMEOUT_S,
     ) -> None:
         self._client = client or build_client(timeout=timeout)

@@ -279,6 +279,10 @@ def test_scan_qwen_parses_label_extraction(monkeypatch):
 
     monkeypatch.setattr(scan_qwen_mod.httpx, "post", fake_post)
     monkeypatch.setattr(settings, "qwen_vl_base_url", "http://localhost:8000/v1")
+    # Pin the model name explicitly — without this the test depends on
+    # whatever the developer has in their local `.env`, which flakes when
+    # someone repoints the fallback at e.g. `qwen3-vl:latest`.
+    monkeypatch.setattr(settings, "qwen_vl_model", "qwen3-vl")
 
     extractor = scan_qwen_mod.QwenVLExtractor()
     ctx = extractor.extract(

@@ -11,7 +11,7 @@ caching layer in addition to the latency measurement.
 Usage:
 
     python backend/scripts/verify_latency.py \\
-        --base https://proofread-rk.fly.dev \\
+        --base https://proofread-rk-production.up.railway.app \\
         --image backend/app/static/samples/01_pass_old_tom_distillery.png \\
         --n 10 --concurrency 5
 
@@ -308,7 +308,10 @@ def main() -> int:
     parser.add_argument(
         "--base",
         required=True,
-        help="Base URL of the deployed instance, e.g. https://proofread-rk.fly.dev",
+        help=(
+            "Base URL of the deployed instance, e.g. "
+            "https://proofread-rk-production.up.railway.app"
+        ),
     )
     parser.add_argument(
         "--image",

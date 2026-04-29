@@ -400,16 +400,21 @@ def verify(
 # ---------------------------------------------------------------------------
 
 
-# Anthropic auto-resizes anything beyond ~1568 px on the long edge to that
-# size before billing image tokens. Pre-resizing on our side saves the
-# wire bytes (faster upload) without changing the model's view.
-_VISION_TARGET_LONG_EDGE = 1568
+# Long-edge cap before sending to the vision API. Bumped from 1568 to 2400
+# after the wide-angle held-up-bottle failure mode: a 12 MP capture has the
+# label at ~5 % of frame, and resizing to 1568 left the label only ~80 px
+# wide — below the OCR threshold for the model. 2400 keeps the label at
+# ~120 px (readable) while staying inside Anthropic's per-call image budget.
+_VISION_TARGET_LONG_EDGE = 2400
 _VISION_JPEG_QUALITY = 85
-# Skip cropping when the label already covers most of the frame — re-
-# encoding to save <30% of pixels is a wall-clock loss. The bbox detector
-# already enforces a "≥10% of frame" floor on the small side, so any
-# bbox that reaches us here is a real label region.
-_CROP_MIN_GAIN_RATIO = 0.70
+# Crop whenever the detected label leaves ANY meaningful background outside
+# it. The previous 0.70 gate skipped the crop on near-full-frame detections,
+# but those are exactly the cases where Anthropic's auto-downscale shrinks
+# the label below the OCR threshold — even a 20 % crop preserves the
+# difference between "readable" and "unreadable" text after downscale. The
+# bbox detector enforces a 4 %-of-frame floor on the small side, so any
+# bbox that reaches us is still a real label region.
+_CROP_MIN_GAIN_RATIO = 0.92
 _CROP_MARGIN_FRACTION = 0.08
 _CROP_MIN_MARGIN_PX = 24
 _CROP_MIN_EDGE_PX = 64

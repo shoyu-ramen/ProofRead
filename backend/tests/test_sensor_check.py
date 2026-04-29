@@ -234,35 +234,46 @@ def test_label_region_prefers_dense_label_over_sprawling_blob():
     from PIL import Image, ImageDraw
 
     width, height = 1800, 1200
-    img = Image.new("RGB", (width, height), color=(245, 245, 240))
+
+    # Mild per-pixel background noise. A flat fill collapses the gradient
+    # distribution to zero and the 75th-percentile threshold becomes
+    # meaningless (every cell is "above"). Real captures have sensor
+    # noise / wall texture / vignetting, so the detector is tuned for a
+    # non-zero baseline and the test fixture has to match.
+    rng = np.random.default_rng(0xBADBEEF)
+    bg = rng.integers(238, 252, size=(height, width, 3), dtype=np.uint8)
+    img = Image.fromarray(bg, mode="RGB")
     draw = ImageDraw.Draw(img)
 
-    # Sprawling, loose "person" blob in the lower-left quadrant: lots of
-    # high-gradient speckle covering ~35 % of the frame, but with gaps so
-    # the bbox-fill ratio is low (~0.4). Without the fill-ratio term this
-    # would be the largest connected component and win the largest-area
-    # heuristic outright.
-    rng = np.random.default_rng(0x5E1B0DE)
-    for _ in range(8000):
-        x = int(rng.integers(60, int(width * 0.55)))
-        y = int(rng.integers(int(height * 0.30), height - 60))
-        v = int(rng.integers(20, 200))
-        draw.rectangle((x, y, x + 6, y + 6), fill=(v, v, v))
+    # Sprawling, LOOSE "person" blob in the lower-left: a few clustered
+    # islands separated by background. The bbox spans the whole region
+    # but the connected component (after dilation) has many gaps —
+    # fill_ratio ~0.4. Without the fill-ratio² term this still wins on
+    # raw cell count; the squared term penalises looseness enough that
+    # the dense label outscores it.
+    for cx in (200, 500, 800):
+        for cy in (500, 800, 1100):
+            for _ in range(120):
+                x = int(cx + rng.normal(0, 25))
+                y = int(cy + rng.normal(0, 25))
+                v = int(rng.integers(20, 200))
+                draw.rectangle((x, y, x + 6, y + 6), fill=(v, v, v))
 
-    # Tight, densely-filled "label" rectangle in the upper-right: about
-    # 8 % of the frame, completely packed with horizontal text-like bars
-    # (no internal gaps after the detector's dilation). The fill ratio is
-    # ~1.0, so even though the area is smaller the score wins.
+    # Tight, densely-packed "label" in the upper-right: ~9 % of the
+    # frame, packed with text-like speckle that gives every coarse cell
+    # high gradient. After dilation it's a tight rectangle with
+    # fill_ratio ~0.8, so `cells * fill_ratio²` exceeds the larger but
+    # looser sprawl.
     label_x0, label_y0 = int(width * 0.62), int(height * 0.08)
     label_x1, label_y1 = int(width * 0.92), int(height * 0.42)
     draw.rectangle(
         (label_x0, label_y0, label_x1, label_y1), fill=(248, 246, 232)
     )
-    bar_h = 18
-    for y in range(label_y0 + 12, label_y1 - 12, bar_h * 2):
-        draw.rectangle(
-            (label_x0 + 16, y, label_x1 - 16, y + bar_h), fill=(15, 15, 15)
-        )
+    for _ in range(900):
+        x = int(rng.integers(label_x0 + 4, label_x1 - 8))
+        y = int(rng.integers(label_y0 + 4, label_y1 - 8))
+        v = int(rng.integers(20, 200))
+        draw.rectangle((x, y, x + 6, y + 6), fill=(v, v, v))
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")

@@ -100,7 +100,12 @@ def test_extract_sends_deterministic_call_with_cached_system_prompt():
     [system_block] = call["system"]
     assert system_block["cache_control"] == {"type": "ephemeral"}
     assert call["model"] == "claude-sonnet-4-6"
-    assert call["max_tokens"] >= 4096
+    # Output budget: a typical seven-field response lands around 350
+    # tokens, so 1024 is plenty of headroom while still capping tail
+    # latency on labels where the model would otherwise generate filler
+    # before stopping. The previous 4096 came from an older prompt that
+    # asked for more verbose notes and is no longer needed.
+    assert 700 <= call["max_tokens"] <= 2048
 
 
 def test_extract_attaches_image_with_correct_media_type():
