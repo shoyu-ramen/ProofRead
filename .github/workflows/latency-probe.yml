@@ -4,9 +4,11 @@
 # (and on demand via workflow_dispatch). The script asserts:
 #   * cold-call wall-clock under MAX_COLD_MS (default 8 s — picked ~25%
 #     above today's Sonnet+crop p95; tighten as the baseline settles);
-#   * warm-call client p95 under MAX_WARM_P95_MS (default 600 ms — the
-#     cache budget plus expected network round-trip from a GitHub runner
-#     to the Railway edge);
+#   * warm-call client p95 under 2.5 s — server-side is essentially zero
+#     on a cache hit (sub-millisecond LRU lookup), so this budget is
+#     dominated by the GitHub-runner-to-Railway-edge network round-trip
+#     plus TLS handshake. Measured p95 from US-East runners lands around
+#     1.3-1.5 s, leaving ~1 s of jitter headroom before the alarm fires;
 #   * 100% warm cache hits (the iterative-design workflow's load-bearing
 #     property; <100% means cache-key determinism regressed);
 #   * the bundled bourbon sample still verdicts "pass" (catches accuracy
@@ -103,7 +105,7 @@ jobs:
             --timeout 60 \
             --expect-overall pass \
             --max-cold-ms "$MAX_COLD_MS" \
-            --max-warm-p95-ms 600 \
+            --max-warm-p95-ms 2500 \
             --require-warm-cache-hits \
             --json | tee probe-output.txt
 
