@@ -507,6 +507,15 @@ def verify(
         rule_results, ctx, obstruction
     )
 
+    # Blob-overlap downgrade: a FAIL is unsupportable when the rule's
+    # field bbox sits inside a sensor-pre-check glare blob. The pipeline
+    # path has applied this since v1; verify-path parity ensures a
+    # `/v1/verify` user gets the same fail-honestly downgrade as a
+    # `/v1/scans` user on the same physical capture.
+    rule_results = _downgrade_fails_for_glare_blob(
+        rule_results, ctx, surfaces_by_panel
+    )
+
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
     extracted_summary: dict[str, dict[str, Any]] = {}
@@ -1569,3 +1578,104 @@ def _downgrade_fails_for_unreadable_surface(
             )
         )
     return out
+
+
+def _downgrade_fails_for_glare_blob(
+    results: list[RuleResult],
+    ctx: ExtractionContext,
+    surfaces_by_panel: dict[int, SurfaceCaptureQuality],
+) -> list[RuleResult]:
+    """FAIL → ADVISORY when the rule's field bbox sits inside a glare blob.
+
+    Mirrors `pipeline._apply_capture_downgrade`'s `blob_occluded` branch
+    (`backend/app/services/pipeline.py:317-322`) so verify and scans
+    apply the same fail-honestly recall guarantee on a saturated label
+    region. Without this, a brewer's `/v1/verify` request can FAIL on a
+    rule whose evidence sat inside a specular highlight — exactly the
+    confident-wrong outcome SPEC §0.5 forbids.
+
+    The bbox the field carried (now in original-image coordinates after
+    `_translate_merged_bboxes`) is compared against the source panel's
+    glare blobs. Tolerates fields with no `source_image_id` (no-op),
+    fields that didn't extract a bbox (no-op), and surfaces with no
+    blobs (no-op).
+    """
+    if not surfaces_by_panel:
+        return results
+    out: list[RuleResult] = []
+    for r in results:
+        if r.status != CheckOutcome.FAIL:
+            out.append(r)
+            continue
+        field_name = _field_name_for_rule(r.rule_id)
+        f = ctx.fields.get(field_name) if field_name else None
+        if f is None or f.bbox is None:
+            out.append(r)
+            continue
+        idx = _panel_index_from_source(f.source_image_id)
+        sq = surfaces_by_panel.get(idx) if idx is not None else None
+        if sq is None or not sq.glare_blobs:
+            out.append(r)
+            continue
+        if not _bbox_inside_glare(f.bbox, sq.glare_blobs):
+            out.append(r)
+            continue
+        out.append(
+            RuleResult(
+                rule_id=r.rule_id,
+                rule_version=r.rule_version,
+                citation=r.citation,
+                status=CheckOutcome.ADVISORY,
+                finding=(
+                    (r.finding or "Required element could not be verified")
+                    + " · downgraded to advisory because the field's region"
+                    " overlaps a specular glare blob; reshoot with the bottle"
+                    " tilted away from the light source before relying on"
+                    " this verdict."
+                ),
+                expected=r.expected,
+                fix_suggestion=r.fix_suggestion,
+                bbox=r.bbox,
+                surface=r.surface,
+            )
+        )
+    return out
+
+
+def _field_name_for_rule(rule_id: str) -> str | None:
+    """`spirits.health_warning.exact_text` → `health_warning`.
+
+    Mirrors `pipeline._field_referenced` so the verify-path blob
+    downgrade keys off the same field name as the scan path.
+    """
+    parts = rule_id.split(".")
+    if len(parts) < 3:
+        return None
+    return parts[1]
+
+
+def _bbox_inside_glare(
+    field_bbox: tuple[int, int, int, int] | None,
+    glare_blobs,
+) -> bool:
+    """True when ≥30 % of the field bbox falls inside any glare blob.
+
+    Mirrors `pipeline._bbox_inside_glare` exactly (same threshold, same
+    geometry) so the verify and scan paths agree on what counts as
+    "occluded by glare".
+    """
+    if not field_bbox or not glare_blobs:
+        return False
+    fx, fy, fw, fh = field_bbox
+    field_area = max(1, fw * fh)
+    for blob in glare_blobs:
+        bx, by, bw, bh = blob.bbox.x, blob.bbox.y, blob.bbox.w, blob.bbox.h
+        ix = max(fx, bx)
+        iy = max(fy, by)
+        ax = min(fx + fw, bx + bw)
+        ay = min(fy + fh, by + bh)
+        iw = max(0, ax - ix)
+        ih = max(0, ay - iy)
+        if (iw * ih) / field_area >= 0.30:
+            return True
+    return False
