@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     qwen_vl_base_url: str | None = None
     qwen_vl_model: str = "qwen3-vl"
     qwen_vl_api_key: str | None = None
+    # 30 s suits hosted endpoints (OpenRouter, DashScope) where the model
+    # is already loaded. Local Ollama with a quantised Qwen3-VL on a Mac
+    # M-series can take 60–180 s on cold load + first inference, so this
+    # is overrideable per environment rather than a hard-coded module
+    # constant.
+    qwen_vl_timeout_s: float = 30.0
 
 
 settings = Settings()

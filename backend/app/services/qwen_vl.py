@@ -57,13 +57,18 @@ class QwenVLExtractor:
         model: str | None = None,
         api_key: str | None = None,
         max_tokens: int = 4096,
-        timeout: float = DEFAULT_QWEN_TIMEOUT_S,
+        timeout: float | None = None,
     ) -> None:
         self._base_url = (base_url or settings.qwen_vl_base_url or "").rstrip("/")
         self._model = model or settings.qwen_vl_model
         self._api_key = api_key or settings.qwen_vl_api_key
         self._max_tokens = max_tokens
-        self._timeout = timeout
+        # Default falls back to settings.qwen_vl_timeout_s so a slow local
+        # Ollama (≥60 s on cold load) doesn't tank the request, while
+        # hosted endpoints can keep the 30 s default.
+        self._timeout = (
+            timeout if timeout is not None else settings.qwen_vl_timeout_s
+        )
         if not self._base_url:
             raise ExtractorUnavailable(
                 "QWEN_VL_BASE_URL is not configured; cannot construct the "
