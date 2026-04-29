@@ -46,10 +46,7 @@ prototype_review.py
 backend/tests/
 backend/validation/
 backend/docker-compose.yml
-backend/fly.toml
 backend/README.md
-backend/Dockerfile
-backend/.dockerignore
 
 # Top-level docs & screenshots
 DEPLOY.md

@@ -1,19 +1,10 @@
-# CI + deploy. Mirrors the local checks in DEPLOY.md and backend/README.md.
-#
-# Required repo secret:
-#   FLY_API_TOKEN — `flyctl auth token` (or scoped deploy token from the Fly
-#   dashboard). Used by the `deploy` job; absent secret → deploy is skipped
-#   gracefully via the `if:` guard.
+# CI. Mirrors the local checks in DEPLOY.md and backend/README.md.
 #
 # Triggers:
-#   - PRs to main: backend + mobile + docker (fly & railway) jobs (no deploy).
-#   - Pushes to main: same checks, plus deploy on green.
-#
-# The two docker jobs cover the two build contexts:
-#   - docker-fly:     backend/ context, backend/Dockerfile (used by Fly).
-#   - docker-railway: repo-root context, ./Dockerfile (used by Railway,
-#                     which auto-deploys via its own GitHub integration —
-#                     this job catches breakage before Railway sees it).
+#   - PRs to main: backend + mobile + docker jobs.
+#   - Pushes to main: same checks. Railway auto-deploys on push via its
+#     own GitHub integration; the `docker` job here gates Railway by
+#     catching image breakage before Railway's builder sees it.
 
 name: ci
 
@@ -22,12 +13,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # Manual trigger from the Actions UI / `gh workflow run ci.yml`. Does NOT
-  # run the deploy job — the `if:` guard on `deploy` requires push-to-main.
+  # Manual trigger from the Actions UI / `gh workflow run ci.yml`.
   workflow_dispatch:
 
-# Cancel superseded PR runs to keep the queue short. Pushes to main are
-# allowed to complete so an in-flight deploy is never killed mid-flight.
+# Cancel superseded PR runs to keep the queue short. Pushes to main run
+# to completion so the docker build that gates Railway sees every commit.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -83,27 +73,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
 
-  docker-fly:
-    name: docker build (fly image)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      # Builds backend/Dockerfile to catch image-level regressions before
-      # they reach Fly's remote builder. Layer cache is persisted across
-      # runs via GitHub Actions cache.
-      - name: Build image
-        uses: docker/build-push-action@v6
-        with:
-          context: backend
-          push: false
-          tags: proofread-backend:ci-fly
-          cache-from: type=gha,scope=fly
-          cache-to: type=gha,mode=max,scope=fly
-
-  docker-railway:
+  docker:
     name: docker build (railway image)
     runs-on: ubuntu-latest
     steps:
@@ -111,40 +81,16 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      # Builds the repo-root Dockerfile (Railway path). Railway's GitHub
+      # Builds the repo-root Dockerfile that Railway uses. Railway's GitHub
       # integration auto-deploys on push to main, so this job catches a
-      # broken Railway image before Railway's builder does. Separate cache
-      # scope from docker-fly because the build context differs.
+      # broken image before Railway's builder does. Layer cache is
+      # persisted across runs via GitHub Actions cache.
       - name: Build image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: false
-          tags: proofread-backend:ci-railway
-          cache-from: type=gha,scope=railway
-          cache-to: type=gha,mode=max,scope=railway
-
-  deploy:
-    name: deploy (fly.io)
-    needs: [backend, mobile, docker-fly, docker-railway]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    # Serialize prod deploys: a newer push waits rather than racing.
-    concurrency:
-      group: deploy-production
-      cancel-in-progress: false
-    defaults:
-      run:
-        working-directory: backend
-    env:
-      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-
-      # `--remote-only` builds on Fly's builder, so the runner doesn't need
-      # docker login / push credentials. The image goes straight into the
-      # Fly app's registry.
-      - run: flyctl deploy --remote-only
+          tags: proofread-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

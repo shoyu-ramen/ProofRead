@@ -1,5 +1,4 @@
-# Repo-root Dockerfile — used by Railway (build context: repo root).
-# Fly.io still uses backend/Dockerfile (build context: backend/).
+# Repo-root Dockerfile — used by Railway. Build context: repo root.
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -16,7 +15,9 @@ RUN pip install --no-cache-dir -e .
 
 ENV PYTHONUNBUFFERED=1 \
     VISION_EXTRACTOR=claude \
-    ANTHROPIC_MODEL=claude-opus-4-7
+    ANTHROPIC_MODEL=claude-sonnet-4-6 \
+    ANTHROPIC_HEALTH_WARNING_MODEL=claude-haiku-4-5-20251001 \
+    ENABLE_HEALTH_WARNING_SECOND_PASS=true
 
 EXPOSE 8080
 
