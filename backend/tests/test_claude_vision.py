@@ -283,6 +283,33 @@ def test_to_context_skips_genuinely_absent_fields():
     assert "country_of_origin" not in ctx.unreadable_fields
 
 
+def test_to_context_preserves_partial_alcohol_content_value():
+    """Regression: a model read of "4.8" (digits without the "%") must
+    still surface as the alcohol_content value at its reported confidence.
+    The format rule downstream will FAIL on it with the actionable
+    "Express ABV as ... '5.5% ABV'" message — that's informative.
+    Replacing the value with unreadable would hide what was identified."""
+    label = _good_label()
+    label.alcohol_content = FieldExtraction(
+        value="4.8", confidence=0.65, surface="front", note="glare on right edge"
+    )
+    label.net_contents = FieldExtraction(
+        value="12", confidence=0.65, surface="front", note="bottom curl"
+    )
+    ctx = _to_context(
+        label,
+        beverage_type="beer",
+        container_size_ml=355,
+        is_imported=False,
+        producer_record=None,
+        confidence_threshold=0.6,
+    )
+    assert ctx.fields["alcohol_content"].value == "4.8"
+    assert ctx.fields["net_contents"].value == "12"
+    assert "alcohol_content" not in ctx.unreadable_fields
+    assert "net_contents" not in ctx.unreadable_fields
+
+
 def test_to_context_threshold_governs_unreadable_classification():
     label = _good_label()
     label.brand_name = FieldExtraction(value="ANYTOWN", confidence=0.55)

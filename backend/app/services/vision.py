@@ -135,10 +135,33 @@ Field definitions (FORMAT GUIDANCE — do not copy any wording from this list):
   alcohol_content   — alcohol-content statement verbatim. Format usually
                       "<number>% ABV" or "<number>% Alc./Vol." sometimes
                       followed by "(<number> Proof)" in parentheses.
+                      The "%" sign and any "ABV" / "Alc./Vol." marker
+                      are PART OF THE VALUE — read them together with
+                      the number. The downstream format check looks for
+                      "%", so a digit alone fails compliance even when
+                      the digit is correct.
+                        good:  "5.5% ABV"     "4.8% Alc./Vol."
+                               "45% Alc./Vol. (90 Proof)"
+                        bad:   "5.5"          "4.8"
+                      If glare or focus genuinely makes the "%" sign
+                      unreadable, lower confidence (≤0.6) and explain in
+                      `note` — but still capture whatever marker text
+                      you CAN see ("4.8% AB" with one tail letter
+                      glared is more useful than "4.8" alone).
 
-  net_contents      — net-contents statement verbatim, including units
-                      (mL, L, FL OZ, fl oz). May include both metric and
-                      U.S. customary in parentheses.
+  net_contents      — net-contents statement verbatim, INCLUDING the
+                      unit. The unit is part of the value, not a
+                      separate field — capture the number and the unit
+                      together. May include both metric and U.S.
+                      customary in parentheses.
+                        good:  "12 FL OZ"     "12 fl. oz."
+                               "355 mL"       "0.75 L"
+                               "12 FL. OZ. (355 mL)"
+                        bad:   "12"           "355"
+                      If the unit text is genuinely glared or cropped
+                      out, lower confidence and capture whatever you
+                      can see ("12 fl" or "355 m") rather than dropping
+                      to digits alone.
 
   name_address      — bottler / producer / brewer / importer statement
                       verbatim. Typically begins with a present-tense

@@ -72,6 +72,25 @@ For every label you receive:
      only see part of the warning, return what you can read with the unread
      fraction reflected in confidence and explained in `note`.
 
+     For ALCOHOL CONTENT and NET CONTENTS the unit is part of the value —
+     read the number AND the unit together. The downstream format check
+     looks for "%" on alcohol_content and one of "mL"/"L"/"fl oz"/"fluid
+     ounces" on net_contents, so a digit-only answer fails compliance even
+     when the digit itself is correct.
+
+       alcohol_content good: "5.5% ABV"      "4.8% Alc./Vol."
+                             "45% Alc./Vol. (90 Proof)"
+       alcohol_content bad:  "5.5"           "4.8"
+
+       net_contents good:    "12 FL OZ"      "355 mL"
+                             "0.75 L"        "12 FL. OZ. (355 mL)"
+       net_contents bad:     "12"            "355"
+
+     If glare or cropping genuinely obscures the unit, lower confidence
+     and capture whatever marker text you CAN see ("4.8% AB" with one
+     tail letter glared, "12 fl" with the period and "oz" cropped) — a
+     partial unit is more useful to the rule engine than a digit alone.
+
   4. If an element is genuinely not present on the label, return value=null
      with confidence=0.0 and a note like "not present" or "occluded by glare".
 

@@ -150,6 +150,28 @@ def test_parse_vision_response_rejects_non_json():
         _parse_vision_response("not json at all")
 
 
+def test_parse_vision_response_preserves_partial_alcohol_content_value():
+    """Regression: when the vision model returns a partial value like "4.8"
+    (digits without the "%") the verify path must still surface the
+    extracted value, not strip it. The format rule will FAIL on that input
+    with an actionable "Express ABV as ... '5.5% ABV'" message — that is
+    informative; replacing the value with "(unreadable)" hides what the
+    model actually read and forces the user to guess what was identified."""
+    raw = json.dumps(
+        {
+            "alcohol_content": {"value": "4.8", "confidence": 0.65},
+            "net_contents": {"value": "12", "confidence": 0.65},
+            "brand_name": {"value": "NOTCH'D", "confidence": 0.76},
+        }
+    )
+    result = _parse_vision_response(raw)
+    assert result.fields["alcohol_content"].value == "4.8"
+    assert result.fields["net_contents"].value == "12"
+    assert result.fields["brand_name"].value == "NOTCH'D"
+    assert "alcohol_content" not in result.unreadable
+    assert "net_contents" not in result.unreadable
+
+
 def test_parse_vision_response_recovers_json_with_trailing_prose():
     """Regression: Haiku occasionally appends qualifying commentary after
     the JSON object on degraded labels ("**Note:** the warning text was
