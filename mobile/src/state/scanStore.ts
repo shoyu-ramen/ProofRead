@@ -9,7 +9,7 @@
  * Per ARCH §6, v1 captures a single unrolled-label panorama (replacing
  * the old front+back surface model). The flow that reads this store
  * (per SPEC §v1.6 + ARCH §1):
- *   home → beverage-type → container-size → unwrap (cylindrical scan)
+ *   home → setup → unwrap (cylindrical scan)
  *        → review → processing/[id] → report/[id]
  */
 
@@ -48,11 +48,31 @@ export interface UnrolledPanorama {
   durationMs: number;
 }
 
+/**
+ * Cached panorama keyed by backend scan_id. Populated when a scan
+ * completes (review→processing transition, where we have both ids and
+ * pixels in hand). Persists across `reset()` so the home recent-scans
+ * rail and the report screen can display the local panorama for any
+ * scan we've completed in this session without re-downloading from the
+ * server.
+ *
+ * Pure in-memory cache (not persisted to AsyncStorage in v1) — that
+ * keeps the implementation tight and matches the user expectation that
+ * a fresh app launch will fetch from the server. The map only grows
+ * during a session; we accept that since the scan flow is short-lived.
+ */
+export interface CachedPanorama {
+  uri: string;
+  width: number;
+  height: number;
+  capturedAt: number;
+}
+
 export interface ScanDraft {
   beverageType: BeverageType | null;
   containerSizeMl: number | null;
   // Whether the user marked the product as imported on the
-  // beverage-type / container step. Drives the country-of-origin rule.
+  // setup step. Drives the country-of-origin rule.
   isImported: boolean;
   /** Final stitched panorama for upload + review. Null until complete. */
   panorama: UnrolledPanorama | null;
@@ -64,6 +84,13 @@ export interface ScanDraft {
 }
 
 interface ScanStoreState extends ScanDraft {
+  /**
+   * Per-scan-id panorama cache. Lives outside `ScanDraft` so `reset()`
+   * doesn't wipe panoramas the user has already completed in this
+   * session — the home recent-scans rail relies on it to render
+   * thumbnails without a re-fetch.
+   */
+  recentPanoramas: Record<string, CachedPanorama>;
   setBeverageType: (t: BeverageType) => void;
   setContainerSize: (ml: number) => void;
   setIsImported: (imported: boolean) => void;
@@ -71,6 +98,12 @@ interface ScanStoreState extends ScanDraft {
   appendFrame: (f: ScanFrame) => void;
   clearScanCaptures: () => void;
   setScanId: (id: string | null) => void;
+  /**
+   * Insert a freshly-captured panorama into the per-scan-id cache.
+   * Idempotent: re-recording the same scan_id (e.g. user re-tries the
+   * upload) overwrites the entry. Untouched by `reset()`.
+   */
+  rememberPanorama: (scanId: string, panorama: UnrolledPanorama) => void;
   reset: () => void;
 }
 
@@ -85,13 +118,49 @@ const EMPTY: ScanDraft = {
 
 export const useScanStore = create<ScanStoreState>((set) => ({
   ...EMPTY,
+  recentPanoramas: {},
   setBeverageType: (t) => set({ beverageType: t }),
   setContainerSize: (ml) => set({ containerSizeMl: ml }),
   setIsImported: (imported) => set({ isImported: imported }),
   setPanorama: (p) => set({ panorama: p }),
   appendFrame: (f) => set((s) => ({ frames: [...s.frames, f] })),
   clearScanCaptures: () => set({ panorama: null, frames: [] }),
-  setScanId: (id) => set({ scanId: id }),
+  // When we associate a scan_id with the in-flight draft (post-create,
+  // pre-finalize), opportunistically snapshot the panorama into the
+  // recents cache. That way the rail and the report can render the
+  // local pixels even after `reset()` clears the draft on Done.
+  setScanId: (id) =>
+    set((s) => {
+      if (id && s.panorama) {
+        return {
+          scanId: id,
+          recentPanoramas: {
+            ...s.recentPanoramas,
+            [id]: {
+              uri: s.panorama.uri,
+              width: s.panorama.width,
+              height: s.panorama.height,
+              capturedAt: Date.now(),
+            },
+          },
+        };
+      }
+      return { scanId: id };
+    }),
+  rememberPanorama: (scanId, panorama) =>
+    set((s) => ({
+      recentPanoramas: {
+        ...s.recentPanoramas,
+        [scanId]: {
+          uri: panorama.uri,
+          width: panorama.width,
+          height: panorama.height,
+          capturedAt: Date.now(),
+        },
+      },
+    })),
+  // NB: leaves `recentPanoramas` intact on purpose — completed scans
+  // need to remain visible in the home rail across the Done button.
   reset: () => set({ ...EMPTY, frames: [] }),
 }));
 

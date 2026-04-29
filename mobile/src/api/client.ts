@@ -152,17 +152,25 @@ export class ApiClient {
   }
 
   /**
-   * GET /v1/scans (paginated history).
+   * GET /v1/scans (history).
    *
-   * TODO(history-endpoint): the backend doesn't expose this route yet
-   * (current scans.py only has per-scan endpoints). This method is a
-   * placeholder so the UI can wire its loading / error / empty / list
-   * states ahead of the backend implementation. Today it makes a real
-   * request and surfaces whatever the server returns — until the route
-   * lands, that will be a 404 the screen renders as the error state.
+   * Returns up to the most recent 50 scans for the current user,
+   * ordered by `Scan.created_at DESC` server-side. Each item carries
+   * `{ scan_id, label, overall, scanned_at }` — see scans.py
+   * `HistoryResponse`. The mobile history screen + home rail consume
+   * this directly; no client-side sorting required.
    */
   getHistory(): Promise<HistoryResponse> {
     return this.request<HistoryResponse>('/v1/scans', { method: 'GET' });
+  }
+
+  /**
+   * Alias for `getHistory()`. Matches the SPEC §v1.9 endpoint name
+   * literally (`GET /v1/scans` → "list scans") so call sites that
+   * think in terms of "list" instead of "history" read naturally.
+   */
+  listScans(): Promise<HistoryResponse> {
+    return this.getHistory();
   }
 
   /**
