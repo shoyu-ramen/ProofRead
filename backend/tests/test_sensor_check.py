@@ -221,6 +221,78 @@ def test_label_region_is_detected(good_png):
     assert sq.label_bbox.h > 0
 
 
+def test_label_region_prefers_dense_label_over_sprawling_blob():
+    """Wide-angle capture: a small densely-filled label in the upper-right
+    must beat a larger sprawling person-shaped blob lower in the frame.
+
+    Reproduces the user-holding-a-can-up-high failure mode where the
+    largest gradient component is the user's body+clothing texture but
+    the actual label is a small, tight rectangle elsewhere. The detector
+    must score by `area * fill_ratio²` so the dense rectangle wins.
+    """
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    width, height = 1800, 1200
+    img = Image.new("RGB", (width, height), color=(245, 245, 240))
+    draw = ImageDraw.Draw(img)
+
+    # Sprawling, loose "person" blob in the lower-left quadrant: lots of
+    # high-gradient speckle covering ~35 % of the frame, but with gaps so
+    # the bbox-fill ratio is low (~0.4). Without the fill-ratio term this
+    # would be the largest connected component and win the largest-area
+    # heuristic outright.
+    rng = np.random.default_rng(0x5E1B0DE)
+    for _ in range(8000):
+        x = int(rng.integers(60, int(width * 0.55)))
+        y = int(rng.integers(int(height * 0.30), height - 60))
+        v = int(rng.integers(20, 200))
+        draw.rectangle((x, y, x + 6, y + 6), fill=(v, v, v))
+
+    # Tight, densely-filled "label" rectangle in the upper-right: about
+    # 8 % of the frame, completely packed with horizontal text-like bars
+    # (no internal gaps after the detector's dilation). The fill ratio is
+    # ~1.0, so even though the area is smaller the score wins.
+    label_x0, label_y0 = int(width * 0.62), int(height * 0.08)
+    label_x1, label_y1 = int(width * 0.92), int(height * 0.42)
+    draw.rectangle(
+        (label_x0, label_y0, label_x1, label_y1), fill=(248, 246, 232)
+    )
+    bar_h = 18
+    for y in range(label_y0 + 12, label_y1 - 12, bar_h * 2):
+        draw.rectangle(
+            (label_x0 + 16, y, label_x1 - 16, y + bar_h), fill=(15, 15, 15)
+        )
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    report = assess_capture_quality({"front": buf.getvalue()})
+    sq = report.surfaces[0]
+    assert sq.label_bbox is not None, "label region should be detected"
+
+    # Bbox center should land inside the painted label rectangle, not the
+    # sprawling blob in the opposite quadrant.
+    cx = sq.label_bbox.x + sq.label_bbox.w // 2
+    cy = sq.label_bbox.y + sq.label_bbox.h // 2
+    assert label_x0 <= cx <= label_x1, (
+        f"detector picked the sprawling blob (center x={cx} outside "
+        f"label x-range [{label_x0}, {label_x1}])"
+    )
+    assert label_y0 <= cy <= label_y1, (
+        f"detector picked the sprawling blob (center y={cy} outside "
+        f"label y-range [{label_y0}, {label_y1}])"
+    )
+
+
+def test_label_region_returns_none_for_uniform_frame(flat_png):
+    """A flat-color frame has no detectable label region — the detector
+    must return None rather than picking up sensor noise."""
+    report = assess_capture_quality({"front": flat_png})
+    sq = report.surfaces[0]
+    assert sq.label_bbox is None
+
+
 def test_glare_blobs_are_localized(glare_png):
     """The glare fixture washes out a ~64% rectangle of the frame. The
     blob detector should produce at least one bbox covering that area."""

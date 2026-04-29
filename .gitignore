@@ -24,6 +24,9 @@ __pycache__/
 .claude/
 .playwright-mcp/
 
+# Local SQLite scratch DB the latency probe writes on each run.
+backend/.local-probe.db
+
 # Ad-hoc debug screenshots that land at the repo root from local runs.
 /camera-live.png
 /live-capture-result.png
