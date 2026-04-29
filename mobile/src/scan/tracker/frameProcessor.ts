@@ -31,6 +31,7 @@ import { measureFlow } from './opticalFlow';
 import { computeAngularProgress } from './angleTracker';
 import type {
   BottleSilhouette,
+  CoverageStatus,
   FlowMeasurement,
   PreCheckVerdict,
   TrackerState,
@@ -59,6 +60,13 @@ const COVERAGE_DARK_CUTOFF = 80;
 const COVERAGE_BRIGHT_CUTOFF = 230;
 const COVERAGE_TOO_FAR = 0.3;
 const COVERAGE_TOO_CLOSE = 0.85;
+
+// Silhouette-width band (fraction of frame width) the scan considers
+// usable. Outside the band we emit `coverageStatus = 'too_far' |
+// 'too_close'` so the state machine can pause with actionable copy
+// even before rotation starts.
+const SILHOUETTE_WIDTH_TOO_FAR = 0.3;
+const SILHOUETTE_WIDTH_TOO_CLOSE = 0.9;
 
 const ROI_FRAC_X0 = 0.15;
 const ROI_FRAC_X1 = 0.85;
@@ -100,6 +108,7 @@ const INITIAL_TRACKER_STATE: TrackerState = {
   angularVelocity: 0,
   rotationDirection: null,
   preCheck: { kind: 'unknown' },
+  coverageStatus: null,
   capturedCheckpoints: 0,
   frameTick: 0,
 };
@@ -305,6 +314,20 @@ export function useTrackerFrameProcessor(): TrackerFrameProcessor {
         preCheck = { kind: 'ready' };
       }
 
+      // Coverage-distance signal: only meaningful when the silhouette
+      // is locked (we know the bottle's actual width). Without a lock
+      // we leave it null so the state machine doesn't claim "too far"
+      // when the camera is just looking at a wall.
+      let coverageStatus: CoverageStatus = null;
+      if (silhouette.detected) {
+        const widthFrac = silhouette.widthPx / w;
+        if (widthFrac < SILHOUETTE_WIDTH_TOO_FAR) {
+          coverageStatus = 'too_far';
+        } else if (widthFrac > SILHOUETTE_WIDTH_TOO_CLOSE) {
+          coverageStatus = 'too_close';
+        }
+      }
+
       trackerStateSv.value = {
         silhouette,
         flow,
@@ -312,6 +335,7 @@ export function useTrackerFrameProcessor(): TrackerFrameProcessor {
         angularVelocity: angle.angularVelocity,
         rotationDirection: angle.rotationDirection,
         preCheck,
+        coverageStatus,
         capturedCheckpoints: prior.capturedCheckpoints,
         frameTick: idx,
       };
@@ -414,6 +438,12 @@ export function useMotionVerdict(): boolean {
     return () => {
       subscription.remove();
       windowRef.current = [];
+      // Reset the React state immediately so a remount (e.g. thermal
+      // pause + resume) doesn't inherit a stale `shaking=true` until
+      // the listener refills its window (~1s). Without this, the
+      // worklet would emit `paused/motion` for up to ACCEL_INTERVAL_MS
+      // * ACCEL_WINDOW after every remount.
+      setShaking(false);
     };
   }, []);
 

@@ -20,7 +20,7 @@ import React, {
   useMemo,
   useRef,
 } from 'react';
-import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import {
   AlphaType,
   Canvas,
@@ -37,6 +37,7 @@ import {
   useDerivedValue,
   useSharedValue,
   withTiming,
+  type SharedValue,
 } from 'react-native-reanimated';
 import type {
   SkCanvas,
@@ -44,6 +45,7 @@ import type {
   SkSurface,
 } from '@shopify/react-native-skia';
 
+import { colors, scanGeometry } from '@src/theme';
 import {
   STRIP_WIDTH as DEFAULT_STRIP_WIDTH,
   coverageToStripX,
@@ -53,25 +55,38 @@ import {
 
 interface Props {
   state: PanoramaState;
+  /**
+   * Live snapshot of the off-screen panorama surface. Owned by the
+   * parent so `stitchPanorama` can encode the already-painted bytes
+   * directly instead of allocating a second surface and repainting
+   * every strip — eliminates ~12 MB of peak memory at scan completion
+   * and the second paint pass that came with it.
+   *
+   * The component writes a fresh `makeImageSnapshot()` here on every
+   * strip arrival (and on init); previous snapshots are disposed so
+   * the SharedValue holds at most one live SkImage.
+   */
+  snapshotSv: SharedValue<SkImage | null>;
   style?: StyleProp<ViewStyle>;
   /** Fired once per strip after it's painted into the off-screen surface. */
   onStripDrawn?: (idx: number) => void;
 }
 
-// Visual constants — referenced from SCAN_DESIGN.md but inlined to keep
-// this module self-contained. The flow agent or design agent may move
-// these into a shared theme later.
+// Visual constants — motion timings stay inline; colors + dot geometry
+// resolve to theme tokens (SCAN_DESIGN §3.2) so the empty strip reads
+// at the intended contrast.
 const STRIP_FADE_MS = 200;
 const PULSE_MS = 320;
-const WRITING_EDGE_WIDTH = 1.5;
-const WRITING_EDGE_COLOR = 'rgba(255,255,255,0.85)';
-const DOT_BG_COLOR = 'rgba(20,28,42,0.92)';
-const DOT_FG_COLOR = 'rgba(255,255,255,0.05)';
-const DOT_SIZE = 2;
-const DOT_SPACING = 8;
+const WRITING_EDGE_WIDTH = scanGeometry.panoramaWritingEdgeWidth;
+const WRITING_EDGE_COLOR = colors.panoramaWritingEdge;
+const DOT_BG_COLOR = colors.panoramaBg;
+const DOT_FG_COLOR = colors.panoramaEmptyDot;
+const DOT_SIZE = scanGeometry.panoramaEmptyDotSize;
+const DOT_SPACING = scanGeometry.panoramaEmptyDotPitch;
 
 export function PanoramaCanvas({
   state,
+  snapshotSv,
   style,
   onStripDrawn,
 }: Props): React.ReactElement {
@@ -79,10 +94,21 @@ export function PanoramaCanvas({
 
   // The off-screen surface and its mutable backing image. We hold both
   // imperatively (refs) so we can mutate per checkpoint without forcing
-  // a React re-render of unrelated state.
+  // a React re-render of unrelated state. `snapshotSv` is parent-owned
+  // so the stitcher can read the already-painted bytes at completion
+  // (see Props doc).
   const surfaceRef = useRef<SkSurface | null>(null);
-  const snapshotSv = useSharedValue<SkImage | null>(null);
   const lastDrawnIdxRef = useRef<number>(-1);
+
+  // Audit finding: the RGB→RGBA widening pass inside `makeImageFromRgb`
+  // was allocating a fresh Uint8Array per strip — at STRIP_WIDTH (80) ×
+  // height (~1024) × 4 bytes ≈ 327680 bytes/strip, and ~36 strips/scan,
+  // that's ~11.8MB of GC churn during the live scan window when the
+  // tracker, capture queue, and stitcher are already competing for
+  // bandwidth. Reusing a single buffer across the whole scan eliminates
+  // that. Skia.Data.fromBytes copies the source bytes synchronously, so
+  // overwriting our buffer for the next strip is safe.
+  const rgbaBufferRef = useRef<Uint8Array | null>(null);
 
   // Reanimated drivers — opacity ramp on the most recent strip, and a
   // pulse on the panel that fires whenever a strip lands.
@@ -140,7 +166,7 @@ export function PanoramaCanvas({
     const canvas = surface.getCanvas();
     for (let i = last + 1; i <= next; i++) {
       const strip = state.strips[i];
-      paintStripIntoSurface(canvas, strip, width);
+      paintStripIntoSurface(canvas, strip, width, rgbaBufferRef);
       onStripDrawn?.(i);
     }
     surface.flush();
@@ -198,6 +224,8 @@ export function PanoramaCanvas({
     [style],
   );
 
+  const showLegend = state.strips.length === 0;
+
   return (
     <View style={containerStyle} accessibilityRole="image" accessibilityLabel="Live unrolled bottle label">
       <Canvas style={StyleSheet.absoluteFill}>
@@ -231,6 +259,13 @@ export function PanoramaCanvas({
           opacity={pulseOpacity}
         />
       </Canvas>
+      {showLegend ? (
+        <View pointerEvents="none" style={styles.legendWrap}>
+          <Text style={styles.legendText} numberOfLines={1}>
+            Your label appears here as you rotate
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -368,13 +403,23 @@ function paintDotBackground(
  * surface canvas at the angular x-offset implied by `strip.coverage`.
  * The source bytes (`strip.imageData`) are referenced only inside this
  * function — the caller may discard them as soon as we return.
+ *
+ * `rgbaBufferRef` is an optional caller-owned reusable RGBA scratch
+ * buffer; passed through to `makeImageFromRgb` so the widening pass
+ * doesn't allocate per-strip.
  */
 function paintStripIntoSurface(
   canvas: SkCanvas,
   strip: StripCheckpoint,
   panoramaWidth: number,
+  rgbaBufferRef?: React.MutableRefObject<Uint8Array | null>,
 ): void {
-  const image = makeImageFromRgb(strip.imageData, strip.width, strip.height);
+  const image = makeImageFromRgb(
+    strip.imageData,
+    strip.width,
+    strip.height,
+    rgbaBufferRef,
+  );
   if (!image) return;
   try {
     const x = coverageToStripX(strip.coverage, panoramaWidth, strip.width);
@@ -392,20 +437,46 @@ function paintStripIntoSurface(
  * Build an SkImage from tightly-packed RGB-uint8 bytes. Skia wants
  * RGBA, so we widen with an opaque alpha channel before handing the
  * bytes to MakeImage.
+ *
+ * If `rgbaBufferRef` is supplied, the widened bytes are written into
+ * the caller's reusable buffer instead of a freshly allocated one
+ * (eliminates ~11.8MB of GC churn over a 36-strip scan; see comment
+ * by `rgbaBufferRef` in PanoramaCanvas). The buffer is grown lazily
+ * if a strip's pixel count exceeds its current size — rare in practice
+ * since STRIP_WIDTH × height is fixed at 80×1024.
  */
 function makeImageFromRgb(
   rgb: Uint8Array,
   width: number,
   height: number,
+  rgbaBufferRef?: React.MutableRefObject<Uint8Array | null>,
 ): SkImage | null {
-  const rgba = new Uint8Array(width * height * 4);
+  const needed = width * height * 4;
+  let rgba: Uint8Array;
+  if (rgbaBufferRef) {
+    if (
+      rgbaBufferRef.current === null ||
+      rgbaBufferRef.current.length < needed
+    ) {
+      rgbaBufferRef.current = new Uint8Array(needed);
+    }
+    rgba = rgbaBufferRef.current;
+  } else {
+    rgba = new Uint8Array(needed);
+  }
   for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) {
     rgba[j] = rgb[i];
     rgba[j + 1] = rgb[i + 1];
     rgba[j + 2] = rgb[i + 2];
     rgba[j + 3] = 255;
   }
-  const data = Skia.Data.fromBytes(rgba);
+  // Skia.Data.fromBytes copies the bytes immediately, so reusing the
+  // source buffer for the next strip is safe. If we ever need a
+  // sub-range of the buffer (when the cached array is larger than
+  // `needed`), pass a typed-array view rather than the full buffer.
+  const view =
+    rgba.length === needed ? rgba : rgba.subarray(0, needed);
+  const data = Skia.Data.fromBytes(view);
   try {
     // 1.x: Skia.Image.MakeImage(info, data, rowBytes). The info object
     // describes width/height/colorType/alphaType.
@@ -428,5 +499,18 @@ const styles = StyleSheet.create({
   container: {
     overflow: 'hidden',
     backgroundColor: DOT_BG_COLOR,
+  },
+  legendWrap: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+  },
+  legendText: {
+    fontSize: 12,
+    fontWeight: '500',
+    letterSpacing: 0.2,
+    color: colors.scanInkFaint,
+    textAlign: 'center',
   },
 });

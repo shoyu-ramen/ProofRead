@@ -102,13 +102,32 @@ export function useRotationCapture(
   // Cancel flag — set on unmount or explicit cancel; pending strips
   // landing after this won't mutate state.
   const cancelledRef = useRef(false);
+  // Single-deferred checkpoint slot. When the queue is at capacity we
+  // drop the inbound trigger but remember the most recent one; once
+  // capacity opens up we replay it against current coverage so the
+  // panorama doesn't keep a permanent gap. Capped at one — a deeper
+  // queue would bloat behind the rotation per ARCH §4.5.
+  const pendingCkptRef = useRef<number | null>(null);
+  // Self-reference for the deferred-checkpoint retry inside
+  // `triggerCapture`'s finally block. Using a ref instead of a direct
+  // recursive reference avoids stale-closure issues across renders.
+  const triggerCaptureRef = useRef<
+    ((ckpt: number, coverage: number) => Promise<void>) | null
+  >(null);
 
   /** JS-side trigger invoked from the worklet via runOnJS. */
   const triggerCapture = useCallback(
     async (checkpointIdx: number, coverageAtCapture: number) => {
       if (cancelledRef.current) return;
       if (queueDepthRef.current >= QUEUE_CAPACITY) {
-        // Brief #4: drop, don't buffer.
+        // At capacity — defer this checkpoint into the single-slot
+        // recovery ring so we can retry it once the queue drains.
+        // Overwrites any older deferral: only the most recent missed
+        // checkpoint is worth recovering (newer is closer to where the
+        // user actually is).
+        if (checkpointIdx > lastTriggeredRef.current) {
+          pendingCkptRef.current = checkpointIdx;
+        }
         return;
       }
       const camera = cameraRef.current;
@@ -116,16 +135,33 @@ export function useRotationCapture(
 
       queueDepthRef.current += 1;
       try {
-        // Snapshot the silhouette at trigger time so the strip
-        // extractor can crop the photo without re-detecting.
-        const ts = trackerStateSv.value;
-        const silhouette = ts.silhouette;
+        // Snapshot the silhouette at trigger time as a *fallback* —
+        // the photo may resolve in a frame where the silhouette is
+        // briefly mis-detected, so we keep this as a backstop for the
+        // strip-extractor crop.
+        const triggerTs = trackerStateSv.value;
+        const triggerSilhouette = triggerTs.silhouette;
 
         const photo = await camera.takePhoto({
           flash: 'off',
           enableShutterSound: false,
         });
         if (cancelledRef.current) return;
+
+        // Re-read coverage immediately after the shutter resolves.
+        // Audit finding: takePhoto() takes 80–150ms — at ~0.15 rev/s
+        // that's ~5° of drift, accumulated over 36 strips into a
+        // visible mid-panorama shear. The trigger-time snapshot is
+        // still useful for *which* checkpoint to bind to, but the
+        // *placement* angle should reflect where the camera actually
+        // was when the shutter fired.
+        const shutterTs = trackerStateSv.value;
+        const placementCoverage = shutterTs.coverage;
+        // Prefer the post-shutter silhouette if still detected; fall
+        // back to the trigger-time snapshot otherwise.
+        const silhouette = shutterTs.silhouette.detected
+          ? shutterTs.silhouette
+          : triggerSilhouette;
 
         const photoUri = photo.path.startsWith('file://')
           ? photo.path
@@ -137,7 +173,7 @@ export function useRotationCapture(
           photoUri,
           silhouette.detected ? silhouette : null,
           {
-            coverage: coverageAtCapture,
+            coverage: placementCoverage,
             silhouetteSourceWidth: TRACKER_FRAME_W,
             silhouetteSourceHeight: TRACKER_FRAME_H,
           },
@@ -155,7 +191,7 @@ export function useRotationCapture(
         bumpCapturedCheckpoints();
         onFrameCaptured?.({
           uri: photoUri,
-          coverage: coverageAtCapture,
+          coverage: placementCoverage,
           capturedAt: Date.now(),
         });
       } catch (err) {
@@ -170,6 +206,31 @@ export function useRotationCapture(
         }
       } finally {
         queueDepthRef.current = Math.max(0, queueDepthRef.current - 1);
+
+        // Deferred-checkpoint retry: drain the single-slot recovery
+        // ring once we have headroom. Coverage may have advanced past
+        // the pending index in the meantime — if it has by more than
+        // one checkpoint, the gap is too wide to recover meaningfully
+        // and we drop the deferred slot rather than capture stale
+        // angles. The retry uses the *current* coverage so the strip
+        // angle reflects what the camera is actually seeing now.
+        const pending = pendingCkptRef.current;
+        if (
+          !cancelledRef.current &&
+          pending !== null &&
+          queueDepthRef.current < QUEUE_CAPACITY
+        ) {
+          pendingCkptRef.current = null;
+          const liveCoverage = trackerStateSv.value.coverage;
+          const liveCkpt = Math.floor(liveCoverage * (numCheckpoints));
+          if (
+            pending > lastTriggeredRef.current &&
+            liveCkpt - pending <= 1
+          ) {
+            lastTriggeredRef.current = pending;
+            void triggerCaptureRef.current?.(pending, liveCoverage);
+          }
+        }
       }
     },
     [
@@ -177,8 +238,15 @@ export function useRotationCapture(
       trackerStateSv,
       bumpCapturedCheckpoints,
       onFrameCaptured,
+      numCheckpoints,
     ],
   );
+
+  // Keep the ref pointing at the current callback so the deferred-
+  // checkpoint retry sees the latest closure across renders.
+  useEffect(() => {
+    triggerCaptureRef.current = triggerCapture;
+  }, [triggerCapture]);
 
   // Worklet reaction: every coverage tick, decide whether to trigger
   // the next checkpoint. The check is cheap (a single comparison), so
@@ -209,6 +277,13 @@ export function useRotationCapture(
     (ckpt: number, coverage: number) => {
       if (cancelledRef.current) return;
       if (ckpt <= lastTriggeredRef.current) return;
+      // Coverage has advanced past the deferred checkpoint by more
+      // than one slot — recovering it would capture a stale angle, so
+      // drop the deferral.
+      const pending = pendingCkptRef.current;
+      if (pending !== null && ckpt - pending > 1) {
+        pendingCkptRef.current = null;
+      }
       lastTriggeredRef.current = ckpt;
       void triggerCapture(ckpt, coverage);
     },
@@ -223,6 +298,7 @@ export function useRotationCapture(
   const cancel = useCallback(() => {
     cancelledRef.current = true;
     queueDepthRef.current = 0;
+    pendingCkptRef.current = null;
   }, []);
 
   // Auto-cancel on unmount so a remount starts clean.
@@ -230,6 +306,7 @@ export function useRotationCapture(
     return () => {
       cancelledRef.current = true;
       queueDepthRef.current = 0;
+      pendingCkptRef.current = null;
     };
   }, []);
 

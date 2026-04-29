@@ -26,6 +26,15 @@ export type PreCheckVerdict =
   | { kind: 'ready' }
   | { kind: 'warn'; reason: 'blur' | 'glare' | 'coverage' | 'motion' };
 
+/**
+ * Coverage-based scan-distance signal (Stream 3, ARCH §3 amendment).
+ * `too_far` and `too_close` are emitted only when the silhouette is
+ * detected — the frame processor measures width as a fraction of the
+ * resized frame and classifies. `null` = width is in the valid-scan
+ * band, or the silhouette isn't detected.
+ */
+export type CoverageStatus = 'too_far' | 'too_close' | null;
+
 export interface TrackerState {
   silhouette: BottleSilhouette;
   flow: FlowMeasurement;
@@ -33,6 +42,8 @@ export interface TrackerState {
   angularVelocity: number;
   rotationDirection: 'cw' | 'ccw' | null;
   preCheck: PreCheckVerdict;
+  /** Distance signal — see CoverageStatus. */
+  coverageStatus: CoverageStatus;
   capturedCheckpoints: number;
   frameTick: number;
 }

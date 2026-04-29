@@ -8,6 +8,7 @@
 
 export type {
   BottleSilhouette,
+  CoverageStatus,
   FlowMeasurement,
   PreCheckVerdict,
   TrackerState,

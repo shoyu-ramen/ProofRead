@@ -34,6 +34,12 @@ const STEADY_SCORE_MIN = 0.6;
 // `scanning` triggers `too_slow`.
 const MIN_REV_PER_SEC = 0.05; // ~18°/sec; <2° in 100ms ≈ stalled
 const STALL_MS = 2000;
+// Audit finding: on ready→scanning transition, the first frame can
+// have velocity < MIN_REV_PER_SEC (direction not yet committed). On
+// a loaded JS thread where frames arrive 2s apart, `too_slow` would
+// fire immediately. Suppress stall detection for this grace window
+// after entering `scanning`.
+const STALL_GRACE_MS = 600;
 // Above this we treat as "too fast" — cap from ARCH §3.
 const MAX_REV_PER_SEC = 1.2; // ~432°/sec; protects optical-flow precision
 
@@ -65,6 +71,11 @@ export function useScanStateMachine(
   // For `too_slow`: when did we drop below MIN_REV_PER_SEC? null when
   // we're rotating fast enough.
   const stalledSinceRef = useRef<number | null>(null);
+  // Wall-clock ms when `scanning` was last entered. Audit finding:
+  // suppress `too_slow` for STALL_GRACE_MS after the transition so a
+  // first-frame velocity dip doesn't immediately pause the scan.
+  // null whenever we're not in `scanning`.
+  const scanningEnteredAtRef = useRef<number | null>(null);
 
   const dispatchTick = useCallback(
     (inputs: ScanMachineInputs) => {
@@ -100,9 +111,18 @@ export function useScanStateMachine(
       // STALL_MS window. Reset on first accept-rate frame.
       let pauseReason = raw.pauseReason;
       const rotatingNow = raw.velocity >= MIN_REV_PER_SEC;
+      // Stall-detection grace window: skip too_slow for STALL_GRACE_MS
+      // after entering `scanning` so first-frame zero-velocity doesn't
+      // immediately fault the scan (audit finding).
+      const enteredAt = scanningEnteredAtRef.current;
+      const inGrace =
+        enteredAt !== null && nowMs - enteredAt < STALL_GRACE_MS;
       if (raw.coverage > 0 && !rotatingNow && pauseReason === null) {
         if (stalledSinceRef.current === null) stalledSinceRef.current = nowMs;
-        if (nowMs - stalledSinceRef.current >= STALL_MS) {
+        if (
+          !inGrace &&
+          nowMs - stalledSinceRef.current >= STALL_MS
+        ) {
           pauseReason = 'too_slow';
         }
       } else {
@@ -148,6 +168,14 @@ export function useScanStateMachine(
           pauseReason = ts.preCheck.reason;
         }
       }
+      // Distance feedback (too_far / too_close) — the tracker only
+      // emits these when the silhouette is locked, so we don't need a
+      // detected gate here. They run *before* the lost-bottle override
+      // because they're a more specific story when we still have a
+      // lock.
+      if (ts.coverageStatus !== null) {
+        pauseReason = ts.coverageStatus;
+      }
       if (!ts.silhouette.detected && ts.coverage > 0) {
         // Lost-bottle takes precedence over a pre-check chip.
         pauseReason = 'lost_bottle';
@@ -184,7 +212,23 @@ export function useScanStateMachine(
     dispatch({ type: 'reset' } satisfies ScanAction);
     steadySinceRef.current = null;
     stalledSinceRef.current = null;
+    scanningEnteredAtRef.current = null;
   }, []);
+
+  // Track `scanning` entry/exit so applyInputs can apply the
+  // STALL_GRACE_MS suppression window. Stamp on entry; clear on every
+  // transition away from `scanning` (so a paused→scanning bounce
+  // restarts the grace window, which is the right behavior — the
+  // user is effectively "starting" again).
+  useEffect(() => {
+    if (state.kind === 'scanning') {
+      if (scanningEnteredAtRef.current === null) {
+        scanningEnteredAtRef.current = Date.now();
+      }
+    } else {
+      scanningEnteredAtRef.current = null;
+    }
+  }, [state.kind]);
 
   // Cleanup integrator state on unmount so a re-mounted scan doesn't
   // inherit a stale "steady since" timestamp.
@@ -192,6 +236,7 @@ export function useScanStateMachine(
     return () => {
       steadySinceRef.current = null;
       stalledSinceRef.current = null;
+      scanningEnteredAtRef.current = null;
     };
   }, []);
 

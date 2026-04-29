@@ -12,7 +12,7 @@
  * reached the renderer.
  */
 
-import type { PauseReason, FailReason } from '@src/scan/ui';
+import type { FailReason } from '@src/scan/ui';
 
 export type ScanStateKind =
   | 'aligning'
@@ -22,7 +22,25 @@ export type ScanStateKind =
   | 'complete'
   | 'failed';
 
-export type { PauseReason, FailReason };
+/**
+ * Pause-reason union — canonical here. ARCH §3 enumerated the original
+ * six (`too_fast`, `too_slow`, `lost_bottle`, `blur`, `glare`,
+ * `motion`); Stream 3 added `too_far` and `too_close` so the user gets
+ * actionable copy when the bottle is at the wrong scan distance, even
+ * before rotation starts. `ScanInstructions` (Stream 1) renders copy
+ * for all eight.
+ */
+export type PauseReason =
+  | 'too_fast'
+  | 'too_slow'
+  | 'lost_bottle'
+  | 'blur'
+  | 'glare'
+  | 'motion'
+  | 'too_far'
+  | 'too_close';
+
+export type { FailReason };
 
 export type ScanState =
   | { kind: 'aligning' }
@@ -95,6 +113,16 @@ export function scanReducer(state: ScanState, action: ScanAction): ScanState {
 
       switch (state.kind) {
         case 'aligning':
+          // Surface distance feedback before the user has even started
+          // rotating — too_far / too_close are derived from the locked
+          // silhouette width, so they're meaningful in `aligning` (and
+          // only there does the user have something to act on).
+          if (
+            pauseReason === 'too_far' ||
+            pauseReason === 'too_close'
+          ) {
+            return { kind: 'paused', coverage: 0, reason: pauseReason };
+          }
           if (!bottleSteady) return state;
           return { kind: 'ready' };
 
@@ -120,6 +148,26 @@ export function scanReducer(state: ScanState, action: ScanAction): ScanState {
 
         case 'paused':
           if (!pauseReason) {
+            // Audit finding: previously, clearing a too_far/too_close
+            // pause always routed back to `aligning`, throwing away any
+            // coverage already captured. The user reads that as "I
+            // restarted" — bad UX when they were halfway through and
+            // just adjusted distance. If we still have a confident lock
+            // (bottleSteady) AND non-trivial coverage, jump straight
+            // back into `scanning` and preserve progress. The 0.05
+            // threshold filters out the just-started case where
+            // `aligning` is the more honest visual.
+            //
+            // For too_slow / lost_bottle / blur / glare / motion /
+            // too_fast, the original aligning-recovery is correct —
+            // those imply real tracking-state loss and the user
+            // benefits from a brief realign window.
+            if (state.reason === 'too_far' || state.reason === 'too_close') {
+              if (bottleSteady && state.coverage > 0.05) {
+                return { kind: 'scanning', coverage };
+              }
+              return { kind: 'aligning' };
+            }
             return { kind: 'scanning', coverage };
           }
           // Pause-reason rotation while still paused: surface the

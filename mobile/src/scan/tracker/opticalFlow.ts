@@ -36,6 +36,16 @@ const STRIP_HALF_FRAC = 0.1;
 // median.
 const MAX_SAD_PER_PIXEL = 50;
 
+// Per-template luma variance gate. Audit finding: on clear-glass
+// bottles (vodka/gin) and label-free zones, SAD templates have ~0
+// variance. The matcher then returns dx≈0 with bogus confidence,
+// MAD collapses to 0, and the integrator believes the bottle is
+// stationary — triggering a `too_slow` false positive. Reject
+// low-variance templates BEFORE adding them to the SAD pool.
+// 16.0 is a conservative floor: a uniform 8×16 patch sits at ~0,
+// while a faint embossed/etched pattern still scores well above.
+const MIN_TEMPLATE_VARIANCE = 16.0;
+
 // Templates whose motion falls outside MAD * MAD_REJECT of the median
 // are voted out. MAD (median absolute deviation) is robust to a small
 // number of bad matches without needing a real RANSAC pass.
@@ -82,9 +92,35 @@ export function measureFlow(
   // Per-template best displacement. We push valid ones into a flat
   // array for the median pass.
   const dxs: number[] = [];
+  // How many templates passed the texture gate. Used to distinguish
+  // "no flow because we have no signal" from "no flow because the
+  // bottle is actually stationary".
+  let texturedCount = 0;
+
+  const TEMPLATE_AREA = TEMPLATE_W * TEMPLATE_H;
 
   for (let i = 0; i < TEMPLATE_COUNT; i++) {
     const ty = yTop + Math.round(yStep * i);
+
+    // Texture gate (audit finding: clear-glass / label-free zones
+    // produce zero-variance templates that fake confident dx=0
+    // matches). Compute the patch's luma variance on the *previous*
+    // frame and skip the SAD search entirely if it's below threshold.
+    let sum = 0;
+    let sumSq = 0;
+    for (let ry = 0; ry < TEMPLATE_H; ry++) {
+      const prevRow = (ty + ry) * w + baseX;
+      for (let rx = 0; rx < TEMPLATE_W; rx++) {
+        const v = prevLuma[prevRow + rx];
+        sum += v;
+        sumSq += v * v;
+      }
+    }
+    const mean = sum / TEMPLATE_AREA;
+    const variance = sumSq / TEMPLATE_AREA - mean * mean;
+    if (variance < MIN_TEMPLATE_VARIANCE) continue;
+    texturedCount++;
+
     let bestSad = Infinity;
     let bestDx = 0;
 
@@ -109,10 +145,16 @@ export function measureFlow(
       }
     }
 
-    const sadPerPixel = bestSad / (TEMPLATE_W * TEMPLATE_H);
+    const sadPerPixel = bestSad / TEMPLATE_AREA;
     if (sadPerPixel <= MAX_SAD_PER_PIXEL) dxs.push(bestDx);
   }
 
+  // If fewer than half of templates passed the texture gate, return
+  // a zero-confidence empty (NOT a confident dx=0). The downstream
+  // angle integrator and stall detector treat confidence=0 as
+  // uncertain rather than "definitely stationary", so the state
+  // machine won't trip too_slow on a clear-glass body. (Audit finding.)
+  if (texturedCount < TEMPLATE_COUNT * 0.5) return EMPTY;
   if (dxs.length < TEMPLATE_COUNT * 0.5) return EMPTY;
 
   const med = median(dxs);

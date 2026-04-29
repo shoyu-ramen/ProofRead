@@ -45,7 +45,8 @@ import {
   useCameraDevice,
   useCameraPermission,
 } from 'react-native-vision-camera';
-import { useDerivedValue } from 'react-native-reanimated';
+import { useDerivedValue, useSharedValue } from 'react-native-reanimated';
+import type { SkImage } from '@shopify/react-native-skia';
 
 import { Button } from '@src/components';
 import {
@@ -92,6 +93,7 @@ interface TrackerSnapshot {
   rotationDirection: 'cw' | 'ccw' | null;
   coverage: number;
   steadiness: number;
+  detected: boolean;
 }
 
 function preCheckChanged(a: PreCheckVerdict, b: PreCheckVerdict): boolean {
@@ -155,6 +157,13 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
   const appendFrame = useScanStore((s) => s.appendFrame);
   const clearScanCaptures = useScanStore((s) => s.clearScanCaptures);
 
+  // Live panorama snapshot — owned here so `stitchPanorama` can encode
+  // the already-painted bytes from PanoramaCanvas's off-screen surface
+  // without allocating a second 12 MB Skia surface or repainting every
+  // strip. PanoramaCanvas writes a fresh `makeImageSnapshot()` here on
+  // every strip arrival; we read once at completion.
+  const snapshotSv = useSharedValue<SkImage | null>(null);
+
   // Tracker — frame processor + shared values.
   const tracker = useTrackerFrameProcessor();
 
@@ -196,10 +205,12 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
       // Default-centered guide while we wait for the detector. The
       // overlay's opacity is 0 in this state so these numbers never
       // render — but keeping the frame stable means detection lands
-      // smoothly without a jump.
+      // smoothly without a jump. centerY sits at 60% of screen height
+      // so the ring's leading-edge dot at 12 o'clock falls below the
+      // panorama strip footprint if its visibility ever leaks.
       return {
         centerX: screen.width / 2,
-        centerY: screen.height / 2,
+        centerY: screen.height * 0.6,
         widthPx: screen.width * 0.55,
         heightPx: screen.height * 0.55,
       };
@@ -226,6 +237,42 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
     [tracker.trackerStateSv],
   );
 
+  // Audit finding: the biggest source of strip-tone variation across a
+  // scan is the camera's auto-exposure re-converging between
+  // checkpoints — each takePhoto() can land with a different brightness
+  // baseline, banding the unrolled panorama. On entering `ready`
+  // (bottle detected and steady), call Camera.focus() at the
+  // silhouette's center to lock AF — on iOS this also briefly locks AE
+  // for the focus convergence window, which is enough to flatten the
+  // tone variance across the 8–15s scan.
+  //
+  // VisionCamera v4 does NOT expose a "read current exposure" API; the
+  // only `exposure` surface is a bias prop premultiplied onto the
+  // device's auto-exposure (range = device.minExposure..maxExposure,
+  // 0 = neutral). Since we can't snapshot the current AE point and pin
+  // it, we accept some residual AE drift and rely on focus() for the
+  // AF lock. AE/AF re-engages naturally on the next scan when this
+  // screen re-mounts (failed/cancel paths route through router.back or
+  // router.replace), so no explicit "release" is needed.
+  useEffect(() => {
+    if (state.kind !== 'ready') return;
+    const silhouette = silhouetteSv.value;
+    const x = silhouette.centerX;
+    const y = silhouette.centerY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    void (async () => {
+      try {
+        await cameraRef.current?.focus({ x, y });
+      } catch (err) {
+        // Camera.focus() throws if the device is busy mid-capture or
+        // not yet initialized — both transient and recoverable. Log
+        // and move on; a missed AF lock degrades to "scan with mild
+        // tone variance", not failure.
+        console.warn('Camera.focus() failed', err);
+      }
+    })();
+  }, [state.kind, silhouetteSv]);
+
   // JS-side snapshots of tracker fields the React chrome reads. The
   // shared value updates at frame rate; the UI bands (instruction copy
   // thresholds, chip reasons, ring direction) change at human cadence,
@@ -238,6 +285,7 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
       rotationDirection: ts.rotationDirection,
       coverage: ts.coverage,
       steadiness: ts.silhouette.steadinessScore,
+      detected: ts.silhouette.detected,
     };
   });
   useEffect(() => {
@@ -259,12 +307,17 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
           Math.abs(ts.silhouette.steadinessScore - prev.steadiness) > 0.05
             ? ts.silhouette.steadinessScore
             : prev.steadiness;
+        const nextDetected =
+          ts.silhouette.detected === prev.detected
+            ? prev.detected
+            : ts.silhouette.detected;
 
         if (
           nextPreCheck === prev.preCheck &&
           nextDir === prev.rotationDirection &&
           nextCov === prev.coverage &&
-          nextSteady === prev.steadiness
+          nextSteady === prev.steadiness &&
+          nextDetected === prev.detected
         ) {
           return prev;
         }
@@ -273,6 +326,7 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
           rotationDirection: nextDir,
           coverage: nextCov,
           steadiness: nextSteady,
+          detected: nextDetected,
         };
       });
     }, 200);
@@ -312,8 +366,18 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
       stitchedRef.current = true;
       void (async () => {
         try {
+          const liveSnapshot = snapshotSv.value;
+          if (!liveSnapshot) {
+            // Surface allocation must have failed earlier — without it
+            // there's nothing to encode. Treat as capture error rather
+            // than shipping an empty JPEG.
+            console.warn('stitchPanorama: snapshotSv null at completion');
+            fail('capture_error');
+            return;
+          }
           const result = await stitchPanorama(
-            { ...panoramaState, isComplete: true },
+            liveSnapshot,
+            panoramaState,
             { startedAt: startedAtRef.current ?? Date.now() },
           );
           if (cancelledRef.current) return;
@@ -328,7 +392,7 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
     }, STITCH_QUIET_MS);
 
     return () => clearTimeout(timer);
-  }, [state, panoramaState, setPanorama, complete, fail]);
+  }, [state, panoramaState, setPanorama, complete, fail, snapshotSv]);
 
   // Haptics — fire-and-forget edge events.
   useScanHaptics(state);
@@ -422,7 +486,11 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
           },
         ]}
       >
-        <PanoramaCanvas state={panoramaState} style={styles.panoramaCanvas} />
+        <PanoramaCanvas
+          state={panoramaState}
+          snapshotSv={snapshotSv}
+          style={styles.panoramaCanvas}
+        />
       </View>
 
       {/* Bottle silhouette overlay — drawn in screen space over the
@@ -438,16 +506,19 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
       />
 
       {/* Rotation guide ring — concentric with the silhouette;
-          arc fills with coverage. Hidden during aligning when the
-          silhouette overlay is also invisible. */}
-      <RotationGuideRing
-        coverageSv={coverageSv}
-        silhouetteSv={silhouetteSv}
-        state={stateKind}
-        viewportWidth={screen.width}
-        viewportHeight={screen.height}
-        rotationDirection={snap.rotationDirection}
-      />
+          arc fills with coverage. Hidden during aligning so its
+          leading-edge dot doesn't read as a stray UI artifact before
+          the bottle is detected. */}
+      {stateKind !== 'aligning' && (
+        <RotationGuideRing
+          coverageSv={coverageSv}
+          silhouetteSv={silhouetteSv}
+          state={stateKind}
+          viewportWidth={screen.width}
+          viewportHeight={screen.height}
+          rotationDirection={snap.rotationDirection}
+        />
+      )}
 
       {/* Cancel button — top-left, with confirm-dialog when coverage
           > 0.05 (CancelButton owns the confirm). Hidden once the scan
@@ -475,6 +546,7 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
         steadiness={snap.steadiness}
         pauseReason={pauseReason}
         failReason={failReason}
+        bottleDetected={snap.detected}
       />
 
       {/* Progress dial — bottom-right, big number + caption. */}

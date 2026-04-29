@@ -21,14 +21,32 @@ const BAND_BOT_FRAC = 0.85;
 // 64×96 pre-check buffer — at 160×240 this is conservative.
 const SOBEL_MIN = 32;
 
-// Reject silhouettes outside these width fractions per spec.
-const MIN_WIDTH_FRAC = 0.3;
-const MAX_WIDTH_FRAC = 0.9;
+// Width-fraction floor for detection. Below this, paired vertical
+// edges are likely background features (table edges, frame seams) and
+// not a bottle. The valid scan-distance band is 30–90% of frame width;
+// detection no longer hard-rejects between this floor and the upper
+// limit so the frame processor can classify too_far / too_close.
+const MIN_WIDTH_DETECT_FRAC = 0.15;
 
 // Reject if either edge column std-dev (across rows) exceeds this many
 // pixels. A cylindrical bottle's vertical edges are nearly straight in
 // the resized frame; a high std-dev means we latched onto label text.
 const MAX_EDGE_STDDEV_PX = 6;
+
+// Minimum ratio between the chosen edge response and the next-best
+// candidate in the same row half. Audit finding: a vertical tile
+// grout / window edge / door frame in the background can pass the
+// stddev test if it sits at a roughly stable column. Requiring the
+// chosen edge to be 1.5× stronger than its nearest competitor in
+// the same half-row weeds out those ties without rejecting genuine
+// (single-vertical) bottle edges.
+const MIN_EDGE_DOMINANCE = 1.5;
+
+// If more than this fraction of rows are "ambiguous" (chosen edge
+// not dominant over the next-best), treat the silhouette as unstable
+// and fail detection. 0.30 = up to ~3 ambiguous rows in a typical
+// 10-row band before we reject.
+const MAX_AMBIGUOUS_ROW_FRAC = 0.3;
 
 // Empty silhouette returned when detection fails. Stable shape so the
 // shared value's writes stay JIT-friendly.
@@ -62,12 +80,24 @@ export function detectBottle(
   const leftCols: number[] = [];
   const rightCols: number[] = [];
 
+  // Per-row dominance flag: true if either edge in this row is
+  // ambiguous (chosen response not >= MIN_EDGE_DOMINANCE × next-best).
+  // Aggregated below to reject silhouettes contaminated by background
+  // verticals (audit finding: tile grout, window edges, door frames).
+  let scannedRows = 0;
+  let ambiguousRows = 0;
+
   for (let y = yTop; y < yBot; y++) {
     const row = y * w;
     let bestLeft = -1;
     let bestLeftMag = SOBEL_MIN;
+    // Second-best magnitudes per side. Tracked separately from the
+    // best so we can compute an edge-dominance ratio per row without
+    // breaking the existing single-pass scan.
+    let secondLeftMag = 0;
     let bestRight = -1;
     let bestRightMag = SOBEL_MIN;
+    let secondRightMag = 0;
 
     // 3-tap horizontal Sobel (vertical-edge response). We scan the
     // row once, splitting at cx so each side keeps the strongest
@@ -76,20 +106,45 @@ export function detectBottle(
       const left = luma[row + x - 1];
       const right = luma[row + x + 1];
       const mag = right > left ? right - left : left - right;
-      if (mag <= bestLeftMag && mag <= bestRightMag) continue;
       if (x < cx) {
         if (mag > bestLeftMag) {
+          // Demote the previous best to second-best before we
+          // overwrite it — keeps the dominance check honest.
+          secondLeftMag = bestLeftMag;
           bestLeftMag = mag;
           bestLeft = x;
+        } else if (mag > secondLeftMag) {
+          secondLeftMag = mag;
         }
-      } else if (mag > bestRightMag) {
-        bestRightMag = mag;
-        bestRight = x;
+      } else {
+        if (mag > bestRightMag) {
+          secondRightMag = bestRightMag;
+          bestRightMag = mag;
+          bestRight = x;
+        } else if (mag > secondRightMag) {
+          secondRightMag = mag;
+        }
       }
     }
 
     if (bestLeft >= 0) leftCols.push(bestLeft);
     if (bestRight >= 0) rightCols.push(bestRight);
+
+    if (bestLeft >= 0 && bestRight >= 0) {
+      scannedRows++;
+      // SOBEL_MIN initial seed for the second-best comparator means
+      // a row with literally one edge passes (denominator floor of
+      // SOBEL_MIN). If a real second peak exists, the ratio reflects
+      // it. Edge is ambiguous if EITHER side fails dominance.
+      const leftDominance = bestLeftMag / Math.max(SOBEL_MIN, secondLeftMag);
+      const rightDominance = bestRightMag / Math.max(SOBEL_MIN, secondRightMag);
+      if (
+        leftDominance < MIN_EDGE_DOMINANCE ||
+        rightDominance < MIN_EDGE_DOMINANCE
+      ) {
+        ambiguousRows++;
+      }
+    }
   }
 
   // Need a quorum on both sides — sparse rows mean the bottle is
@@ -97,13 +152,27 @@ export function detectBottle(
   const minRows = Math.floor((yBot - yTop) * 0.5);
   if (leftCols.length < minRows || rightCols.length < minRows) return EMPTY;
 
+  // Background-vertical guard. If too many rows had a competitor
+  // edge close to the chosen one, the silhouette is sitting on top
+  // of (or next to) a background vertical and we can't trust the
+  // median to track the actual bottle (audit finding).
+  if (
+    scannedRows > 0 &&
+    ambiguousRows / scannedRows > MAX_AMBIGUOUS_ROW_FRAC
+  ) {
+    return EMPTY;
+  }
+
   const leftMedian = median(leftCols);
   const rightMedian = median(rightCols);
   if (rightMedian <= leftMedian) return EMPTY;
 
   const widthPx = rightMedian - leftMedian;
   const widthFrac = widthPx / w;
-  if (widthFrac < MIN_WIDTH_FRAC || widthFrac > MAX_WIDTH_FRAC) return EMPTY;
+  // Reject only widths so small they can't be told from background
+  // edge noise. The valid-scan-distance band (30–90%) is now classified
+  // by the frame processor as too_far / too_close, not silently dropped.
+  if (widthFrac < MIN_WIDTH_DETECT_FRAC) return EMPTY;
 
   // Std-dev against the medians; rejects label-edge noise that beat
   // the silhouette edge in stray rows.
