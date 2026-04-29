@@ -370,7 +370,15 @@ def verify(
     )
     reverse_signature: tuple[int, ...] | None = None
     reverse_hit = None
-    if reverse_cache is not None and all(p is not None for p in panel_phashes):
+    # Empty signature is treated as "no reverse lookup" — same code path
+    # as a dhash failure. Without this guard a zero-panel request would
+    # produce signature `()`, hit the cache as a miss, and double-count
+    # against both the cache's internal counter and the orchestrator's.
+    if (
+        reverse_cache is not None
+        and panel_phashes
+        and all(p is not None for p in panel_phashes)
+    ):
         # mypy: every entry is now non-None; build a concrete int tuple.
         reverse_signature = tuple(int(p) for p in panel_phashes if p is not None)
         with traced_span("verify.reverse_lookup", panel_count=len(panels)):

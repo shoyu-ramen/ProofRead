@@ -17,7 +17,7 @@ import json
 import threading
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.services.anthropic_client import ExtractorUnavailable
@@ -521,7 +521,7 @@ class VerifyStatsResponse(BaseModel):
     overall_verdicts: dict[str, int]
     cache: dict[str, int] | None = None
     reverse_lookup: dict[str, int] | None = None
-    reverse_lookup_elapsed_ms_recent: list[int] = []
+    reverse_lookup_elapsed_ms_recent: list[int] = Field(default_factory=list)
 
 
 @router.get("/_stats", response_model=VerifyStatsResponse)
