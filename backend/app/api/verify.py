@@ -66,6 +66,20 @@ class VerifyResponse(BaseModel):
     # during the iterative-design workflow (re-submitting the same
     # artwork export) and to suppress the spinner that the cold path needs.
     cache_hit: bool = False
+    # SPEC §0.5: outcome of the redundant Government-Warning second pass.
+    # `None` when the second-pass reader is disabled or unconfigured;
+    # otherwise a payload like:
+    #   {"outcome": "confirmed_compliant" | "confirmed_noncompliant" |
+    #               "disagreement" | "primary_only" | "no_warning_present",
+    #    "edit_distance_to_canonical": int | None,
+    #    "edit_distance_between_reads": int | None,
+    #    "notes": str,
+    #    "primary": {"value": str|None, "found": bool, "confidence": float, "source": str} | None,
+    #    "secondary": {...} | None}
+    # The UI surfaces `outcome` and `notes` to give the operator visibility
+    # into why a warning rule was downgraded to advisory; dashboards key off
+    # `outcome` to track inter-pass agreement rate over time.
+    health_warning_cross_check: dict | None = None
 
 
 # Module-level extractor cache so we don't recreate the Anthropic client per
@@ -297,4 +311,5 @@ async def verify_label(
         image_quality_notes=report.image_quality_notes,
         elapsed_ms=report.elapsed_ms,
         cache_hit=report.cache_hit,
+        health_warning_cross_check=report.health_warning_cross_check,
     )
