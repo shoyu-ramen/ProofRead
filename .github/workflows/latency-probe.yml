@@ -2,8 +2,11 @@
 #
 # Runs `backend/scripts/verify_latency.py` against production once per day
 # (and on demand via workflow_dispatch). The script asserts:
-#   * cold-call wall-clock under MAX_COLD_MS (default 8 s — picked ~25%
-#     above today's Sonnet+crop p95; tighten as the baseline settles);
+#   * cold-call wall-clock under MAX_COLD_MS (default 12 s — Haiku 4.5
+#     primary + parallel Haiku second-pass measure ~8 s end-to-end from a
+#     US-East GitHub runner; the 12 s budget gives ~50% headroom for
+#     normal jitter and still catches a 2× regression like a model swap
+#     back to Sonnet/Opus);
 #   * warm-call client p95 under 2.5 s — server-side is essentially zero
 #     on a cache hit (sub-millisecond LRU lookup), so this budget is
 #     dominated by the GitHub-runner-to-Railway-edge network round-trip
@@ -41,7 +44,7 @@ on:
       max_cold_ms:
         description: "Cold-call latency budget (ms)"
         required: false
-        default: "8000"
+        default: "12000"
         type: string
 
 # A late-running probe must not collide with an in-progress deploy from
