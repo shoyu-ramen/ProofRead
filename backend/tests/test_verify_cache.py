@@ -331,6 +331,39 @@ def test_no_cache_path_unchanged():
     assert report.cache_hit is False
 
 
+def test_cache_internal_storage_is_immutable_snapshot(cache: VerifyCache, extractor):
+    """Item #4 freeze pattern: the cache's internal entry is a frozen
+    snapshot, not a mutable VerifyReport. A direct attempt to reassign
+    on the snapshot raises FrozenInstanceError — the read shape is
+    locked by construction rather than by recursive copy.
+
+    This is the "isolation by construction" guarantee that lets us drop
+    the deepcopy: if the snapshot itself can't be mutated, neither
+    a returned-report mutation nor a future cold-path bug can leak
+    state across cache hits.
+    """
+    from dataclasses import FrozenInstanceError
+
+    from app.services.verify_cache import _Snapshot
+
+    inp = _bourbon_input()
+    verify(inp, extractor=extractor, cache=cache)
+
+    # Reach into the internal LRU and confirm the stored entry is a
+    # _Snapshot, not a VerifyReport.
+    [stored_key] = list(cache._cache.keys())
+    snap = cache._cache[stored_key]
+    assert isinstance(snap, _Snapshot)
+
+    # The frozen dataclass refuses attribute reassignment.
+    with pytest.raises(FrozenInstanceError):
+        snap.overall = "fail"
+    # rule_results is a tuple, not a list — no .append / .clear available.
+    assert isinstance(snap.rule_results, tuple)
+    with pytest.raises(AttributeError):
+        snap.rule_results.append("evil")  # type: ignore[attr-defined]
+
+
 def test_zero_capacity_cache_disabled_at_api_layer():
     """When `verify_cache_max_entries=0`, `get_verify_cache()` returns
     None and the verify call runs without any caching. Verified via the

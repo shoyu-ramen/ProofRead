@@ -210,6 +210,8 @@ Validate that automated label compliance is **trustworthy enough** that a brewer
 
 Wine, spirits, Android, type-size enforcement (advisory only), COLA cross-reference, multi-language, PDF export, bulk upload.
 
+> **v1 shipping note (2026-04):** The single-shot `/v1/verify` agent path also accepts `spirits` (rule set in `app/rules/definitions/spirits.yaml`); the multi-image `/v1/scans` flow remains beer-only. `wine` is gated with HTTP 422 (`code: beverage_type_unsupported`) on both endpoints until the v2 wine rule set lands.
+
 ### v1.3 Success metrics
 
 - 100 brewers onboarded

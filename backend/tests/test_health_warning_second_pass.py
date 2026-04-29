@@ -59,6 +59,30 @@ def test_both_reads_agree_on_paraphrase_is_confirmed_noncompliant():
     assert cc.edit_distance_to_canonical and cc.edit_distance_to_canonical > 5
 
 
+def test_titlecase_warning_does_not_promote_to_confirmed_compliant():
+    """Item #3: case-folding hole — both reads agree on a title-case
+    Government Warning that the engine's exact-text rule would FAIL.
+    The cross-check used to label this `confirmed_compliant` (case-folded
+    distance was 0), which would silently mis-pass if a future caller
+    used the cross-check verdict as the source of truth instead of
+    delegating to the engine. Now the cross-check requires *case-
+    sensitive* equality before promoting to `confirmed_compliant`, so
+    title-case agreement falls through to `confirmed_noncompliant` —
+    aligned with the engine's FAIL."""
+    titlecase_canonical = CANONICAL.replace("GOVERNMENT WARNING:", "Government Warning:")
+    primary = WarningRead(value=titlecase_canonical, found=True, confidence=0.95)
+    secondary = WarningRead(value=titlecase_canonical, found=True, confidence=0.94)
+    cc = cross_check(primary, secondary)
+    assert cc.outcome == "confirmed_noncompliant", (
+        f"Title-case warning must not be confirmed_compliant; got {cc.outcome}. "
+        f"This branch hides what the engine's exact-text rule would FAIL."
+    )
+    # Both reads still agree (case-folded distance is 0), so the
+    # case-folded edit-distance should reflect that. The promotion to
+    # `confirmed_compliant` is what's blocked, not the agreement signal.
+    assert cc.edit_distance_between_reads == 0
+
+
 def test_reads_disagree_returns_disagreement():
     primary = WarningRead(value=CANONICAL, found=True, confidence=0.95)
     secondary = WarningRead(value=TITLECASE_PARAPHRASE, found=True, confidence=0.95)

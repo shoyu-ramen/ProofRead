@@ -16,6 +16,14 @@ android/app/build/
 android/.gradle/
 android/.idea/
 
+# Expo prebuild output — generated locally via `npx expo prebuild`,
+# regenerated on EAS build. Treating ios/ and android/ as generated for
+# now keeps the 290MB Pods cache out of git; if/when we need to hand-
+# edit native code, drop the whole-folder ignore and selectively
+# ignore Pods/ + xcuserdata/ instead.
+ios/
+android/
+
 # Env / local config
 .env
 .env.local

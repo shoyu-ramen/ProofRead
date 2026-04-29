@@ -43,7 +43,7 @@ interface Stage {
 
 const STAGES: ReadonlyArray<Stage> = [
   { id: 'uploading', label: 'Uploading images', synthesized: false },
-  { id: 'ocr', label: 'OCR (Google Vision)', synthesized: true },
+  { id: 'ocr', label: 'Reading the label', synthesized: true },
   { id: 'extract', label: 'Extracting fields', synthesized: true },
   { id: 'rules', label: 'Running TTB rule engine', synthesized: true },
   { id: 'done', label: 'Done', synthesized: false },
@@ -153,16 +153,18 @@ export default function ProcessingScreen(): React.ReactElement {
 
       <View style={{ flex: 1 }} />
       <Button
-        label="Cancel"
+        label="Run in background"
         variant="secondary"
         onPress={() => {
-          // TODO(cancel): backend has no cancel endpoint in v1; this just
-          // navigates away and abandons polling. The scan continues
-          // server-side and surfaces in history.
+          // The backend has no cancel endpoint in v1 — leaving this
+          // screen abandons polling but the scan continues server-side
+          // and lands in history. Labeled "Run in background" so the
+          // affordance matches the actual behavior; renames to "Cancel"
+          // once a backend cancel endpoint lands.
           router.replace('/(app)/home');
         }}
         // While submitting we don't want the user to bail mid-upload —
-        // but once we're polling, cancel is fine.
+        // but once we're polling, backgrounding is fine.
         disabled={isFetching && !data}
       />
     </Screen>

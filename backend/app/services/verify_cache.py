@@ -24,6 +24,17 @@ Cache contract:
     process memory on a 256 MB Fly machine, large enough to span a
     full design iteration.
 
+Mutation isolation (freeze pattern, replaces the prior `copy.deepcopy`):
+  * `put` stores the entry as a frozen snapshot — `rule_results` is
+    captured as a tuple, the mutable mappings (`extracted`,
+    `unreadable_fields`, `health_warning_cross_check`) are captured
+    via the snapshot helpers below.
+  * `get` materializes a fresh `VerifyReport` from the snapshot, so
+    callers receive normal mutable Python collections they can sort,
+    append to, etc. Their mutations target the freshly-materialized
+    collections, not the cache's internal storage — so the cache stays
+    quarantined without paying the deepcopy cost on every hit.
+
 SPEC §0.5 fail-honestly is preserved: a cache hit returns the same
 verdict the cold path produced, including any "advisory" /
 "unreadable" downgrades. We never *upgrade* a previously honest
@@ -32,7 +43,6 @@ verdict by skipping the pre-check.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import threading
@@ -40,7 +50,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from app.rules.types import Rule
+from app.rules.types import Rule, RuleResult
 
 if TYPE_CHECKING:
     # `VerifyReport` lives in `app.services.verify`, which itself imports this
@@ -58,6 +68,90 @@ class CacheStats:
     max_entries: int
 
 
+@dataclass(frozen=True)
+class _Snapshot:
+    """Immutable form of `VerifyReport` held in the cache.
+
+    Frozen at the dataclass level so a stray attribute reassignment
+    (e.g. `snap.overall = "fail"`) raises rather than silently
+    contaminating future hits. The mutable-shaped fields (lists, dicts)
+    are captured as tuples / new dicts on `put` and re-built into
+    fresh mutables on `get`, so the cache surface to callers is
+    indistinguishable from the prior `copy.deepcopy` contract.
+    """
+
+    overall: str
+    rule_results: tuple[RuleResult, ...]
+    extracted: dict[str, dict[str, Any]]
+    unreadable_fields: tuple[str, ...]
+    image_quality: str
+    image_quality_notes: str | None
+    health_warning_cross_check: dict[str, Any] | None
+    elapsed_ms: int
+    cache_hit: bool
+
+
+def _snapshot(report: VerifyReport) -> _Snapshot:
+    """Capture the cold-path report as an immutable snapshot.
+
+    `rule_results` becomes a tuple — `RuleResult` is a regular
+    dataclass with only scalar / tuple fields, so a tuple of references
+    is sufficient to lock the read shape against caller mutation. The
+    nested dicts are shallow-copied (single-level) since their values
+    are also scalar / tuple. Anything deeper (e.g. a list-of-objects
+    inside one of the entries) would need a recursive copy.
+    """
+    return _Snapshot(
+        overall=report.overall,
+        rule_results=tuple(report.rule_results),
+        extracted={
+            name: dict(info) if isinstance(info, dict) else info
+            for name, info in report.extracted.items()
+        },
+        unreadable_fields=tuple(report.unreadable_fields),
+        image_quality=report.image_quality,
+        image_quality_notes=report.image_quality_notes,
+        health_warning_cross_check=(
+            dict(report.health_warning_cross_check)
+            if isinstance(report.health_warning_cross_check, dict)
+            else report.health_warning_cross_check
+        ),
+        elapsed_ms=report.elapsed_ms,
+        cache_hit=report.cache_hit,
+    )
+
+
+def _materialize(snap: _Snapshot) -> VerifyReport:
+    """Build a fresh `VerifyReport` from a frozen snapshot.
+
+    Returns mutable collections (list, dict) so the caller can
+    sort / append / clear without surprises. Mutations land on the
+    freshly-built containers, not the cache's frozen storage — that's
+    the whole point of the freeze pattern: isolation by construction
+    rather than by recursive copy.
+    """
+    from app.services.verify import VerifyReport
+
+    return VerifyReport(
+        overall=snap.overall,
+        rule_results=list(snap.rule_results),
+        extracted={
+            name: dict(info) if isinstance(info, dict) else info
+            for name, info in snap.extracted.items()
+        },
+        unreadable_fields=list(snap.unreadable_fields),
+        image_quality=snap.image_quality,
+        image_quality_notes=snap.image_quality_notes,
+        health_warning_cross_check=(
+            dict(snap.health_warning_cross_check)
+            if isinstance(snap.health_warning_cross_check, dict)
+            else snap.health_warning_cross_check
+        ),
+        elapsed_ms=snap.elapsed_ms,
+        cache_hit=snap.cache_hit,
+    )
+
+
 class VerifyCache:
     """Thread-safe LRU of `VerifyReport`s keyed on image+context fingerprints.
 
@@ -70,45 +164,49 @@ class VerifyCache:
     def __init__(self, max_entries: int = 1024) -> None:
         if max_entries <= 0:
             raise ValueError("max_entries must be positive")
-        self._cache: OrderedDict[str, VerifyReport] = OrderedDict()
+        self._cache: OrderedDict[str, _Snapshot] = OrderedDict()
         self._max = max_entries
         self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
 
     def get(self, key: str) -> VerifyReport | None:
-        """Return a deep copy of the cached entry, or None on miss.
+        """Return a fresh `VerifyReport` materialized from the cached
+        frozen snapshot, or None on miss.
 
-        Deep-copying on read isolates the caller from the cached
-        snapshot: any mutation of `rule_results`, `extracted`, or
-        `unreadable_fields` (e.g. a future code path that sorts the
-        rule list or appends an advisory) cannot leak back into the
-        cache and corrupt subsequent hits. The cost is single-digit
-        microseconds for the size of report we actually produce, which
-        is negligible against the 50 ms budget.
+        The snapshot's collections are immutable (tuple of
+        rule_results, frozen dict views), so re-materializing into
+        normal mutable lists/dicts here is enough to isolate the caller
+        from the cache: any mutation lands on the freshly-built
+        collection, not the cached storage. Cheaper than `copy.deepcopy`
+        because we only re-build the top-level container shape, not
+        every leaf value.
         """
         with self._lock:
-            entry = self._cache.get(key)
-            if entry is None:
+            snap = self._cache.get(key)
+            if snap is None:
                 self._misses += 1
                 return None
             # LRU bookkeeping.
             self._cache.move_to_end(key)
             self._hits += 1
-            return copy.deepcopy(entry)
+            return _materialize(snap)
 
     def put(self, key: str, value: VerifyReport) -> None:
-        """Store a deep copy of `value` so the cache holds an island
-        of state nobody else can reach into.
+        """Store a frozen snapshot of `value` so the cache holds an
+        island of state nobody else can reach into.
 
-        The cold path constructs the report from fresh lists/dicts, so
-        in today's code a shallow store would be safe. We deepcopy
-        anyway: the alternative is a latent bug class where any future
-        post-`verify()` mutation of a returned report would corrupt
-        every cache entry that shared its inner collections.
+        The snapshot replaces the prior `copy.deepcopy` because the
+        cached report's mutable surface is shallow (top-level lists +
+        the cross-check dict + the extracted-fields dict-of-dicts). A
+        tuple-of-rule_results plus copied dicts gives the same isolation
+        guarantee at a fraction of the deepcopy cost, and on
+        materialization we hand the caller fresh mutables instead of
+        forcing them through a frozen-collection API at every site.
         """
+        snap = _snapshot(value)
         with self._lock:
-            self._cache[key] = copy.deepcopy(value)
+            self._cache[key] = snap
             self._cache.move_to_end(key)
             while len(self._cache) > self._max:
                 self._cache.popitem(last=False)

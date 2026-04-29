@@ -18,7 +18,7 @@ import { useQuery } from '@tanstack/react-query';
 import { BBoxOverlay, Button, StatusBadge } from '@src/components';
 import { apiClient } from '@src/api/client';
 import { queryKeys } from '@src/state/queryClient';
-import { useScanStore } from '@src/state/scanStore';
+import { surfaceForPanel, useScanStore } from '@src/state/scanStore';
 import type { BBox, RuleResultDTO, RuleStatus } from '@src/api/types';
 import type { CapturedImage } from '@src/state/scanStore';
 import { colors, radius, spacing, typography } from '@src/theme';
@@ -65,13 +65,22 @@ export default function RuleDetailScreen(): React.ReactElement {
     );
   }
 
-  // Heuristic: in v1, beer rules are mostly back-of-label (health
-  // warning, name+address). Default to back if available, else front.
-  // The bbox is in the coordinate space of one captured image; the
-  // backend doesn't tell us which one today, so this is a TODO.
-  // TODO(bbox-image-source): backend should return image_id alongside
-  // bbox so we can pick the correct surface deterministically.
-  const surface = captures.back ? 'back' : 'front';
+  // Pick the capture this rule's bbox lives in. Backend rule_results
+  // carry a `surface` panel id (e.g. "panel_0"); surfaceForPanel maps
+  // it to the local capture slot. v1 only captures front + back — if
+  // the backend ever points at `side`/`neck` we fall back to the
+  // legacy heuristic ("back if we have one, else front"). Same fallback
+  // covers the still-rolling /v1/scans/:id/report endpoint which
+  // hasn't shipped `surface` yet (verify.py emits it; scans.py is
+  // following). Once scans.py ships and v1 still only captures two
+  // surfaces, the fallback can shrink to just the side/neck guard.
+  const mapped = surfaceForPanel(rule.surface);
+  const surface: 'front' | 'back' =
+    mapped === 'front' || mapped === 'back'
+      ? mapped
+      : captures.back
+      ? 'back'
+      : 'front';
   const cap = captures[surface];
 
   return (

@@ -11,10 +11,11 @@
  */
 
 import React, { useCallback, useState } from 'react';
-import { Alert, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { Button, Screen, SectionHeader } from '@src/components';
 import { apiClient } from '@src/api/client';
+import { showErrorAlert } from '@src/api/errors';
 import {
   REQUIRED_CAPTURE_SURFACES,
   useScanStore,
@@ -65,8 +66,7 @@ export default function ReviewScreen(): React.ReactElement {
       setScanId(created.scan_id);
       router.replace(`/(app)/scan/processing/${created.scan_id}`);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Submit failed';
-      Alert.alert("Couldn't submit scan", message);
+      showErrorAlert(err, { title: "Couldn't submit scan" });
     } finally {
       setSubmitting(false);
     }

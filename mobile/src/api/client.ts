@@ -79,6 +79,10 @@ export class ApiClient {
       } catch {
         // body wasn't JSON; fall back to status text.
       }
+      // The thrown message is the raw server detail — kept here so
+      // logs / Sentry breadcrumbs carry the diagnostic string. Call
+      // sites must NOT show this to end users; use describeError()
+      // from ./errors.ts to render plain-language copy instead.
       const message =
         (problem && (problem.detail as string | undefined)) ||
         problem?.title ||

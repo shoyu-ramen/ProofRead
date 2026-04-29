@@ -86,13 +86,60 @@ Every TODO in source is grep-able — these are the major ones:
 | Area | What's stubbed | Where |
 |---|---|---|
 | Auth0 sign-in | Single "Sign in (stub)" button populates a fake user. No token exchange yet. | `app/signin.tsx`, `src/state/auth.ts` |
-| Frame-processor pre-checks | `PreCheck` state flips to `ready` after 600 ms. Real focus / glare / coverage / motion checks (SPEC §v1.5 F1.3) are TODO. | `app/(app)/scan/camera/[surface].tsx` |
 | HDR / thermal-state adaptation | `takePhoto` uses defaults. SPEC §0.5 calls for HDR + adaptive frame-processor frequency. | `app/(app)/scan/camera/[surface].tsx` |
 | Bbox-on-image overlay | Rule detail draws a schematic instead of the captured image with the bbox overlaid. Backend doesn't yet return image_id alongside bbox. | `app/(app)/scan/rule/[ruleId].tsx` |
-| Recent scans / history list | Empty state — `GET /v1/scans` (history) endpoint not yet on the backend scaffold. | `app/(app)/home.tsx`, `app/(app)/history.tsx` |
+| Recent scans / history list | Hidden until backend ships `GET /v1/scans`. | `app/(app)/home.tsx` |
 | Image-retention persistence | UI selects a value but no PUT endpoint to save it. | `app/(app)/settings.tsx` |
 | Flag rule result | API method exists; UI does not yet collect the comment. | `app/(app)/scan/rule/[ruleId].tsx`, `src/api/client.ts` |
 | Cancel during processing | Navigates away client-side; backend has no cancel endpoint in v1. | `app/(app)/scan/processing/[id].tsx` |
+
+## Pre-check calibration
+
+The camera screen runs a Vision Camera v4 frame processor (every 3rd
+frame ≈ 10 Hz) that downsamples to 64×96, converts to luma, and emits
+three signals into shared values:
+
+| Signal | What it measures | Default threshold | Constant in `camera/[surface].tsx` |
+|---|---|---|---|
+| Blur (Laplacian variance) | Sharpness over the ROI | < `100` ⇒ "blurry" | `BLUR_THRESHOLD` |
+| Glare (saturated-luma ratio in ROI) | % of pixels with luma > 250 | > `0.20` ⇒ "reduce glare" | `GLARE_THRESHOLD`, `GLARE_LUMA_CUTOFF` |
+| Coverage (label-luminance ratio in ROI) | % of pixels in `[80, 230]` luma band | < `0.30` ⇒ "move closer", > `0.80` ⇒ "move back" | `COVERAGE_TOO_FAR`, `COVERAGE_TOO_CLOSE`, `COVERAGE_DARK_CUTOFF`, `COVERAGE_BRIGHT_CUTOFF` |
+
+These are conservative starting points. Calibration data we want
+before launch:
+
+- **Blur false-positives in low light** (a sharp dim shot can score
+  low Laplacian variance because there's just less contrast to
+  differentiate). If users report "blurry" warnings indoors with no
+  visible blur, raise `BLUR_THRESHOLD` *down* (counter-intuitively —
+  the threshold is "below this is blurry"; lowering it makes the
+  detector more permissive). Better long-term fix: scale the threshold
+  by mean luma in the ROI.
+- **Glare false-positives on white labels** (a near-white label can
+  saturate the luma cut-off without actual glare). If white-label
+  brewers see "reduce glare" on perfectly clean shots, raise
+  `GLARE_LUMA_CUTOFF` (e.g. to 252) and/or `GLARE_THRESHOLD` (e.g.
+  to 0.25). Better long-term fix: use color saturation as well as
+  luma, since real glare tends to be specular and color-neutral.
+- **Coverage misfires on busy backgrounds** (the cheap luma-band
+  proxy will count any mid-gray pixel as "label", including a wood
+  bar top in the periphery). If users report "move closer" warnings
+  while the bottle is well-framed, the fix is segmentation, not
+  threshold tuning — coverage is the weakest of the three signals
+  by design.
+- **Worklet latency on lower-end devices.** The screen falls back
+  to a 6th-frame stride (≈5 Hz) if rolling latency exceeds 25 ms,
+  and surfaces a "checking…" hold rather than potentially-stale
+  verdicts via a 1 s staleness watchdog. If the chip on a target
+  device sits in "checking…" most of the time, lower `RESIZE_W` /
+  `RESIZE_H` (currently 64×96 → 6,144 pixels) before raising the
+  stride further; spatial fidelity matters more than refresh rate
+  for blur detection.
+
+Motion remains an accelerometer-driven override (10 Hz, variance of
+|a| over a 1-second rolling window). It supersedes the worklet
+verdict whenever the device is shaking, on the principle that you
+can't trust frame-content metrics if the frame is moving.
 
 ## Decisions made
 

@@ -1,43 +1,48 @@
 /**
  * Camera capture screen.
  *
- * SPEC §v1.6 step 4–5 + §v1.7 row "Camera". Substantive structural
- * stub — all the structural pieces are wired, but several pieces of
- * the live pipeline are explicit TODOs:
+ * SPEC §v1.6 step 4–5 + §v1.7 row "Camera". Pre-check pipeline (SPEC
+ * §v1.5 F1.3 + §0.5) is now driven by real signals:
  *
- *   - Frame-processor pre-checks (focus / glare / coverage) per
- *     SPEC §v1.5 F1.3 are simulated by a deterministic state machine
- *     so the UI exercises every verdict realistically. The real
- *     implementation uses Vision Camera v4 frame processors +
- *     expo-ml-kit text recognition (SPEC §0 tech stack) feeding a
- *     worklet that surfaces a discrete pre-check verdict.
- *   - HDR + low-light + thermal adaptation per SPEC §0.5 mitigation
- *     table are TODOs; this screen captures with default settings.
+ *   - Blur, glare, and coverage measurements come from a Vision Camera
+ *     v4 frame processor sampling every 3rd frame (~10 Hz at 30 fps).
+ *     The worklet downsamples each frame to 64×96 RGB via
+ *     vision-camera-resize-plugin, converts to luma in a single pass,
+ *     and emits three shared values: blurScore (Laplacian variance),
+ *     glareRatio (saturated-luma ratio inside the label ROI), and
+ *     coverageRatio (label-luminance pixel ratio inside the ROI).
+ *   - Motion remains an accelerometer-driven override (useMotionVerdict).
+ *   - A useAnimatedReaction translates the shared values into the
+ *     existing PreCheck variant the chip + capture-gate already consume.
+ *   - If the worklet runtime is stale (>1s since last verdict, e.g. on
+ *     thermal throttling) the pre-check holds at 'unknown' / "checking"
+ *     rather than displaying a stale verdict.
  *
- * What this file _does_ get right today:
- *   - Camera permission gating
- *   - Front/back surface routing through the dynamic [surface] param
- *   - Capture button + retake / continue flow into scanStore
- *   - Live pre-check verdict pipeline: deterministic script for
- *     blur / glare / coverage / ready PLUS a real accelerometer-driven
- *     motion verdict that overrides the script when the device is
- *     shaking
- *   - Light haptic on transition into ready, warning haptic on
- *     transition into warn (expo-haptics)
+ * Threshold defaults below are conservative starting points; calibrate
+ * with field captures (see mobile/README.md "Pre-check calibration").
+ *
+ * Still TODO (Phase-3+):
+ *   - HDR multi-exposure + thermal-state adaptation (SPEC §0.5 mitigations).
+ *   - Bottle-silhouette segmentation for curvature-aware framing.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
+import { showErrorAlert } from '@src/api/errors';
 import {
   Camera,
   type CameraDevice,
   useCameraDevice,
   useCameraPermission,
+  useFrameProcessor,
 } from 'react-native-vision-camera';
+import { useResizePlugin } from 'vision-camera-resize-plugin';
 import Animated, {
   Easing,
   interpolateColor,
+  runOnJS,
+  useAnimatedReaction,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
@@ -60,43 +65,87 @@ function isValidSurface(s: string | undefined): s is SurfaceParam {
   return s === 'front' || s === 'back';
 }
 
-// Discrete pre-check verdict surfaced to the UI. Motion is real
-// (accelerometer-driven); blur / glare / coverage are still scripted
-// until a Vision Camera frame processor lands.
+// Discrete pre-check verdict surfaced to the UI. All four reasons are
+// driven by real signals: blur/glare/coverage from the frame processor,
+// motion from the accelerometer.
 type PreCheck =
   | { kind: 'unknown' }
   | { kind: 'ready' }
   | { kind: 'warn'; reason: 'blur' | 'glare' | 'coverage' | 'motion' };
 
-// Scripted sequence the state machine cycles through. Each step has
-// a duration (ms) the verdict is held before advancing. The sequence
-// gives the user a chance to see every warning state before it
-// settles into 'ready'. Motion is intentionally NOT scripted — it is
-// driven live from the accelerometer (see useMotionVerdict below) and
-// overrides the scripted verdict whenever the device is shaking.
+// --- Frame-processor configuration ---------------------------------
 //
-// REAL IMPLEMENTATION for the still-scripted verdicts (SPEC §v1.5
-// F1.3 — once Reanimated worklets are configured):
-//
-//   - focus      → Laplacian variance over the label ROI; below a
-//                  threshold ⇒ {kind:'warn', reason:'blur'}.
-//   - glare      → ratio of saturated pixels (R&G&B > 250) inside
-//                  ROI; above threshold ⇒ {reason:'glare'}.
-//   - coverage   → bbox area of detected text labels / frame area;
-//                  below threshold ⇒ {reason:'coverage'}.
-//
-//   The frame processor would call a shared-value setter whose
-//   useAnimatedReaction would dispatch into this same setPreCheck.
-const VERDICT_SCRIPT: ReadonlyArray<{ verdict: PreCheck; durationMs: number }> = [
-  { verdict: { kind: 'unknown' }, durationMs: 500 },
-  { verdict: { kind: 'warn', reason: 'coverage' }, durationMs: 900 },
-  { verdict: { kind: 'warn', reason: 'blur' }, durationMs: 750 },
-  { verdict: { kind: 'warn', reason: 'glare' }, durationMs: 700 },
-  { verdict: { kind: 'ready' }, durationMs: 5000 },
-];
+// Downsample target. 64×96 keeps the bottle-aspect (≈0.65) close to
+// native and gives 6,144 pixels — small enough to iterate cheaply
+// without hardware acceleration, large enough that the Laplacian still
+// resolves real focus differences. Dropping below 32×48 made blur
+// scores too noisy in informal calibration; raising above 80×120
+// blew the per-frame budget.
+const RESIZE_W = 64;
+const RESIZE_H = 96;
 
-// Accelerometer config. 10 Hz updates per the lead's brief — fast
-// enough to feel responsive, slow enough not to thrash a list.
+// Frame-throttling. Run the worklet on every Nth frame, where N starts
+// at 3 (≈10 Hz at 30 fps). If average worklet latency exceeds
+// FRAME_BUDGET_MS we double N to 6 (≈5 Hz) and surface "checking…"
+// rather than potentially stale verdicts.
+const FRAME_STRIDE_FAST = 3;
+const FRAME_STRIDE_SLOW = 6;
+const FRAME_BUDGET_MS = 25; // total per-frame work budget per spec.
+const LATENCY_EMA_ALPHA = 0.2; // smoothing factor for the rolling latency.
+// If no fresh verdict arrived within this many ms, treat it as stale
+// and hold the chip at 'unknown' until a fresh sample lands.
+const VERDICT_STALE_MS = 1000;
+
+// --- Threshold defaults --------------------------------------------
+//
+// All defaults are conservative starting points — they're meant to
+// produce few false-positives on a well-lit reference shot. Tuning
+// guidance lives in mobile/README.md ("Pre-check calibration"); the
+// expectation is that field captures will move every constant here
+// at least once before launch.
+
+// Laplacian variance threshold. Below this = "blurry". 100 is a
+// commonly cited starting value for OpenCV's Laplacian-variance blur
+// detector and held up reasonably on the dev iPhone; expect it to
+// move once we have field data.
+const BLUR_THRESHOLD = 100;
+
+// Saturated-luma cut-off. Pixels with luma above this count toward
+// the glare ratio. 250 is the literal definition in SPEC §v1.5 F1.3
+// ("R&G&B > 250") translated into luma space (BT.601 of (250,250,250)
+// is 250); using straight luma keeps the worklet single-pass.
+const GLARE_LUMA_CUTOFF = 250;
+// Glare flare-up threshold. >20% of the ROI saturated = "reduce glare".
+const GLARE_THRESHOLD = 0.2;
+
+// Coverage uses a luma window heuristic: pixels neither too dark
+// (background, lensbar) nor saturated (glare) are treated as
+// "label-ish". Real label-area detection wants segmentation; this is
+// the cheap version called out in the task brief.
+const COVERAGE_DARK_CUTOFF = 80;
+const COVERAGE_BRIGHT_CUTOFF = 230;
+// Coverage band thresholds.
+//   ratio < TOO_FAR  → "Move closer" (label too small in the ROI).
+//   ratio > TOO_CLOSE → "Move back" (label fills the ROI; we want a
+//                       margin so OCR can find the edges).
+const COVERAGE_TOO_FAR = 0.3;
+const COVERAGE_TOO_CLOSE = 0.8;
+
+// Region-of-interest inside the resized 64×96 buffer: the dashed
+// overlay frame on screen is 70% width × ~127% height (aspectRatio
+// 0.55 against ~70% of viewport), which lands at roughly 70% of the
+// ROI within the camera frame. We use a 70% × 70% center crop here
+// as a coarse approximation; once curvature-aware framing lands
+// (Phase 3) we'll feed the segmentation rect in directly.
+const ROI_FRAC_X0 = 0.15;
+const ROI_FRAC_X1 = 0.85;
+const ROI_FRAC_Y0 = 0.15;
+const ROI_FRAC_Y1 = 0.85;
+
+// --- Accelerometer config ------------------------------------------
+//
+// 10 Hz updates per the lead's brief — fast enough to feel responsive,
+// slow enough not to thrash a list.
 const ACCEL_INTERVAL_MS = 100;
 // Number of samples in the rolling window used to compute variance.
 // 10 samples @ 10 Hz ≈ 1 second of motion history.
@@ -119,55 +168,215 @@ export default function CameraScreen(): React.ReactElement {
   const setCapture = useScanStore((s) => s.setCapture);
   const captures = useScanStore((s) => s.captures);
 
-  const [scriptedPreCheck, setScriptedPreCheck] = useState<PreCheck>({ kind: 'unknown' });
+  const [livePreCheck, setLivePreCheck] = useState<PreCheck>({ kind: 'unknown' });
   const [busy, setBusy] = useState(false);
 
-  const script = useMemo(() => VERDICT_SCRIPT, []);
   const motionDetected = useMotionVerdict(hasPermission);
 
   // Real motion verdict (accelerometer) takes precedence over the
-  // scripted verdicts. Once a real frame processor lands the rest of
-  // these will also become live signals.
+  // worklet-driven verdict. The frame processor only knows what's in
+  // the picture, not how steady the device is being held.
   const preCheck: PreCheck = motionDetected
     ? { kind: 'warn', reason: 'motion' }
-    : scriptedPreCheck;
+    : livePreCheck;
 
-  // Drive the verdict state machine while the camera is live. The
-  // sequence loops indefinitely starting from the last 'ready' step,
-  // mimicking ambient jitter. Real verdicts will replace this once a
-  // frame processor lands (see comment on VERDICT_SCRIPT above for
-  // the per-verdict signal recipe).
+  // --- Frame-processor wiring --------------------------------------
+  const { resize } = useResizePlugin();
+  // Each shared value is updated by the worklet on every processed
+  // frame; the useAnimatedReaction below maps them into the discrete
+  // PreCheck the chip + capture-gate already understand.
+  const blurScoreSv = useSharedValue<number>(0);
+  const glareRatioSv = useSharedValue<number>(0);
+  const coverageRatioSv = useSharedValue<number>(0);
+  // Monotonic frame counter (worklet-side). The reaction watches it to
+  // know "a fresh verdict arrived"; staleness is measured in JS via
+  // lastVerdictAtRef.
+  const frameTickSv = useSharedValue<number>(0);
+  // Stride is JS-owned but a shared value so the worklet can read it
+  // without a JS-thread hop. Adapts down (stride goes up) under load.
+  const frameStrideSv = useSharedValue<number>(FRAME_STRIDE_FAST);
+  // Frame index inside the worklet — used to apply the stride.
+  const frameIdxSv = useSharedValue<number>(0);
+
+  // Rolling EMA of worklet latency (ms). Updated from the worklet
+  // via runOnJS; read on the JS side to make the stride decision.
+  const latencyEmaRef = useRef<number>(0);
+  const lastVerdictAtRef = useRef<number>(0);
+
+  const recordLatency = useCallback((ms: number) => {
+    const prev = latencyEmaRef.current;
+    const next =
+      prev === 0 ? ms : prev * (1 - LATENCY_EMA_ALPHA) + ms * LATENCY_EMA_ALPHA;
+    latencyEmaRef.current = next;
+    // Adapt stride if we're consistently over budget. Hysteresis so we
+    // don't thrash: drop to slow at >budget, restore to fast at <70%
+    // of budget.
+    const currentStride = frameStrideSv.value;
+    if (currentStride === FRAME_STRIDE_FAST && next > FRAME_BUDGET_MS) {
+      frameStrideSv.value = FRAME_STRIDE_SLOW;
+    } else if (
+      currentStride === FRAME_STRIDE_SLOW &&
+      next < FRAME_BUDGET_MS * 0.7
+    ) {
+      frameStrideSv.value = FRAME_STRIDE_FAST;
+    }
+  }, [frameStrideSv]);
+
+  const markVerdict = useCallback(() => {
+    lastVerdictAtRef.current = Date.now();
+  }, []);
+
+  const frameProcessor = useFrameProcessor((frame) => {
+    'worklet';
+    // Stride: only sample every Nth frame to stay within budget.
+    const idx = frameIdxSv.value + 1;
+    frameIdxSv.value = idx;
+    if (idx % frameStrideSv.value !== 0) return;
+
+    const t0 = performance.now();
+
+    // Resize + force a deterministic pixel format the worklet can
+    // index without per-platform branching. RGB uint8 = 3 bytes/pixel.
+    const buffer = resize(frame, {
+      scale: { width: RESIZE_W, height: RESIZE_H },
+      pixelFormat: 'rgb',
+      dataType: 'uint8',
+    });
+
+    const w = RESIZE_W;
+    const h = RESIZE_H;
+    const total = w * h;
+
+    // Single pass over the buffer. We need:
+    //   - luma at every pixel (Float32-equivalent — store back into a
+    //     scratch typed array so the Laplacian pass can re-read it).
+    //   - inside-ROI counters for glare + coverage.
+    //
+    // Allocating a Uint8Array sized to the resize output every frame
+    // is cheap (~6KB) compared to the resize+RGB copy that just
+    // happened; pre-allocating across frames would be ideal but
+    // lifetime across worklet runs is fragile. Keeping the alloc here
+    // is honest about the trade.
+    const luma = new Uint8Array(total);
+
+    const x0 = Math.floor(w * ROI_FRAC_X0);
+    const x1 = Math.floor(w * ROI_FRAC_X1);
+    const y0 = Math.floor(h * ROI_FRAC_Y0);
+    const y1 = Math.floor(h * ROI_FRAC_Y1);
+    const roiPixels = (x1 - x0) * (y1 - y0);
+
+    let glareCount = 0;
+    let coverageCount = 0;
+
+    for (let y = 0; y < h; y++) {
+      const rowStart = y * w;
+      for (let x = 0; x < w; x++) {
+        const i = (rowStart + x) * 3;
+        // BT.601 luma. Integer math on Uint8Array stays in JS-VM int
+        // ops; the >> 8 keeps the result in [0,255].
+        const r = buffer[i];
+        const g = buffer[i + 1];
+        const b = buffer[i + 2];
+        const y8 = (r * 77 + g * 150 + b * 29) >> 8;
+        luma[rowStart + x] = y8;
+
+        if (x >= x0 && x < x1 && y >= y0 && y < y1) {
+          if (y8 > GLARE_LUMA_CUTOFF) glareCount++;
+          else if (y8 > COVERAGE_DARK_CUTOFF && y8 < COVERAGE_BRIGHT_CUTOFF) {
+            coverageCount++;
+          }
+        }
+      }
+    }
+
+    // Discrete 4-neighbor Laplacian over the ROI; variance of the
+    // Laplacian is the standard blur metric. We only sum inside the
+    // ROI minus a 1-pixel border so the index math stays trivial.
+    const lx0 = Math.max(1, x0);
+    const lx1 = Math.min(w - 1, x1);
+    const ly0 = Math.max(1, y0);
+    const ly1 = Math.min(h - 1, y1);
+
+    let lapSum = 0;
+    let lapSumSq = 0;
+    let lapN = 0;
+    for (let y = ly0; y < ly1; y++) {
+      const row = y * w;
+      for (let x = lx0; x < lx1; x++) {
+        const c = luma[row + x];
+        const up = luma[row - w + x];
+        const dn = luma[row + w + x];
+        const lf = luma[row + x - 1];
+        const rt = luma[row + x + 1];
+        const lap = 4 * c - up - dn - lf - rt;
+        lapSum += lap;
+        lapSumSq += lap * lap;
+        lapN++;
+      }
+    }
+    const mean = lapN > 0 ? lapSum / lapN : 0;
+    const variance = lapN > 0 ? lapSumSq / lapN - mean * mean : 0;
+
+    blurScoreSv.value = variance;
+    glareRatioSv.value = roiPixels > 0 ? glareCount / roiPixels : 0;
+    coverageRatioSv.value = roiPixels > 0 ? coverageCount / roiPixels : 0;
+    frameTickSv.value = idx;
+
+    const ms = performance.now() - t0;
+    runOnJS(recordLatency)(ms);
+    runOnJS(markVerdict)();
+  }, [resize, blurScoreSv, glareRatioSv, coverageRatioSv, frameTickSv, frameStrideSv, frameIdxSv, recordLatency, markVerdict]);
+
+  // Map the shared values into the chip's PreCheck. Severity priority:
+  // blur first (a blurred frame invalidates everything else), then
+  // glare (interferes with text), then coverage (fixable by stepping
+  // closer/further). 'ready' only fires when all three pass.
+  useAnimatedReaction(
+    () => ({
+      tick: frameTickSv.value,
+      blur: blurScoreSv.value,
+      glare: glareRatioSv.value,
+      coverage: coverageRatioSv.value,
+    }),
+    (curr) => {
+      'worklet';
+      if (curr.tick === 0) return;
+      let next: PreCheck;
+      if (curr.blur < BLUR_THRESHOLD) {
+        next = { kind: 'warn', reason: 'blur' };
+      } else if (curr.glare > GLARE_THRESHOLD) {
+        next = { kind: 'warn', reason: 'glare' };
+      } else if (
+        curr.coverage < COVERAGE_TOO_FAR ||
+        curr.coverage > COVERAGE_TOO_CLOSE
+      ) {
+        next = { kind: 'warn', reason: 'coverage' };
+      } else {
+        next = { kind: 'ready' };
+      }
+      runOnJS(setLivePreCheck)(next);
+    },
+    [],
+  );
+
+  // Staleness watchdog: if no frame has been processed in
+  // VERDICT_STALE_MS (thermal throttling, paused worklet, etc.), pull
+  // the chip back to 'unknown' / "checking…" so we never display a
+  // stale verdict.
   useEffect(() => {
     if (!hasPermission) return undefined;
-
-    let cancelled = false;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    // Once we exhaust the scripted bring-up, loop back to the index
-    // that holds 'ready' so subsequent cycles look like ambient
-    // jitter rather than a re-bring-up.
-    const loopAnchor = Math.max(
-      0,
-      script.findIndex((s) => s.verdict.kind === 'ready'),
-    );
-
-    const advance = (index: number): void => {
-      if (cancelled) return;
-      const step = script[index];
-      if (!step) return;
-      setScriptedPreCheck(step.verdict);
-      timeoutId = setTimeout(() => {
-        const next = index + 1 >= script.length ? loopAnchor : index + 1;
-        advance(next);
-      }, step.durationMs);
-    };
-
-    advance(0);
-
-    return () => {
-      cancelled = true;
-      if (timeoutId !== undefined) clearTimeout(timeoutId);
-    };
-  }, [hasPermission, script]);
+    const interval = setInterval(() => {
+      const last = lastVerdictAtRef.current;
+      if (last === 0) return;
+      const stale = Date.now() - last > VERDICT_STALE_MS;
+      if (stale) {
+        setLivePreCheck((prev) =>
+          prev.kind === 'unknown' ? prev : { kind: 'unknown' },
+        );
+      }
+    }, 250);
+    return () => clearInterval(interval);
+  }, [hasPermission]);
 
   useEffect(() => {
     if (hasPermission === false) {
@@ -198,8 +407,11 @@ export default function CameraScreen(): React.ReactElement {
         router.replace('/(app)/scan/review');
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Capture failed';
-      Alert.alert('Capture failed', message);
+      // takePhoto failures come from Vision Camera (shutter busy, device
+      // disconnected, etc.) — describeError will route them through the
+      // unknown-error path and surface the native message behind the
+      // "Show details" disclosure.
+      showErrorAlert(err, { title: "Couldn't capture photo" });
     } finally {
       setBusy(false);
     }
@@ -245,11 +457,10 @@ export default function CameraScreen(): React.ReactElement {
         device={device}
         isActive
         photo
-        // TODO(reanimated): wire a frame-processor prop here once
-        // Reanimated worklets are configured. Keeping this commented
-        // ensures it doesn't fail on devices without the worklet
-        // runtime during the scaffold phase.
-        // frameProcessor={frameProcessor}
+        frameProcessor={frameProcessor}
+        // RGB pixel format keeps the resize plugin's RGB output trivial;
+        // YUV would force a per-platform conversion in the worklet.
+        pixelFormat="yuv"
       />
 
       {/* Top status bar */}

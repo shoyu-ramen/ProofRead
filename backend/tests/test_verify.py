@@ -261,3 +261,161 @@ def test_rule_results_carry_surface_field():
         f"All field-tied rule_results should carry surface 'panel_0' on "
         f"the single-shot path; got {[r.surface for r in surfaced]}"
     )
+
+
+def test_glare_blob_overlap_downgrades_fail_to_advisory():
+    """Item #1 (verify ↔ scans parity): a FAIL whose field bbox sits inside
+    a glare blob is unsupportable — must downgrade to ADVISORY. Same
+    fail-honestly guarantee as the scan path (`pipeline._apply_capture_
+    downgrade`'s `blob_occluded` branch).
+
+    Synthesized scenario: a paraphrased Health Warning that the engine
+    would FAIL on, with the field bbox overlapping a saturated blob the
+    sensor pre-check finds in the synthetic frame. The downgrade fires
+    when ≥30 % of the field area sits inside the blob.
+    """
+    from app.rules.engine import RuleEngine
+    from app.rules.loader import load_rules
+    from app.rules.types import ExtractedField, ExtractionContext
+    from app.services.sensor_check import Bbox, GlareBlob, SurfaceCaptureQuality
+    from app.services.verify import _downgrade_fails_for_glare_blob
+
+    # Build a SurfaceCaptureQuality with one big saturated blob.
+    surface = _build_surface_with_glare_blob(
+        Bbox(x=100, y=100, w=400, h=200)
+    )
+
+    # Field bbox sits entirely inside the blob.
+    fields = {
+        "health_warning": ExtractedField(
+            value="Government Warning: ...",  # title-case → engine FAILs
+            bbox=(150, 150, 200, 100),  # 100% inside blob (100..500 × 100..300)
+            confidence=0.95,
+            source_image_id="panel_0",
+        ),
+    }
+    ctx = ExtractionContext(
+        fields=fields,
+        beverage_type="spirits",
+        container_size_ml=750,
+        is_imported=False,
+        application={},
+        unreadable_fields=[],
+    )
+
+    rules = load_rules(beverage_type="spirits")
+    pre = RuleEngine(rules).evaluate(ctx)
+
+    # Sanity: at least one FAIL exists pre-downgrade.
+    fails_pre = [r for r in pre if r.status == CheckOutcome.FAIL]
+    assert fails_pre, (
+        "Test fixture should produce at least one FAIL before the "
+        "blob-overlap downgrade fires."
+    )
+
+    surfaces_by_panel = {0: surface}
+    post = _downgrade_fails_for_glare_blob(pre, ctx, surfaces_by_panel)
+
+    # The FAILs that referenced `health_warning` (the field with the
+    # blob-overlapping bbox) must be downgraded; FAILs on other fields
+    # untouched.
+    for r_pre, r_post in zip(pre, post, strict=True):
+        if "health_warning" in r_pre.rule_id and r_pre.status == CheckOutcome.FAIL:
+            assert r_post.status == CheckOutcome.ADVISORY, (
+                f"{r_pre.rule_id} should have been downgraded to ADVISORY; "
+                f"got {r_post.status}"
+            )
+            assert "glare blob" in (r_post.finding or "").lower(), (
+                f"Downgraded finding should mention glare blob; got "
+                f"{r_post.finding!r}"
+            )
+
+
+def _build_surface_with_glare_blob(blob_bbox):
+    """Construct a `SurfaceCaptureQuality` with one large saturated blob
+    so the verify-path blob-overlap downgrade has something to fire on.
+    Mirrors enough of the real `assess_capture_quality` shape that the
+    downgrade helper's `getattr` accesses don't trip."""
+    from app.services.sensor_check import (
+        Bbox,
+        GlareBlob,
+        ImageQualityMetrics,
+        SensorMetadata,
+        SurfaceCaptureQuality,
+    )
+
+    metrics = ImageQualityMetrics(
+        sharpness=200.0,
+        glare_fraction=0.05,
+        brightness_mean=128.0,
+        brightness_stddev=64.0,
+        color_cast=10.0,
+        megapixels=2.0,
+        width_px=1000,
+        height_px=800,
+    )
+    blob = GlareBlob(
+        bbox=blob_bbox,
+        area_fraction_frame=0.05,
+        area_fraction_label=0.10,
+    )
+    return SurfaceCaptureQuality(
+        surface="panel_0",
+        sensor=SensorMetadata(),
+        metrics=metrics,
+        verdict="good",
+        confidence=0.9,
+        glare_blobs=[blob],
+        label_bbox=Bbox(x=0, y=0, w=1000, h=800),
+    )
+
+
+def test_verify_and_scan_aggregations_agree_on_same_input():
+    """Item #2 (shared aggregation): the verify path and the scan path
+    used to maintain their own roll-up function. They diverged on the
+    empty-rule-list case (verify said "na", scan said "pass"). Both
+    paths now route through `app.rules.aggregation.overall_status`, so
+    a same-input check produces the same overall verdict.
+
+    Probes a representative range of rule-result mixes that exercise
+    every branch of the aggregator (fail / warn / advisory / pass /
+    empty / unreadable-image-quality).
+    """
+    from app.rules.types import RuleResult
+    from app.services.pipeline import overall_status as scan_overall
+    from app.services.verify import _aggregate_overall as verify_overall
+
+    def _r(status: CheckOutcome, rule_id: str = "test.rule") -> RuleResult:
+        return RuleResult(
+            rule_id=rule_id,
+            rule_version=1,
+            citation="27 CFR test",
+            status=status,
+        )
+
+    # Each scenario: (rule_results, image_quality, unreadable_fields).
+    scenarios = [
+        ([_r(CheckOutcome.PASS), _r(CheckOutcome.PASS)], "good", []),
+        ([_r(CheckOutcome.FAIL), _r(CheckOutcome.PASS)], "good", []),
+        ([_r(CheckOutcome.WARN), _r(CheckOutcome.ADVISORY)], "good", []),
+        ([_r(CheckOutcome.ADVISORY)], "degraded", []),
+        # Empty-rule-list case — the divergence we fixed.
+        ([], "good", []),
+        # Empty rule list with unreadable fields → unreadable.
+        ([], "good", ["health_warning"]),
+        # Unreadable-image-quality always wins.
+        ([_r(CheckOutcome.PASS)], "unreadable", []),
+    ]
+
+    for rules, iq, unreadable in scenarios:
+        v = verify_overall(rules, unreadable, iq)
+        s = scan_overall(rules, image_quality=iq)
+        # The scan path doesn't take `unreadable_fields`, so the empty-
+        # results-with-unreadable-fields case is verify-only — skip the
+        # parity comparison for that scenario.
+        if not rules and unreadable:
+            continue
+        assert v == s, (
+            f"Aggregator divergence on rules={[r.status.value for r in rules]}, "
+            f"image_quality={iq!r}: verify={v!r} scan={s!r}"
+        )

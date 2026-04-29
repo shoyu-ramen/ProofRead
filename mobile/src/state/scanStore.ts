@@ -79,6 +79,47 @@ export const useScanStore = create<ScanStoreState>((set, get) => ({
 
 export const REQUIRED_CAPTURE_SURFACES: ReadonlyArray<Surface> = REQUIRED_SURFACES;
 
+/**
+ * Translate a backend rule_result `surface` value into the local
+ * capture slot.
+ *
+ * Two value spaces ship today, depending on the endpoint:
+ *
+ *   - `/v1/verify` (web prototype): `"panel_0"`, `"panel_1"`, … in the
+ *     order images were submitted. Mobile uploads in
+ *     REQUIRED_CAPTURE_SURFACES order, so panel_0 → front, panel_1 →
+ *     back.
+ *   - `/v1/scans/:id/report` (mobile): `"front"` / `"back"` directly,
+ *     using the scan_image surface name.
+ *
+ * Both shapes are accepted; bare `Surface` strings pass through, and
+ * `panel_N` is decoded by submission-order index. Returns `null` when
+ * the value is missing, malformed, or out of range — call sites
+ * should fall back to a heuristic in that case.
+ */
+export function surfaceForPanel(panel: string | null | undefined): Surface | null {
+  if (typeof panel !== 'string') return null;
+  if (isSurface(panel)) return panel;
+  const match = /^panel_(\d+)$/.exec(panel);
+  if (!match) return null;
+  const idx = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(idx) || idx < 0 || idx >= REQUIRED_SURFACES.length) {
+    return null;
+  }
+  return REQUIRED_SURFACES[idx];
+}
+
+const ALL_SURFACES: ReadonlySet<Surface> = new Set<Surface>([
+  'front',
+  'back',
+  'side',
+  'neck',
+]);
+
+function isSurface(value: string): value is Surface {
+  return ALL_SURFACES.has(value as Surface);
+}
+
 // Default container sizes (mL) per SPEC §v1.5 F1.4.
 export const DEFAULT_CONTAINER_SIZES: ReadonlyArray<{ label: string; ml: number }> = [
   { label: '12 oz can', ml: 355 },
