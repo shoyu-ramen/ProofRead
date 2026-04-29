@@ -7,6 +7,13 @@
  * fetch the full report and pick out this rule's result. Backend has
  * no per-rule endpoint today; we filter client-side from the cached
  * report query.
+ *
+ * Per ARCH §6/§7, the bbox is drawn on the single panorama image —
+ * there is no per-surface fan-out anymore. BBoxOverlay accepts
+ * `image: { uri, width, height }` and computes letterbox math from
+ * the intrinsic dimensions, so the panorama (a wide aspect ratio)
+ * just produces side-letterboxing instead of the previous
+ * portrait-letterboxing.
  */
 
 import React, { useMemo } from 'react';
@@ -18,9 +25,9 @@ import { useQuery } from '@tanstack/react-query';
 import { BBoxOverlay, Button, StatusBadge } from '@src/components';
 import { apiClient } from '@src/api/client';
 import { queryKeys } from '@src/state/queryClient';
-import { surfaceForPanel, useScanStore } from '@src/state/scanStore';
+import { useScanStore } from '@src/state/scanStore';
 import type { BBox, RuleResultDTO, RuleStatus } from '@src/api/types';
-import type { CapturedImage } from '@src/state/scanStore';
+import type { UnrolledPanorama } from '@src/state/scanStore';
 import { colors, radius, spacing, typography } from '@src/theme';
 
 export default function RuleDetailScreen(): React.ReactElement {
@@ -31,7 +38,7 @@ export default function RuleDetailScreen(): React.ReactElement {
       ? params.scanId
       : (useScanStore.getState().scanId ?? '');
 
-  const captures = useScanStore((s) => s.captures);
+  const panorama = useScanStore((s) => s.panorama);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.report(scanId),
@@ -65,24 +72,6 @@ export default function RuleDetailScreen(): React.ReactElement {
     );
   }
 
-  // Pick the capture this rule's bbox lives in. Backend rule_results
-  // carry a `surface` panel id (e.g. "panel_0"); surfaceForPanel maps
-  // it to the local capture slot. v1 only captures front + back — if
-  // the backend ever points at `side`/`neck` we fall back to the
-  // legacy heuristic ("back if we have one, else front"). Same fallback
-  // covers the still-rolling /v1/scans/:id/report endpoint which
-  // hasn't shipped `surface` yet (verify.py emits it; scans.py is
-  // following). Once scans.py ships and v1 still only captures two
-  // surfaces, the fallback can shrink to just the side/neck guard.
-  const mapped = surfaceForPanel(rule.surface);
-  const surface: 'front' | 'back' =
-    mapped === 'front' || mapped === 'back'
-      ? mapped
-      : captures.back
-      ? 'back'
-      : 'front';
-  const cap = captures[surface];
-
   return (
     <SafeAreaView style={styles.root} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -105,8 +94,7 @@ export default function RuleDetailScreen(): React.ReactElement {
         <Section title="Bounding box">
           <BoundingBoxView
             bbox={rule.bbox}
-            surface={surface}
-            capture={cap}
+            panorama={panorama}
             status={rule.status}
           />
         </Section>
@@ -179,38 +167,38 @@ function AdvisoryBanner(): React.ReactElement {
 
 function BoundingBoxView({
   bbox,
-  surface,
-  capture,
+  panorama,
   status,
 }: {
   bbox: BBox | null;
-  surface: 'front' | 'back';
-  capture: CapturedImage | undefined;
+  panorama: UnrolledPanorama | null;
   status: RuleStatus;
 }): React.ReactElement {
   if (!bbox) {
     return <Text style={styles.muted}>No region recorded for this rule.</Text>;
   }
   const [x, y, w, h] = bbox;
+  // Override BBoxOverlay's portrait default with the panorama's wide
+  // aspect ratio so the rendered image isn't squished to 0.65:1.
+  const overlayStyle = panorama
+    ? { aspectRatio: panorama.width / panorama.height }
+    : undefined;
   return (
     <View style={styles.bboxCard}>
       <Text style={styles.muted}>
-        Surface: <Text style={styles.body}>{surface}</Text>
-      </Text>
-      <Text style={styles.muted}>
         x={x} y={y} w={w} h={h}
       </Text>
-      {!capture ? (
+      {!panorama ? (
         <Text style={styles.muted}>
-          Original image not on device — overlay drawing skipped. The
-          server-side report still has the region; reload after a
-          fresh scan to see the overlay.
+          Original panorama not on device — overlay drawing skipped. The
+          server-side report still has the region; reload after a fresh
+          scan to see the overlay.
         </Text>
       ) : (
         <BBoxOverlay
-          image={capture}
+          image={panorama}
           items={[{ bbox, status }]}
-          style={styles.bboxOverlay}
+          style={[styles.bboxOverlay, overlayStyle]}
         />
       )}
     </View>

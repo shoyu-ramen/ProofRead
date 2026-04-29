@@ -77,6 +77,13 @@ logger = logging.getLogger(__name__)
 # more confident in the text than the frame allows.
 _QUALITY_RANK = {"good": 0, "degraded": 1, "unreadable": 2}
 
+# Surface tag used for the v1 mobile single-shot happy path. The client
+# uploads one unrolled-label image; the merge step retags every field's
+# `source_image_id` with this constant so the response carries a stable
+# identifier the UI can join against the uploaded image. Multi-panel
+# callers (web/agent) keep the `panel_N` shape.
+PANORAMA_SURFACE = "panorama"
+
 # Process-wide pool reused across requests. Per-request `ThreadPoolExecutor`
 # allocation pays ~1–2 ms per worker for thread create + join; on a hot
 # verify endpoint that is wasted overhead the singleton avoids. Sized for
@@ -145,10 +152,12 @@ class VerifyInput:
     container_size_ml: int
     is_imported: bool
     application: dict[str, Any]
-    # Additional panels in submission order. Empty for the single-shot
-    # path. Surface IDs in the merged extraction are `panel_0` (always
-    # the legacy `image_bytes`), `panel_1` for `extra_panels[0]`, etc.,
-    # so the UI can label which panel each extracted field came from.
+    # Additional panels in submission order. Empty for the v1 mobile
+    # single-shot path (one unrolled-label panorama). When non-empty,
+    # the merged extraction tags each field with `panel_<index>`
+    # (`panel_0` is `image_bytes`, `panel_1` is `extra_panels[0]`, …);
+    # when empty, every field is tagged with the constant
+    # `"panorama"` so the client can highlight the uploaded image.
     extra_panels: list[Panel] = field(default_factory=list)
 
     @property
@@ -939,13 +948,22 @@ def _surfaces_by_panel_index(
 
 
 def _panel_index_from_source(source: str | None) -> int | None:
-    """Extract `N` from `panel_N` (or return None for any other shape).
+    """Extract the panel index from a `source_image_id`.
 
-    Defensive against the pre-multi-panel surface ids ("front", "back")
-    and against extractors that set their own `source_image_id` — those
-    just don't get surface-confidence capping or bbox translation.
+    Recognised shapes:
+      * `"panel_N"` → `N` (multi-panel orchestrator id)
+      * `"panorama"` → `0` (v1 mobile single-shot happy path; the
+        panorama is always the first panel by construction)
+
+    Returns None for anything else (including the pre-multi-panel ids
+    "front"/"back" and extractor-set custom ids), so those fields just
+    don't get surface-confidence capping or bbox translation.
     """
-    if not source or not source.startswith("panel_"):
+    if not source:
+        return None
+    if source == PANORAMA_SURFACE:
+        return 0
+    if not source.startswith("panel_"):
         return None
     try:
         return int(source[len("panel_"):])
@@ -992,8 +1010,10 @@ def _merge_panel_extractions(
     """Merge per-panel `VisionExtraction`s into a single extraction.
 
     Field-by-field: highest-confidence wins. The winning field's
-    `source_image_id` is rewritten to `panel_<index>` so the response
-    can label which panel each value came from.
+    `source_image_id` is rewritten so the response can label which
+    image each value came from. Single-panel inputs (the v1 mobile
+    happy path) are tagged `"panorama"`; multi-panel inputs use
+    `"panel_<index>"`.
 
     `unreadable` reports per-field whether the field was not found on
     *any* panel — a field that any panel read successfully is no longer
@@ -1019,11 +1039,13 @@ def _merge_panel_extractions(
             fields={}, unreadable=[], raw_response="", image_quality=None
         )
     if len(per_panel) == 1:
-        # Single-panel call: just retag the source_image_id to panel_0
-        # for consistency with the multi-panel response shape.
+        # Single-panel call (the v1 mobile path): retag every field with
+        # the synthetic `"panorama"` surface so the API response carries
+        # a stable identifier the client can join against the uploaded
+        # image. Multi-panel callers fall through to the per-index path.
         single = per_panel[0]
         retagged = {
-            name: dc_replace(f, source_image_id="panel_0")
+            name: dc_replace(f, source_image_id=PANORAMA_SURFACE)
             for name, f in single.fields.items()
         }
         return VisionExtraction(

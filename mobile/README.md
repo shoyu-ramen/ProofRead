@@ -5,8 +5,9 @@ verifies them against TTB compliance rules using the ProofRead backend.
 
 This directory is the v1 scaffold: every screen from SPEC §v1.7 has a
 file, the API client matches the contract in `backend/app/api/scans.py`,
-and the camera screen is wired with a structural stub for the
-Vision-Camera + frame-processor pipeline.
+and the cylindrical scan screen runs a real Vision-Camera + frame-
+processor pipeline that produces an unrolled-label panorama in one
+rotation pass (see `.claude/CYLINDRICAL_SCAN_ARCHITECTURE.md`).
 
 ## Tech stack
 
@@ -57,8 +58,8 @@ mobile/
 │       └── scan/
 │           ├── beverage-type.tsx
 │           ├── container-size.tsx
-│           ├── camera/[surface].tsx
-│           ├── review.tsx
+│           ├── unwrap.tsx           # cylindrical scan (live)
+│           ├── review.tsx           # panorama preview + analyze
 │           ├── processing/[id].tsx
 │           ├── report/[id].tsx
 │           └── rule/[ruleId].tsx
@@ -69,7 +70,13 @@ mobile/
 │   ├── state/
 │   │   ├── auth.ts             # zustand fake-user store
 │   │   ├── queryClient.ts      # tanstack-query setup
-│   │   └── scanStore.ts        # in-progress scan draft
+│   │   └── scanStore.ts        # in-progress scan draft (panorama-shaped)
+│   ├── scan/                   # cylindrical-scan subsystems
+│   │   ├── tracker/            # CV: bottle silhouette + optical flow + angle
+│   │   ├── panorama/           # Skia: live unrolled-label canvas + stitcher
+│   │   ├── ui/                 # silhouette / ring / dial / chip / reveal
+│   │   ├── state/              # scan state machine (aligning → … → complete)
+│   │   └── hooks/              # useScanStateMachine, useRotationCapture, useScanHaptics
 │   ├── components/             # Button, Screen, ProgressBar, …
 │   └── theme.ts                # color/spacing/typography tokens
 ├── app.json                    # Expo config (vision-camera plugin)
@@ -86,60 +93,41 @@ Every TODO in source is grep-able — these are the major ones:
 | Area | What's stubbed | Where |
 |---|---|---|
 | Auth0 sign-in | Single "Sign in (stub)" button populates a fake user. No token exchange yet. | `app/signin.tsx`, `src/state/auth.ts` |
-| HDR / thermal-state adaptation | `takePhoto` uses defaults. SPEC §0.5 calls for HDR + adaptive frame-processor frequency. | `app/(app)/scan/camera/[surface].tsx` |
-| Bbox-on-image overlay | Rule detail draws a schematic instead of the captured image with the bbox overlaid. Backend doesn't yet return image_id alongside bbox. | `app/(app)/scan/rule/[ruleId].tsx` |
+| HDR / thermal-state adaptation | `takePhoto` uses defaults. SPEC §0.5 calls for HDR + adaptive frame-processor frequency. The tracker frame processor adapts stride under thermal load; HDR is still TODO. | `app/(app)/scan/unwrap.tsx`, `src/scan/tracker/frameProcessor.ts` |
+| Bbox-on-image overlay | Rule detail renders the bbox over the local panorama; on a fresh device the panorama is missing so the overlay is skipped with a hint. | `app/(app)/scan/rule/[ruleId].tsx` |
 | Recent scans / history list | Hidden until backend ships `GET /v1/scans`. | `app/(app)/home.tsx` |
 | Image-retention persistence | UI selects a value but no PUT endpoint to save it. | `app/(app)/settings.tsx` |
 | Flag rule result | API method exists; UI does not yet collect the comment. | `app/(app)/scan/rule/[ruleId].tsx`, `src/api/client.ts` |
 | Cancel during processing | Navigates away client-side; backend has no cancel endpoint in v1. | `app/(app)/scan/processing/[id].tsx` |
 
-## Pre-check calibration
+## Cylindrical scan
 
-The camera screen runs a Vision Camera v4 frame processor (every 3rd
-frame ≈ 10 Hz) that downsamples to 64×96, converts to luma, and emits
-three signals into shared values:
+The scan flow is a single cylindrical-rotation pass: the user holds
+the bottle in front of the camera and rotates it once; the live
+unrolled-label panorama paints into a Skia canvas at the top of the
+screen as each angular checkpoint is captured. The plumbing is split
+across three subsystems under `src/scan/`:
 
-| Signal | What it measures | Default threshold | Constant in `camera/[surface].tsx` |
-|---|---|---|---|
-| Blur (Laplacian variance) | Sharpness over the ROI | < `100` ⇒ "blurry" | `BLUR_THRESHOLD` |
-| Glare (saturated-luma ratio in ROI) | % of pixels with luma > 250 | > `0.20` ⇒ "reduce glare" | `GLARE_THRESHOLD`, `GLARE_LUMA_CUTOFF` |
-| Coverage (label-luminance ratio in ROI) | % of pixels in `[80, 230]` luma band | < `0.30` ⇒ "move closer", > `0.80` ⇒ "move back" | `COVERAGE_TOO_FAR`, `COVERAGE_TOO_CLOSE`, `COVERAGE_DARK_CUTOFF`, `COVERAGE_BRIGHT_CUTOFF` |
+- `tracker/` — Vision Camera v4 frame processor. Resizes to 160×240,
+  computes pre-check signals (blur / glare / coverage / motion),
+  detects the bottle silhouette via vertical Sobel medians, measures
+  horizontal optical flow against the previous frame, and integrates
+  the angular position. Adapts stride under thermal load.
+- `panorama/` — Skia off-screen surface. `extractStrip()` cuts a
+  vertical column from each captured photo; the live `<PanoramaCanvas>`
+  paints strips into the panorama as they arrive; `stitchPanorama()`
+  encodes the final JPEG on completion.
+- `ui/` — overlay components driven by Reanimated shared values
+  (silhouette, rotation guide ring, progress dial, quality chip,
+  cancel button, completion reveal). All visuals follow tokens in
+  `src/theme.ts` (`scanGeometry`, `scanMotion`, the `scan*` color
+  family).
 
-These are conservative starting points. Calibration data we want
-before launch:
-
-- **Blur false-positives in low light** (a sharp dim shot can score
-  low Laplacian variance because there's just less contrast to
-  differentiate). If users report "blurry" warnings indoors with no
-  visible blur, raise `BLUR_THRESHOLD` *down* (counter-intuitively —
-  the threshold is "below this is blurry"; lowering it makes the
-  detector more permissive). Better long-term fix: scale the threshold
-  by mean luma in the ROI.
-- **Glare false-positives on white labels** (a near-white label can
-  saturate the luma cut-off without actual glare). If white-label
-  brewers see "reduce glare" on perfectly clean shots, raise
-  `GLARE_LUMA_CUTOFF` (e.g. to 252) and/or `GLARE_THRESHOLD` (e.g.
-  to 0.25). Better long-term fix: use color saturation as well as
-  luma, since real glare tends to be specular and color-neutral.
-- **Coverage misfires on busy backgrounds** (the cheap luma-band
-  proxy will count any mid-gray pixel as "label", including a wood
-  bar top in the periphery). If users report "move closer" warnings
-  while the bottle is well-framed, the fix is segmentation, not
-  threshold tuning — coverage is the weakest of the three signals
-  by design.
-- **Worklet latency on lower-end devices.** The screen falls back
-  to a 6th-frame stride (≈5 Hz) if rolling latency exceeds 25 ms,
-  and surfaces a "checking…" hold rather than potentially-stale
-  verdicts via a 1 s staleness watchdog. If the chip on a target
-  device sits in "checking…" most of the time, lower `RESIZE_W` /
-  `RESIZE_H` (currently 64×96 → 6,144 pixels) before raising the
-  stride further; spatial fidelity matters more than refresh rate
-  for blur detection.
-
-Motion remains an accelerometer-driven override (10 Hz, variance of
-|a| over a 1-second rolling window). It supersedes the worklet
-verdict whenever the device is shaking, on the principle that you
-can't trust frame-content metrics if the frame is moving.
+The scan screen (`app/(app)/scan/unwrap.tsx`) hosts the camera, runs
+the tracker, owns the state machine (`aligning → ready → scanning ↔
+paused → complete | failed`), and triggers the checkpoint capture
+queue. See `.claude/CYLINDRICAL_SCAN_ARCHITECTURE.md` for the full
+contract.
 
 ## Decisions made
 
@@ -158,12 +146,9 @@ A few spec areas were ambiguous; the choices made here:
   container-size step, but the backend's `CreateScanRequest` accepts
   `is_imported` and the `country_of_origin.presence_if_imported` rule
   needs it. The toggle lives on the container-size step.
-- **Surface routing.** v1 captures only `front` + `back`. The data
-  model allows `side` and `neck`; those are typed but not surfaced in
-  the flow.
 - **Gracefully degraded camera screen.** When permission is denied or
-  the device has no back camera, the screen renders a fallback panel
-  rather than blocking the entire flow.
+  the device has no back camera, the scan screen renders a fallback
+  panel rather than blocking the entire flow.
 
 ## Type-check
 

@@ -46,13 +46,16 @@ def _ocr_fixture(text: str) -> dict:
 
 
 def _build_provider(front: str, back: str):
-    fixtures = {"front": _ocr_fixture(front), "back": _ocr_fixture(back)}
+    """Single panorama OCR provider — v1 mobile uploads one unrolled
+    label image, so front + back fixture text is concatenated into a
+    single fixture keyed by `"panorama"`."""
+    fixture = _ocr_fixture(front + "\n" + back)
 
-    class _Multi:
+    class _Single:
         def process(self, image_bytes, hint=None):
-            return MockOCRProvider(fixtures[hint]).process(image_bytes, hint)
+            return MockOCRProvider(fixture).process(image_bytes, hint)
 
-    return _Multi()
+    return _Single()
 
 
 @pytest.fixture(autouse=True)
@@ -96,7 +99,7 @@ def test_upload_persists_scan_image_and_storage_blob(db_setup, temp_storage):
 
     upload_url = r.json()["upload_urls"][0]
     path = upload_url["signed_url"].replace(str(client.base_url), "")
-    put = client.put(path, content=b"front-bytes")
+    put = client.put(path, content=b"panorama-bytes")
     assert put.status_code == 204
 
     import asyncio
@@ -106,9 +109,9 @@ def test_upload_persists_scan_image_and_storage_blob(db_setup, temp_storage):
         async with factory() as s:
             images = (await s.scalars(select(ScanImage))).all()
             assert len(images) == 1
-            assert images[0].surface == "front"
+            assert images[0].surface == "panorama"
             blob = await temp_storage.get(images[0].s3_key)
-            assert blob == b"front-bytes"
+            assert blob == b"panorama-bytes"
 
     asyncio.run(_check())
 

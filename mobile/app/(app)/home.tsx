@@ -35,8 +35,7 @@ export default function Home(): React.ReactElement {
       <View style={styles.heroBlock}>
         <Text style={styles.headline}>Verify a label.</Text>
         <Text style={styles.subhead}>
-          Capture front and back, get a TTB-compliance report in under
-          30 seconds.
+          Rotate the bottle once. We read every side.
         </Text>
       </View>
 

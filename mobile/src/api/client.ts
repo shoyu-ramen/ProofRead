@@ -20,7 +20,6 @@ import {
   ProblemDetails,
   ReportResponse,
   ScanStatusResponse,
-  Surface,
 } from './types';
 
 const DEFAULT_BASE_URL = 'http://localhost:8000';
@@ -192,6 +191,3 @@ export class ApiClient {
 // alternate base URLs (e.g. tests). Token is read from the auth store
 // at request time so signed-in state is reflected immediately.
 export const apiClient = new ApiClient({ getToken: () => getAuthToken() });
-
-// Helper exported for places that need the surface list literal.
-export const SCAN_SURFACES: Surface[] = ['front', 'back'];

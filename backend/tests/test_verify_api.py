@@ -296,10 +296,9 @@ def test_verify_returns_504_on_timeout(monkeypatch):
 
 
 def test_verify_response_carries_surface_on_rule_results(monkeypatch):
-    """Item #8 contract: every rule_result with a referenced field must
-    carry the `surface` field. `panel_0` is the legacy single-image
-    path, so any rule that touched an extracted field should report
-    surface='panel_0'."""
+    """Every rule_result with a referenced field must carry the `surface`
+    field. The v1 mobile happy path uploads one unrolled-label panorama,
+    so every field-tied rule_result reports surface='panorama'."""
     fixture = {
         "brand_name": "Old Tom Distillery",
         "class_type": "Kentucky Straight Bourbon Whiskey",
@@ -336,8 +335,8 @@ def test_verify_response_carries_surface_on_rule_results(monkeypatch):
     assert surfaced, (
         f"No rule_results carry surface; payload: {rule_results}"
     )
-    assert all(r["surface"] == "panel_0" for r in surfaced), (
-        f"Single-image path should report surface='panel_0'; got "
+    assert all(r["surface"] == "panorama" for r in surfaced), (
+        f"Single-image path should report surface='panorama'; got "
         f"{[r['surface'] for r in surfaced]}"
     )
 

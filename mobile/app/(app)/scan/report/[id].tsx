@@ -34,13 +34,13 @@ import { apiClient } from '@src/api/client';
 import { queryKeys } from '@src/state/queryClient';
 import { useScanStore } from '@src/state/scanStore';
 import { colors, radius, spacing, typography } from '@src/theme';
-import type { OverallStatus, Surface } from '@src/api/types';
+import type { OverallStatus } from '@src/api/types';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function ReportScreen(): React.ReactElement {
   const { id } = useLocalSearchParams<{ id: string }>();
   const scanId = typeof id === 'string' ? id : '';
-  const captures = useScanStore((s) => s.captures);
+  const panorama = useScanStore((s) => s.panorama);
 
   const { data, isLoading, isRefetching, refetch, error } = useQuery({
     queryKey: queryKeys.report(scanId),
@@ -113,44 +113,23 @@ export default function ReportScreen(): React.ReactElement {
           </View>
         </View>
 
-        {/* Image strip — tapping a thumbnail opens the per-surface
-            preview with all rule bboxes overlaid. */}
-        <SectionHeader title="Captures" />
-        <View style={styles.imageStrip}>
-          {(['front', 'back'] as Surface[]).map((surface) => {
-            const cap = captures[surface];
-            return (
-              <View key={surface} style={styles.imageThumb}>
-                <Text style={styles.imageLabel}>{surface}</Text>
-                {cap ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`View ${surface} capture with all rule regions`}
-                    onPress={() =>
-                      router.push({
-                        pathname: '/(app)/scan/captures/[surface]',
-                        params: { surface, scanId },
-                      })
-                    }
-                    style={({ pressed }) => [
-                      styles.imageBox,
-                      pressed && styles.imageBoxPressed,
-                    ]}
-                  >
-                    <Image
-                      source={{ uri: cap.uri }}
-                      style={styles.imageInner}
-                      resizeMode="cover"
-                    />
-                  </Pressable>
-                ) : (
-                  <View style={styles.imageBox}>
-                    <Text style={styles.imageMissing}>not local</Text>
-                  </View>
-                )}
-              </View>
-            );
-          })}
+        {/* Single panorama thumbnail — captures the entire label in one
+            unrolled image. The deleted /(app)/scan/captures/[surface]
+            route is gone; rule bboxes are viewed via the rule detail
+            screen, which draws them on the panorama directly. */}
+        <SectionHeader title="Capture" />
+        <View style={styles.panoramaThumb}>
+          {panorama ? (
+            <Image
+              source={{ uri: panorama.uri }}
+              style={styles.panoramaImage}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={styles.panoramaMissing}>
+              <Text style={styles.imageMissing}>not local</Text>
+            </View>
+          )}
         </View>
 
         {grouped.fail.length > 0 && (
@@ -357,35 +336,22 @@ const styles = StyleSheet.create({
     ...typography.body,
     color: colors.textMuted,
   },
-  imageStrip: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  imageThumb: {
-    flex: 1,
-    gap: spacing.xs,
-  },
-  imageLabel: {
-    ...typography.caption,
-    color: colors.textMuted,
-    textTransform: 'capitalize',
-  },
-  imageBox: {
-    aspectRatio: 0.65,
+  panoramaThumb: {
+    aspectRatio: 3,
     backgroundColor: colors.surfaceAlt,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
     overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
-  imageBoxPressed: {
-    opacity: 0.85,
-  },
-  imageInner: {
+  panoramaImage: {
     width: '100%',
     height: '100%',
+  },
+  panoramaMissing: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   imageMissing: {
     ...typography.caption,

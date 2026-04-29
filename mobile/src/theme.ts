@@ -18,6 +18,46 @@ export const colors = {
   advisory: '#F4B860',
   danger: '#E85D75',
   onDanger: '#FFFFFF',
+
+  // --- Scan-specific overlay tokens (SCAN_DESIGN.md §2) ---
+  scanOverlayDim: 'rgba(8, 11, 16, 0.58)',
+  scanOverlayScrim: 'rgba(8, 11, 16, 0.32)',
+  scanInk: '#F4F6FA',
+  scanInkDim: 'rgba(244, 246, 250, 0.72)',
+  scanInkFaint: 'rgba(244, 246, 250, 0.44)',
+
+  // --- State accents (mapped to scanMachine ScanState) ---
+  scanIdle: '#6EA8FE',
+  scanIdleSoft: 'rgba(110, 168, 254, 0.22)',
+  scanIdleGlow: 'rgba(110, 168, 254, 0.55)',
+  scanReady: '#3DDC97',
+  scanReadySoft: 'rgba(61, 220, 151, 0.20)',
+  scanWarn: '#F4B860',
+  scanWarnSoft: 'rgba(244, 184, 96, 0.22)',
+  scanFail: '#FF6B6B',
+  scanFailSoft: 'rgba(255, 107, 107, 0.22)',
+
+  // --- Panorama strip canvas tokens ---
+  panoramaBg: '#0B0F15',
+  panoramaEmptyDot: 'rgba(110, 168, 254, 0.18)',
+  panoramaWritingEdge: '#F4F6FA',
+  panoramaWritingEdgeGlow: 'rgba(110, 168, 254, 0.85)',
+  panoramaFilledShadow: 'rgba(0, 0, 0, 0.45)',
+  panoramaFrameStroke: 'rgba(244, 246, 250, 0.10)',
+  panoramaFadeMask: '#0B0F15',
+
+  // --- Coverage track tokens ---
+  coverageTrack: 'rgba(244, 246, 250, 0.14)',
+  coverageFillStart: '#6EA8FE',
+  coverageFillEnd: '#9BC1FF',
+  coverageMilestone: '#3DDC97',
+  coverageLeadingDot: '#FFFFFF',
+  coverageLeadingHalo: 'rgba(110, 168, 254, 0.65)',
+
+  // --- Completion reveal tokens ---
+  sparkleCore: '#FFFFFF',
+  sparkleAccent: '#9BC1FF',
+  sparklePass: '#3DDC97',
 } as const;
 
 export const spacing = {
@@ -66,4 +106,40 @@ export const typography = {
     fontSize: 13,
     fontFamily: 'Courier',
   },
+} as const;
+
+// --- Scan geometry (SCAN_DESIGN.md §2 + §3) ---
+export const scanGeometry = {
+  panoramaAspect: 16 / 5,
+  panoramaPaddingTop: 56,
+  panoramaPaddingHorizontal: 12,
+  panoramaCornerRadius: 14,
+  panoramaTopHeightFraction: 0.35,
+  panoramaEmptyDotSize: 3,
+  panoramaEmptyDotPitch: 14,
+  panoramaWritingEdgeWidth: 1.5,
+
+  silhouetteStrokeWidth: 2.5,
+  silhouetteCornerRadius: 18,
+  silhouetteShadowBlur: 10,
+
+  ringStrokeWidth: 6,
+  ringGapFromSilhouette: 18,
+  ringMilestoneTickLength: 10,
+  ringLeadingDotRadius: 4,
+  ringLeadingHaloRadius: 14,
+
+  dialDiameter: 64,
+  dialStrokeWidth: 4,
+  dialCornerInset: 16,
+} as const;
+
+// --- Scan motion timing constants (SCAN_DESIGN.md §2 + §4) ---
+export const scanMotion = {
+  spring: { damping: 18, stiffness: 220 },
+  springSnappy: { damping: 14, stiffness: 320 },
+  fastEase: { duration: 180 },
+  midEase: { duration: 320 },
+  slowEase: { duration: 520 },
+  hero: { duration: 900 },
 } as const;

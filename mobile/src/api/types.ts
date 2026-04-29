@@ -9,10 +9,12 @@
 // the endpoint rejects non-beer until v2.
 export type BeverageType = 'beer' | 'wine' | 'spirits';
 
-// Surfaces the backend currently issues upload URLs for. The data model
-// allows side and neck (per SPEC §0 data model) but v1 captures only
-// front + back.
-export type Surface = 'front' | 'back' | 'side' | 'neck';
+// In v1 the backend issues a single "panorama" upload — the unrolled
+// label captured by the cylindrical-scan flow (ARCH §7). The legacy
+// front/back/side/neck values are retired; older rule_results coming
+// off the multi-panel /v1/verify path are translated by the response
+// builder before they reach the mobile client.
+export type Surface = 'panorama';
 
 // Scan lifecycle states from `_ScanState.status` in scans.py.
 export type ScanStatus = 'uploading' | 'processing' | 'complete' | 'failed';
@@ -64,14 +66,12 @@ export interface RuleResultDTO {
   expected: string | null;
   fix_suggestion: string | null;
   bbox: BBox | null;
-  // Which submission this rule's evidence came from. Two shapes ship
-  // depending on the endpoint:
-  //   - /v1/verify (web): "panel_0" / "panel_1" / … in submission order.
-  //   - /v1/scans/:id/report (mobile): "front" / "back" — the scan_image
-  //     surface name directly.
-  // `null` when the rule isn't tied to a specific extracted field.
-  // Use surfaceForPanel() to translate either shape into a local
-  // `Surface` slot.
+  // Which submission this rule's evidence came from. In v1 this is
+  // always `"panorama"` for both endpoints (`/v1/verify` and
+  // `/v1/scans/:id/report`); the multi-panel web path can still emit
+  // `"panel_N"` but the mobile client never sees those values because
+  // it always uploads a single panorama. `null` when the rule isn't
+  // tied to a specific extracted field.
   surface?: string | null;
 }
 

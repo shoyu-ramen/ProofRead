@@ -36,7 +36,7 @@ export default function AuthenticatedLayout(): React.ReactElement {
         options={{ title: 'Container size' }}
       />
       <Stack.Screen
-        name="scan/camera/[surface]"
+        name="scan/unwrap"
         options={{ headerShown: false, presentation: 'fullScreenModal' }}
       />
       <Stack.Screen name="scan/review" options={{ title: 'Review' }} />

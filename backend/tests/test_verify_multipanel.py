@@ -6,8 +6,15 @@ tests pin the multi-panel behavior:
   * Service-level merge: per-field source_image_id, highest-confidence
     wins on overlap, panel-level unreadable bookkeeping.
   * Endpoint shape: `images=` list takes precedence, legacy `image=`
-    still works, panel_count is reported back, source_image_id round-
-    trips through the API, validation rejects empty / over-long lists.
+    still works, source_image_id round-trips through the API,
+    validation rejects empty / over-long lists.
+
+The verify pipeline supports multi-panel input; the v1 mobile happy
+path sends a single unrolled-label panorama (which surfaces as
+`source_image_id="panorama"` — see `test_verify.py`). The
+`panel_0`/`panel_1` labels exercised below are the multi-panel
+orchestrator's id scheme, used by the web/agent UI when it submits
+explicit `images=[front, back]` lists.
 
 Why a panel-aware mock instead of `MockVisionExtractor`: the existing
 mock returns the same fixture every call, so it can't distinguish
@@ -224,9 +231,14 @@ def test_two_panels_merge_overlap_picks_higher_confidence():
     assert brand_info["confidence"] >= 0.9
 
 
-def test_single_panel_via_panels_property_tags_panel_zero():
-    """The single-panel path still produces source_image_id='panel_0' for
-    every field — multi-panel response shape is the new uniform contract."""
+# Rewritten for the panorama happy path: the single-panel verify path is
+# now the v1 mobile shape, so every field's source_image_id is "panorama"
+# (not "panel_0"). The multi-panel `panel_N` ids stay for the web/agent
+# path exercised below.
+def test_single_panel_path_tags_panorama():
+    """The single-panel path tags every field with source_image_id='panorama'
+    — the v1 mobile uploads one unrolled-label image and the response
+    carries that surface id so the client can join it to the upload."""
     extractor = _PanelMock(
         [
             {
@@ -262,7 +274,7 @@ def test_single_panel_via_panels_property_tags_panel_zero():
     assert len(extractor.calls) == 1
     for name, info in report.extracted.items():
         if info.get("value") is not None:
-            assert info["source_image_id"] == "panel_0", (name, info)
+            assert info["source_image_id"] == "panorama", (name, info)
 
 
 def test_field_unreadable_only_when_no_panel_finds_it():
@@ -338,9 +350,12 @@ def _png_file(name: str = "label.png", body: bytes | None = None) -> tuple[str, 
     return (name, io.BytesIO(body or _GOOD_PNG), "image/png")
 
 
-def test_endpoint_legacy_single_image_still_works(monkeypatch):
-    """Backwards compat: a single `image=` upload reports panel_count=1
-    and tags every extracted field as panel_0."""
+# Rewritten: panel_count was removed from the response (v1 single-image
+# path always carried 1) and the single-image path now tags fields as
+# "panorama" rather than "panel_0".
+def test_endpoint_single_image_tags_panorama(monkeypatch):
+    """A single `image=` upload (the v1 mobile happy path) tags every
+    extracted field with source_image_id='panorama'."""
     extractor = _PanelMock(
         [
             {
@@ -372,15 +387,18 @@ def test_endpoint_legacy_single_image_still_works(monkeypatch):
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["panel_count"] == 1
+    # panel_count is intentionally absent from the response model in v1.
+    assert "panel_count" not in body
     for name, info in body["extracted"].items():
         if info.get("value") is not None:
-            assert info["source_image_id"] == "panel_0"
+            assert info["source_image_id"] == "panorama"
 
 
 def test_endpoint_multipanel_via_images_list(monkeypatch):
-    """Two `images=` uploads → panel_count=2; brand from front, warning
-    from back; source_image_ids round-trip in the response."""
+    """Two `images=` uploads (web/agent multi-panel path): brand from
+    front, warning from back; source_image_ids round-trip in the
+    response. The verify pipeline supports multi-panel input even though
+    the v1 mobile happy path uploads a single panorama."""
     extractor = _PanelMock(
         [
             {
@@ -420,7 +438,6 @@ def test_endpoint_multipanel_via_images_list(monkeypatch):
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["panel_count"] == 2
     assert body["extracted"]["brand_name"]["source_image_id"] == "panel_0"
     assert body["extracted"]["health_warning"]["source_image_id"] == "panel_1"
     # The mock should have been called once per panel.
