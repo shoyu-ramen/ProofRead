@@ -24,18 +24,22 @@ from tests.conftest import _make_synthetic_png
 
 @pytest.fixture(autouse=True)
 def _clear_extractor_cache():
-    """Reset both module-level caches between tests.
+    """Reset module-level caches between tests.
 
     The extractor cache is reset because monkey-patched factories must
     not leak. The verify cache is reset because tests rely on cold-path
     behavior (e.g. assertions on which extractor was called) which a
-    leftover entry would short-circuit.
+    leftover entry would short-circuit. The reverse-lookup cache is
+    reset for the same reason — a stray perceptual hit from a prior
+    test would skip the VLM and break those assertions.
     """
     verify_api._extractor_cache = None
     verify_api._reset_verify_cache()
+    verify_api._reset_reverse_lookup_cache()
     yield
     verify_api._extractor_cache = None
     verify_api._reset_verify_cache()
+    verify_api._reset_reverse_lookup_cache()
     app.dependency_overrides.clear()
 
 

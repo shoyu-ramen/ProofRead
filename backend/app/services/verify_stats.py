@@ -52,6 +52,15 @@ class VerifyStats:
     warm_elapsed_ms_recent: list[int]
     second_pass_outcomes: dict[str, int]
     overall_verdicts: dict[str, int]
+    # Perceptual reverse-lookup outcomes, separate from the byte-exact
+    # warm/cold counters because they answer different questions: a
+    # SHA-256 cache hit means "I already verified these exact bytes",
+    # a reverse-lookup hit means "I already verified a perceptually-
+    # equivalent image". Tracking both lets dashboards split the
+    # latency win between exact-resubmit and similar-resubmit flows.
+    reverse_lookup_hits: int
+    reverse_lookup_misses: int
+    reverse_lookup_elapsed_ms_recent: list[int]
 
 
 class _Counters:
@@ -71,6 +80,9 @@ class _Counters:
         self._warm_elapsed: deque[int] = deque(maxlen=_RECENT_WINDOW)
         self._second_pass: Counter[str] = Counter()
         self._verdicts: Counter[str] = Counter()
+        self._reverse_hits = 0
+        self._reverse_misses = 0
+        self._reverse_elapsed: deque[int] = deque(maxlen=_RECENT_WINDOW)
 
     def record_cold(self, *, elapsed_ms: int, overall: str) -> None:
         with self._lock:
@@ -88,6 +100,23 @@ class _Counters:
         with self._lock:
             self._second_pass[outcome] += 1
 
+    def record_reverse_lookup_hit(self, *, elapsed_ms: int) -> None:
+        """Bump the reverse-lookup hit counter and record latency.
+
+        `elapsed_ms` is the *whole verify call* on a reverse-hit
+        path — i.e. sensor pre-check + dhash + lookup + rule engine,
+        but no VLM call. Tracking it separately from the warm-path
+        timing window keeps the cold/warm split honest (a reverse-
+        hit isn't a cache "warm" in the SHA-256 sense; it skipped
+        the VLM but ran the rule engine fresh)."""
+        with self._lock:
+            self._reverse_hits += 1
+            self._reverse_elapsed.append(elapsed_ms)
+
+    def record_reverse_lookup_miss(self) -> None:
+        with self._lock:
+            self._reverse_misses += 1
+
     def snapshot(self) -> VerifyStats:
         with self._lock:
             return VerifyStats(
@@ -97,6 +126,9 @@ class _Counters:
                 warm_elapsed_ms_recent=list(self._warm_elapsed),
                 second_pass_outcomes=dict(self._second_pass),
                 overall_verdicts=dict(self._verdicts),
+                reverse_lookup_hits=self._reverse_hits,
+                reverse_lookup_misses=self._reverse_misses,
+                reverse_lookup_elapsed_ms_recent=list(self._reverse_elapsed),
             )
 
     def reset(self) -> None:
@@ -108,6 +140,9 @@ class _Counters:
             self._warm_elapsed.clear()
             self._second_pass.clear()
             self._verdicts.clear()
+            self._reverse_hits = 0
+            self._reverse_misses = 0
+            self._reverse_elapsed.clear()
 
 
 _singleton = _Counters()
@@ -123,6 +158,14 @@ def record_warm(*, elapsed_ms: int, overall: str) -> None:
 
 def record_second_pass(outcome: SecondPassOutcome) -> None:
     _singleton.record_second_pass(outcome)
+
+
+def record_reverse_lookup_hit(*, elapsed_ms: int) -> None:
+    _singleton.record_reverse_lookup_hit(elapsed_ms=elapsed_ms)
+
+
+def record_reverse_lookup_miss() -> None:
+    _singleton.record_reverse_lookup_miss()
 
 
 def snapshot() -> VerifyStats:

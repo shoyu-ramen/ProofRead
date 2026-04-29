@@ -79,6 +79,22 @@ class Settings(BaseSettings):
     # the cache outright.
     verify_cache_max_entries: int = 1024
 
+    # Perceptual-hash reverse-image lookup sits underneath the byte-
+    # exact verify cache and serves any visually-equivalent re-submission
+    # — different JPEG quality, PNG-vs-JPEG of the same artwork, the
+    # same physical bottle re-photographed. A hit reuses the prior
+    # cold-path's vision extraction (skipping the VLM call) but still
+    # re-runs the rule engine with the current request's container size,
+    # imported flag, claim, and rule fingerprint. 0 disables the
+    # reverse-lookup outright.
+    reverse_lookup_max_entries: int = 4096
+    # Hamming-distance threshold over a 64-bit dhash. ≤6 bit-flips out
+    # of 64 keeps the false-positive rate well below 1 % on the
+    # imagehash benchmarks; loosening past ~10 starts mixing visually-
+    # similar-but-distinct labels (two beers from the same brand line
+    # often sit ~12-15 bits apart on dhash).
+    reverse_lookup_hamming_threshold: int = 6
+
     # Local Qwen3-VL fallback. When `enable_qwen_fallback` is true and
     # `qwen_vl_base_url` points at an OpenAI-compatible chat-completions
     # endpoint (vLLM, Ollama, LM Studio, llama.cpp --api), the verify and

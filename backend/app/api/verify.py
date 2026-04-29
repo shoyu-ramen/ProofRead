@@ -25,6 +25,7 @@ from app.services.health_warning_second_pass import (
     ClaudeHealthWarningExtractor,
     HealthWarningExtractor,
 )
+from app.services.reverse_lookup import ReverseLookupCache
 from app.services.verify import Panel, VerifyInput, verify
 from app.services.verify_cache import VerifyCache
 from app.services.vision import VisionExtractor, get_default_extractor
@@ -141,6 +142,17 @@ _health_warning_extractor_cache: HealthWarningExtractor | None = None
 _verify_cache: VerifyCache | None = None
 _verify_cache_lock = threading.Lock()
 
+# Process-wide reverse-image lookup cache. Same lazy + lock pattern as
+# the byte-exact verify cache above. Sized larger (4096 entries × ~5 KB
+# extraction snapshots ≈ 20 MB worst-case) than the byte-exact cache
+# because perceptual entries pay off across more workflows: a brewery
+# with 200 SKUs and a year of iterative artwork churn can plausibly
+# accumulate thousands of historically-verified labels worth keeping
+# resident, where the byte-exact cache only buys you the most recent
+# few-dozen exports per active SKU.
+_reverse_lookup_cache: ReverseLookupCache | None = None
+_reverse_lookup_cache_lock = threading.Lock()
+
 
 def get_extractor() -> VisionExtractor:
     """Lazily construct (and cache) the configured vision chain.
@@ -231,6 +243,38 @@ def _reset_verify_cache() -> None:
     global _verify_cache
     with _verify_cache_lock:
         _verify_cache = None
+
+
+def get_reverse_lookup_cache() -> ReverseLookupCache | None:
+    """Lazily build the per-process reverse-image lookup cache.
+
+    Returns None when `reverse_lookup_max_entries` is 0 — the operator's
+    escape hatch for disabling the perceptual layer without redeploying
+    (e.g. while triaging a suspected false-positive verdict reuse).
+    Construction is double-checked under a lock for the same reason
+    `get_verify_cache()` is — two cold requests racing into the factory
+    would each construct their own instance and one's promotions would
+    silently disappear.
+    """
+    global _reverse_lookup_cache
+    if settings.reverse_lookup_max_entries <= 0:
+        return None
+    if _reverse_lookup_cache is not None:
+        return _reverse_lookup_cache
+    with _reverse_lookup_cache_lock:
+        if _reverse_lookup_cache is None:
+            _reverse_lookup_cache = ReverseLookupCache(
+                max_entries=settings.reverse_lookup_max_entries,
+                hamming_threshold=settings.reverse_lookup_hamming_threshold,
+            )
+    return _reverse_lookup_cache
+
+
+def _reset_reverse_lookup_cache() -> None:
+    """Test hook: drop the process-wide reverse-lookup cache."""
+    global _reverse_lookup_cache
+    with _reverse_lookup_cache_lock:
+        _reverse_lookup_cache = None
 
 
 @router.post("", response_model=VerifyResponse)
@@ -386,6 +430,7 @@ async def verify_label(
                 extractor=extractor,
                 health_warning_reader=second_pass,
                 cache=get_verify_cache(),
+                reverse_cache=get_reverse_lookup_cache(),
             ),
             timeout=settings.verify_request_timeout_s,
         )
@@ -464,8 +509,8 @@ class VerifyStatsResponse(BaseModel):
     Cheap to compute (counters live in memory) and safe to poll. Intended
     for an admin dashboard / on-call quick-check; not a replacement for
     OpenTelemetry → Honeycomb (SPEC §0). Counters reset on process restart;
-    `cold_count + warm_count` is the number of /v1/verify calls served by
-    THIS instance since boot.
+    `cold_count + warm_count + reverse_lookup_hits` is the number of
+    /v1/verify calls served by THIS instance since boot.
     """
 
     cold_count: int
@@ -475,6 +520,8 @@ class VerifyStatsResponse(BaseModel):
     second_pass_outcomes: dict[str, int]
     overall_verdicts: dict[str, int]
     cache: dict[str, int] | None = None
+    reverse_lookup: dict[str, int] | None = None
+    reverse_lookup_elapsed_ms_recent: list[int] = []
 
 
 @router.get("/_stats", response_model=VerifyStatsResponse)
@@ -498,6 +545,24 @@ async def verify_stats_endpoint() -> VerifyStatsResponse:
             "size": cs.size,
             "max_entries": cs.max_entries,
         }
+    reverse_payload: dict[str, int] | None = None
+    rcache = get_reverse_lookup_cache()
+    if rcache is not None:
+        rs = rcache.stats()
+        # Two views of the same data: the cache's own internal counters
+        # (`hits`/`misses` from `ReverseLookupCache.stats()`) plus the
+        # verify-orchestrator's view from `verify_stats` (which excludes
+        # misses caused by failed dhash). Surfacing both lets operators
+        # diagnose phash failures separately from real lookup misses.
+        reverse_payload = {
+            "hits": rs.hits,
+            "misses": rs.misses,
+            "size": rs.size,
+            "max_entries": rs.max_entries,
+            "hamming_threshold": rs.hamming_threshold,
+            "orchestrator_hits": snap.reverse_lookup_hits,
+            "orchestrator_misses": snap.reverse_lookup_misses,
+        }
     return VerifyStatsResponse(
         cold_count=snap.cold_count,
         warm_count=snap.warm_count,
@@ -506,4 +571,6 @@ async def verify_stats_endpoint() -> VerifyStatsResponse:
         second_pass_outcomes=snap.second_pass_outcomes,
         overall_verdicts=snap.overall_verdicts,
         cache=cache_payload,
+        reverse_lookup=reverse_payload,
+        reverse_lookup_elapsed_ms_recent=snap.reverse_lookup_elapsed_ms_recent,
     )
