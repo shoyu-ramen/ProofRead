@@ -81,9 +81,24 @@ export interface FieldSummary {
   bbox: BBox | null;
 }
 
+// Capture-quality verdict from the report row. Ordered worst→best so
+// downstream code can compare with `<` semantics if needed.
+export type ImageQuality = 'poor' | 'fair' | 'good';
+
 export interface ReportResponse {
   scan_id: string;
   overall: OverallStatus;
+  // Capture-quality verdict produced during finalize. The pill on the
+  // report header is sourced from this.
+  image_quality: ImageQuality;
+  // Free-form notes explaining why the verdict landed where it did
+  // (e.g. "blurry highlights on the front"). Surfaced under the pill
+  // when present.
+  image_quality_notes: string | null;
+  // Identifier of the extractor that produced the result, e.g.
+  // "claude-3-5-sonnet" or "ocr-fallback". Useful for diagnostics; not
+  // currently surfaced in UI.
+  extractor: string;
   rule_results: RuleResultDTO[];
   // Backend returns dict with arbitrary keys per extracted field.
   // Values are FieldSummary-shaped but we type loose to match the dict.

@@ -14,10 +14,26 @@
  * the intrinsic dimensions, so the panorama (a wide aspect ratio)
  * just produces side-letterboxing instead of the previous
  * portrait-letterboxing.
+ *
+ * Track C: the citation is rendered as a tappable eCFR.gov link, and
+ * the "Flag this result" button now collects a comment via a modal
+ * sheet and POSTs to /v1/scans/:id/rule-results/:rid/flag.
  */
 
-import React, { useMemo } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Linking,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
@@ -29,6 +45,7 @@ import { useScanStore } from '@src/state/scanStore';
 import type { BBox, RuleResultDTO, RuleStatus } from '@src/api/types';
 import type { UnrolledPanorama } from '@src/state/scanStore';
 import { colors, radius, spacing, typography } from '@src/theme';
+import { ecfrUrlForCitation } from '../report/[id]';
 
 export default function RuleDetailScreen(): React.ReactElement {
   const params = useLocalSearchParams<{ ruleId: string; scanId?: string }>();
@@ -51,6 +68,18 @@ export default function RuleDetailScreen(): React.ReactElement {
     return data.rule_results.find((r) => r.rule_id === ruleId) ?? null;
   }, [data, ruleId]);
 
+  // Flag-as-incorrect modal state. Kept local — submit posts directly
+  // and surfaces success/error inline. We intentionally do NOT
+  // invalidate the report query: a flagged result still appears in
+  // the report list (the backend just records the flag for later
+  // operator review per scans.py:532-554).
+  const [flagOpen, setFlagOpen] = useState(false);
+  const [flagComment, setFlagComment] = useState('');
+  const [flagSubmitting, setFlagSubmitting] = useState(false);
+  const [flagToast, setFlagToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(
+    null
+  );
+
   if (isLoading) {
     return (
       <SafeAreaView style={styles.center}>
@@ -72,6 +101,29 @@ export default function RuleDetailScreen(): React.ReactElement {
     );
   }
 
+  const ecfrUrl = ecfrUrlForCitation(rule.citation);
+
+  const submitFlag = async () => {
+    if (flagSubmitting) return;
+    setFlagSubmitting(true);
+    setFlagToast(null);
+    try {
+      await apiClient.flagRuleResult(scanId, rule.rule_id, {
+        comment: flagComment.trim(),
+      });
+      setFlagOpen(false);
+      setFlagComment('');
+      setFlagToast({ kind: 'ok', msg: 'Thanks — flagged for review.' });
+    } catch (e) {
+      setFlagToast({
+        kind: 'err',
+        msg: "Couldn't submit flag. Check connection and try again.",
+      });
+    } finally {
+      setFlagSubmitting(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.root} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -79,7 +131,25 @@ export default function RuleDetailScreen(): React.ReactElement {
           <Text style={styles.title}>{humanizeRuleId(rule.rule_id)}</Text>
           <StatusBadge status={rule.status} />
         </View>
-        <Text style={styles.citation}>{rule.citation}</Text>
+        {ecfrUrl ? (
+          <Pressable
+            onPress={() => {
+              void Linking.openURL(ecfrUrl);
+            }}
+            hitSlop={8}
+            accessibilityRole="link"
+            accessibilityLabel={`Open ${rule.citation} on eCFR`}
+            style={({ pressed }) => [
+              styles.citationRow,
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Text style={styles.citationLink}>{rule.citation}</Text>
+            <Text style={styles.citationIcon}>↗</Text>
+          </Pressable>
+        ) : (
+          <Text style={styles.citation}>{rule.citation}</Text>
+        )}
 
         {rule.status === 'advisory' ? <AdvisoryBanner /> : null}
 
@@ -105,17 +175,110 @@ export default function RuleDetailScreen(): React.ReactElement {
           </Section>
         ) : null}
 
+        {flagToast ? (
+          <View
+            style={[
+              styles.toast,
+              flagToast.kind === 'ok' ? styles.toastOk : styles.toastErr,
+            ]}
+            accessibilityLiveRegion="polite"
+          >
+            <Text
+              style={[
+                styles.toastText,
+                {
+                  color: flagToast.kind === 'ok' ? colors.pass : colors.fail,
+                },
+              ]}
+            >
+              {flagToast.msg}
+            </Text>
+          </View>
+        ) : null}
+
         <Button
-          label="Flag this result"
+          label="Flag as incorrect"
           variant="secondary"
           fullWidth
-          onPress={() => {
-            // TODO(flag): wire POST /v1/scans/:id/rule-results/:rid/flag
-            // once a comment input UI is added.
-          }}
+          onPress={() => setFlagOpen(true)}
         />
       </ScrollView>
+
+      <FlagModal
+        visible={flagOpen}
+        comment={flagComment}
+        onChangeComment={setFlagComment}
+        submitting={flagSubmitting}
+        onCancel={() => {
+          if (flagSubmitting) return;
+          setFlagOpen(false);
+        }}
+        onSubmit={() => void submitFlag()}
+      />
     </SafeAreaView>
+  );
+}
+
+function FlagModal({
+  visible,
+  comment,
+  onChangeComment,
+  submitting,
+  onCancel,
+  onSubmit,
+}: {
+  visible: boolean;
+  comment: string;
+  onChangeComment: (s: string) => void;
+  submitting: boolean;
+  onCancel: () => void;
+  onSubmit: () => void;
+}): React.ReactElement {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onCancel}
+    >
+      <KeyboardAvoidingView
+        style={styles.modalRoot}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={onCancel} />
+        <View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>Flag this result</Text>
+          <Text style={styles.modalSubtitle}>
+            Tell us what's wrong. Our reviewers use these notes to fix the
+            extractor and rules.
+          </Text>
+          <TextInput
+            style={styles.modalInput}
+            placeholder="What's incorrect about this finding?"
+            placeholderTextColor={colors.textMuted}
+            value={comment}
+            onChangeText={onChangeComment}
+            multiline
+            numberOfLines={4}
+            editable={!submitting}
+            textAlignVertical="top"
+          />
+          <View style={styles.modalActions}>
+            <Button
+              label="Cancel"
+              variant="ghost"
+              onPress={onCancel}
+              disabled={submitting}
+            />
+            <Button
+              label={submitting ? 'Sending…' : 'Submit'}
+              onPress={onSubmit}
+              disabled={submitting}
+            />
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
   );
 }
 
@@ -237,6 +400,21 @@ const styles = StyleSheet.create({
     ...typography.caption,
     color: colors.textMuted,
   },
+  citationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+  },
+  citationLink: {
+    ...typography.caption,
+    color: colors.primary,
+    textDecorationLine: 'underline',
+  },
+  citationIcon: {
+    ...typography.caption,
+    color: colors.primary,
+  },
   section: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,
@@ -292,5 +470,61 @@ const styles = StyleSheet.create({
   advisorySubtitle: {
     ...typography.body,
     color: colors.text,
+  },
+  toast: {
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  toastOk: {
+    backgroundColor: 'rgba(61,220,151,0.10)',
+    borderColor: colors.pass,
+  },
+  toastErr: {
+    backgroundColor: 'rgba(255,107,107,0.10)',
+    borderColor: colors.fail,
+  },
+  toastText: {
+    ...typography.body,
+  },
+  modalRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  modalCard: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.xl,
+    borderTopRightRadius: radius.xl,
+    padding: spacing.lg,
+    gap: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  modalTitle: {
+    ...typography.title,
+    color: colors.text,
+  },
+  modalSubtitle: {
+    ...typography.body,
+    color: colors.textMuted,
+  },
+  modalInput: {
+    ...typography.body,
+    color: colors.text,
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    minHeight: 96,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
   },
 });

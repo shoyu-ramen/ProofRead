@@ -11,6 +11,13 @@ export interface RuleResultCardProps {
 
 export function RuleResultCard({ result, onPress }: RuleResultCardProps) {
   const isAdvisory = result.status === 'advisory';
+  // Show fix_suggestion on the card itself for fail/advisory so the user
+  // doesn't have to drill into rule detail to know what to do. Pass
+  // results never need a fix, so we suppress to keep the report scannable.
+  const showFix =
+    (result.status === 'fail' || result.status === 'advisory') &&
+    typeof result.fix_suggestion === 'string' &&
+    result.fix_suggestion.trim().length > 0;
 
   const inner = (
     <>
@@ -25,6 +32,12 @@ export function RuleResultCard({ result, onPress }: RuleResultCardProps) {
           </View>
           <StatusBadge status={result.status} size="sm" />
         </View>
+        {showFix ? (
+          <Text style={styles.fix} numberOfLines={3}>
+            <Text style={styles.fixLabel}>Fix: </Text>
+            {result.fix_suggestion}
+          </Text>
+        ) : null}
         {result.finding ? (
           <Text style={styles.finding} numberOfLines={2}>
             {result.finding}
@@ -151,5 +164,15 @@ const styles = StyleSheet.create({
   finding: {
     ...typography.body,
     color: colors.textMuted,
+  },
+  fix: {
+    ...typography.body,
+    color: colors.text,
+    fontStyle: 'italic',
+  },
+  fixLabel: {
+    fontWeight: '700',
+    fontStyle: 'normal',
+    color: colors.text,
   },
 });
