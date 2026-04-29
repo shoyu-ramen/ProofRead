@@ -1807,9 +1807,24 @@ function renderError(err) {
   // Map the failure mode to user-facing copy. The API uses 503 with
   // {code: "vision_unavailable"} when no extractor is reachable; older
   // 500s and network failures fall through to the generic branch.
+  //
+  // 501 ("Not Implemented") on /v1/verify is the unmistakable fingerprint
+  // of a non-FastAPI server fielding the request — the canonical case is
+  // someone running `python -m http.server` from app/static/ to preview
+  // the UI without realising the API isn't actually wired up. The static
+  // handler answers GETs for index.html but returns 501 for any POST,
+  // so the UI loads, the user clicks Scan, and the request lands on a
+  // server that knows nothing about the backend. Surface the cause so
+  // the operator stops chasing a phantom bug in the verify path.
   let headline;
+  let metaOverride = null;
   if (err && err.code === "vision_unavailable") {
     headline = "The label-reading service is temporarily unavailable. Please try again in a moment.";
+  } else if (err && err.status === 501) {
+    headline = "The page is being served by a static-file server that doesn't speak the verify API.";
+    metaOverride =
+      "Start the FastAPI backend (uvicorn app.main:app) on this port instead of " +
+      "python -m http.server, then reload.";
   } else if (err && err.status === 503) {
     headline = "The verification service is temporarily unavailable. Please try again shortly.";
   } else if (err && err.status >= 500) {
@@ -1823,9 +1838,10 @@ function renderError(err) {
 
   // Keep the raw detail available for debugging without showing it as the
   // primary message — small, dimmed, only when there's something useful.
-  const meta = err && err.developerMessage
-    ? `${err.developerMessage}`
-    : (err && err.status ? `HTTP ${err.status}` : "");
+  const meta = metaOverride
+    ?? (err && err.developerMessage
+      ? `${err.developerMessage}`
+      : (err && err.status ? `HTTP ${err.status}` : ""));
   $("verdictMeta").textContent = meta;
 
   $("resultFields").innerHTML = "";
