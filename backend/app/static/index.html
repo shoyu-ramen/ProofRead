@@ -1647,8 +1647,6 @@ function showCamError(err) {
 }
 
 // ─── Verification flow ─────────────────────────────────────────
-const STEPS = ["capture", "identify", "verify", "result"];
-
 function setStepState(name, cls) {
   // cls: "active" | "done" | ""  (clears any other progress class)
   const el = $("progressSteps").querySelector(`[data-step="${name}"]`);
