@@ -222,6 +222,22 @@ def verify(
     if not isinstance(producer_record, dict):
         producer_record = None
 
+    # Reduce the bytes we send to the model. Two compounding wins:
+    #   1. Crop to the detected label region when one was localized — the
+    #      model isn't billed to look at the user's hand or the bar wall.
+    #   2. Cap the long edge at TARGET_LONG_EDGE (≈1568 px). Anthropic
+    #      auto-resizes anything larger to that limit on its side anyway,
+    #      so pre-resizing is free quality-wise and saves wire bytes +
+    #      Anthropic's resize step. Re-encoding to JPEG-85 cuts upload
+    #      size further with no perceptible OCR loss at this resolution.
+    # When normalisation cropped, we suppress the per-region sensor
+    # briefing (its coordinates no longer match what the model sees) and
+    # translate any returned bboxes back to original-image space.
+    normalized = _normalize_for_vision(inp.image_bytes, capture)
+    image_bytes_for_model = normalized.bytes
+    media_type_for_model = normalized.media_type
+    capture_for_briefing = None if normalized.cropped else capture
+
     # Primary extraction + redundant Government-Warning second-pass run
     # concurrently. Both are blocking HTTP calls to Anthropic, so a thread
     # pool is the simplest way to overlap their wall-clock cost — the
@@ -233,14 +249,17 @@ def verify(
     extraction, second_warning_read = _run_extractors_concurrently(
         extractor=extractor,
         health_warning_reader=health_warning_reader,
-        image_bytes=inp.image_bytes,
-        media_type=inp.media_type,
-        capture=capture,
+        image_bytes=image_bytes_for_model,
+        media_type=media_type_for_model,
+        capture=capture_for_briefing,
         producer_record=producer_record,
         beverage_type=inp.beverage_type,
         container_size_ml=inp.container_size_ml,
         is_imported=inp.is_imported,
     )
+
+    if normalized.cropped:
+        _translate_extraction_bboxes(extraction, normalized.offset)
 
     # Cap field confidence at the surface confidence. The model can only be
     # as confident in a reading as the frame it came from supports.
@@ -381,13 +400,200 @@ def verify(
 # ---------------------------------------------------------------------------
 
 
+# Anthropic auto-resizes anything beyond ~1568 px on the long edge to that
+# size before billing image tokens. Pre-resizing on our side saves the
+# wire bytes (faster upload) without changing the model's view.
+_VISION_TARGET_LONG_EDGE = 1568
+_VISION_JPEG_QUALITY = 85
+# Skip cropping when the label already covers most of the frame — re-
+# encoding to save <30% of pixels is a wall-clock loss. The bbox detector
+# already enforces a "≥10% of frame" floor on the small side, so any
+# bbox that reaches us here is a real label region.
+_CROP_MIN_GAIN_RATIO = 0.70
+_CROP_MARGIN_FRACTION = 0.08
+_CROP_MIN_MARGIN_PX = 24
+_CROP_MIN_EDGE_PX = 64
+
+
+@dataclass(frozen=True)
+class _NormalizedImage:
+    """Bytes the verify path actually sends to the model.
+
+    `cropped` is True when the helper sliced down to the detected label
+    region, which is the signal the orchestrator uses to suppress the
+    sensor-region briefing (its bbox/glare-blob coordinates no longer
+    match what the model is looking at) and to translate model-returned
+    bboxes back to original-image coordinates after extraction. `offset`
+    is `(dx, dy)` to add back during that translation; `(0, 0)` for the
+    no-crop path.
+    """
+
+    bytes: bytes
+    media_type: str
+    cropped: bool
+    offset: tuple[int, int]
+
+
+def _normalize_for_vision(
+    image_bytes: bytes, capture: CaptureQualityReport
+) -> _NormalizedImage:
+    """Crop + downscale + re-encode the upload before the model sees it.
+
+    Order matters: crop first (pixels we throw away never need to be
+    resized), then resize the crop. JPEG-85 at ≤1568 px long edge is the
+    model's effective input resolution anyway, so we lose nothing by
+    matching it on the wire.
+
+    Any failure (decode error, no detected bbox, edge case) falls back to
+    the original bytes/media_type — never a correctness risk.
+    """
+    try:
+        import io
+
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(image_bytes))
+        img.load()
+    except Exception as exc:
+        logger.debug("Vision normalisation skipped — decode failed: %s", exc)
+        return _NormalizedImage(
+            bytes=image_bytes,
+            media_type=_guess_media_type(image_bytes),
+            cropped=False,
+            offset=(0, 0),
+        )
+
+    crop_box, offset = _label_crop_box(capture, img.size)
+    if crop_box is not None:
+        try:
+            img = img.crop(crop_box)
+        except Exception as exc:
+            logger.debug("Vision normalisation skipped crop step: %s", exc)
+            crop_box = None
+            offset = (0, 0)
+
+    # Downscale so the long edge is at most TARGET — compounds with the
+    # crop above (post-crop bbox is what the model sees).
+    if max(img.size) > _VISION_TARGET_LONG_EDGE:
+        scale = _VISION_TARGET_LONG_EDGE / max(img.size)
+        new_size = (
+            max(1, int(round(img.size[0] * scale))),
+            max(1, int(round(img.size[1] * scale))),
+        )
+        try:
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+        except Exception as exc:
+            logger.debug("Vision normalisation skipped resize: %s", exc)
+
+    if img.mode not in ("RGB", "L"):
+        try:
+            img = img.convert("RGB")
+        except Exception:
+            return _NormalizedImage(
+                bytes=image_bytes,
+                media_type=_guess_media_type(image_bytes),
+                cropped=False,
+                offset=(0, 0),
+            )
+
+    try:
+        import io
+
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=_VISION_JPEG_QUALITY, optimize=True)
+        out = buf.getvalue()
+    except Exception as exc:
+        logger.debug("Vision normalisation skipped re-encode: %s", exc)
+        return _NormalizedImage(
+            bytes=image_bytes,
+            media_type=_guess_media_type(image_bytes),
+            cropped=False,
+            offset=(0, 0),
+        )
+
+    return _NormalizedImage(
+        bytes=out,
+        media_type="image/jpeg",
+        cropped=crop_box is not None,
+        offset=offset,
+    )
+
+
+def _label_crop_box(
+    capture: CaptureQualityReport, image_size: tuple[int, int]
+) -> tuple[tuple[int, int, int, int] | None, tuple[int, int]]:
+    """Return `((x0, y0, x1, y1), (dx, dy))` for the label crop, or
+    `(None, (0, 0))` when cropping wouldn't help.
+    """
+    if not capture.surfaces:
+        return None, (0, 0)
+    front = capture.surfaces[0]
+    bbox = front.label_bbox
+    if bbox is None:
+        return None, (0, 0)
+    frame_w, frame_h = image_size
+    if frame_w <= 0 or frame_h <= 0:
+        return None, (0, 0)
+    bbox_area = bbox.area
+    frame_area = frame_w * frame_h
+    if bbox_area <= 0 or bbox_area / frame_area > _CROP_MIN_GAIN_RATIO:
+        return None, (0, 0)
+
+    margin = max(
+        _CROP_MIN_MARGIN_PX,
+        int(_CROP_MARGIN_FRACTION * max(bbox.w, bbox.h)),
+    )
+    x0 = max(0, bbox.x - margin)
+    y0 = max(0, bbox.y - margin)
+    x1 = min(frame_w, bbox.x + bbox.w + margin)
+    y1 = min(frame_h, bbox.y + bbox.h + margin)
+    if x1 - x0 < _CROP_MIN_EDGE_PX or y1 - y0 < _CROP_MIN_EDGE_PX:
+        return None, (0, 0)
+    return (x0, y0, x1, y1), (x0, y0)
+
+
+def _translate_extraction_bboxes(
+    extraction: Any, offset: tuple[int, int]
+) -> None:
+    """Map model-returned bboxes back to original-image space.
+
+    The model worked from a (cropped, resized) image. Its bboxes come back
+    in that frame's pixel coordinates, but downstream consumers (the API
+    response, future UI overlays) expect coordinates relative to the
+    original upload. Adding the crop offset is approximate after the
+    resize step — it's accurate to within the resize ratio, which is more
+    than precise enough for highlight rendering. If we ever need exact
+    pre-resize coordinates we'll need to also scale by the resize ratio.
+    """
+    dx, dy = offset
+    if dx == 0 and dy == 0:
+        return
+    for ef in extraction.fields.values():
+        if ef.bbox is None:
+            continue
+        x, y, w, h = ef.bbox
+        ef.bbox = (x + dx, y + dy, w, h)
+
+
+def _guess_media_type(image_bytes: bytes) -> str:
+    if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if image_bytes[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if image_bytes[:4] == b"GIF8":
+        return "image/gif"
+    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
+
+
 def _run_extractors_concurrently(
     *,
     extractor: VisionExtractor,
     health_warning_reader: HealthWarningExtractor | None,
     image_bytes: bytes,
     media_type: str,
-    capture: CaptureQualityReport,
+    capture: CaptureQualityReport | None,
     producer_record: dict[str, Any] | None,
     beverage_type: str,
     container_size_ml: int,
@@ -404,7 +610,7 @@ def _run_extractors_concurrently(
     the engine's verdict alone, which is the same behaviour the previous
     serial path had.
     """
-    capture_kwarg = capture if capture.surfaces else None
+    capture_kwarg = capture if (capture is not None and capture.surfaces) else None
 
     def _primary():
         return extractor.extract(
