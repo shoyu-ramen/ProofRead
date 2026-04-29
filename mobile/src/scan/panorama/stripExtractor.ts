@@ -13,13 +13,7 @@
  * (see types.ts) — disabled for v1.
  */
 
-import {
-  Skia,
-  ImageFormat,
-  TileMode,
-  FilterMode,
-  MipmapMode,
-} from '@shopify/react-native-skia';
+import { Skia } from '@shopify/react-native-skia';
 import type { SkCanvas, SkImage, SkRect } from '@shopify/react-native-skia';
 
 import type { BottleSilhouette } from '@src/scan/tracker/types';
@@ -220,21 +214,10 @@ function drawWholeStrip(
   // an 80px strip, so a mitchell-style sampling beats nearest-neighbour
   // blockiness without breaking the budget.
   paint.setAntiAlias(true);
-  // drawImageRect supports a sampling option in 1.x via the cubic/linear
-  // overloads. Keep it simple: linear filter + no mipmap, which Skia
-  // implements as bilinear resample.
-  const sampling = {
-    filter: FilterMode.Linear,
-    mipmap: MipmapMode.None,
-  };
   // 1.x signature: drawImageRectOptions(image, src, dst, sampling, paint).
-  // We use drawImageRect with a Paint for max compat across 1.5–1.12.
+  // We use drawImageRect with a Paint for max compat across 1.5–1.12;
+  // Skia falls back to its default linear sampler.
   canvas.drawImageRect(image, src, dst, paint);
-  // Reference TileMode/sampling so they're not flagged as unused under
-  // strict TS. They're load-bearing for the (gated) cylindrical-
-  // correction path above.
-  void TileMode;
-  void sampling;
 }
 
 /**
@@ -286,7 +269,3 @@ function clamp(x: number, lo: number, hi: number): number {
 function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
-
-// Reference ImageFormat so 'unused' lint doesn't fire — the stitcher
-// imports it via the barrel and the linter inspects per-file.
-void ImageFormat;

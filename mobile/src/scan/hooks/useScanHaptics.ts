@@ -3,8 +3,8 @@
  * SCAN_DESIGN.md §7. Side-effect only; returns nothing.
  *
  * Edge-detection rule: every haptic fires on the *transition*, never
- * on a steady state. We watch the current ScanState and the live
- * coverage (for milestone crossings) and react when either changes.
+ * on a steady state. Coverage-milestone haptics are owned by
+ * `RotationGuideRing` per §7, so this hook only watches `ScanState`.
  *
  * Errors from `expo-haptics` are swallowed — simulators and devices
  * without haptics engines silently no-op.
@@ -15,17 +15,10 @@ import * as Haptics from 'expo-haptics';
 
 import type { ScanState } from '@src/scan/state/scanMachine';
 
-const COVERAGE_MILESTONES = [0.25, 0.5, 0.75] as const;
-
-export function useScanHaptics(
-  state: ScanState,
-  coverage: number,
-): void {
+export function useScanHaptics(state: ScanState): void {
   const prevKindRef = useRef<ScanState['kind'] | null>(null);
   const prevPauseReasonRef = useRef<string | null>(null);
-  const prevCoverageRef = useRef<number>(0);
 
-  // State-edge haptics.
   useEffect(() => {
     const prevKind = prevKindRef.current;
     const kind = state.kind;
@@ -77,19 +70,4 @@ export function useScanHaptics(
       ).catch(() => {});
     }
   }, [state]);
-
-  // Coverage-milestone haptics. The RotationGuideRing also fires a
-  // Light impact on milestone crossings; this hook is the
-  // belt-and-suspenders for callers that don't render the ring (e.g.
-  // a future a11y-only mode).
-  // We *intentionally* skip the haptic firing here when coverage
-  // crosses a milestone because the ring component already owns it —
-  // see SCAN_DESIGN §7. Track the prev value for any consumer that
-  // wants to subscribe later via this hook's render-time read.
-  useEffect(() => {
-    const prev = prevCoverageRef.current;
-    prevCoverageRef.current = coverage;
-    void prev;
-    void COVERAGE_MILESTONES;
-  }, [coverage]);
 }

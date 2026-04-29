@@ -331,7 +331,7 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
   }, [state, panoramaState, setPanorama, complete, fail]);
 
   // Haptics — fire-and-forget edge events.
-  useScanHaptics(state, snap.coverage);
+  useScanHaptics(state);
 
   // Cancel handler — drains in-flight captures, resets the store,
   // dismisses the modal back to the previous screen. Sets

@@ -74,7 +74,6 @@ interface VisualSpec {
 function specForState(
   state: ScanStateKind,
   pauseReason: PauseReason | undefined,
-  steadiness: number,
   detected: boolean,
 ): VisualSpec {
   if (state === 'aligning') {
@@ -88,10 +87,14 @@ function specForState(
         pulse: 'none',
       };
     }
+    // Imperative target is the §4.1 ceiling (1.0). The live steadiness
+    // blend in `liveOpacity` below caps the rendered value at
+    // 0.6 + 0.4 * steadiness, so the 0.6 → 1.0 phase tracks the signal
+    // instead of resolving from a stale snapshot.
     return {
       strokeColor: colors.scanIdle,
       glowColor: colors.scanIdleSoft,
-      opacity: steadiness < 1 ? 0.6 : 1.0,
+      opacity: 1.0,
       glowRadius: 0,
       followLive: true,
       pulse: 'none',
@@ -160,24 +163,16 @@ export function BottleSilhouetteOverlay({
   viewportWidth,
   viewportHeight,
 }: BottleSilhouetteOverlayProps): React.ReactElement {
-  // Sample steadiness/detected once on mount + on state changes; we
-  // don't need them to drive per-frame style, only to derive the visual
-  // spec at a state edge.
-  const [steadinessSnapshot, setSteadinessSnapshot] = React.useState(0);
+  // `detected` is sampled at state edges — the spec only branches on
+  // detected-vs-not, not on its sub-frame jitter, so a snapshot is fine.
+  // Live `steadiness` is read per-frame inside `liveOpacity` below.
   const [detectedSnapshot, setDetectedSnapshot] = React.useState(false);
 
   useEffect(() => {
-    // Lazy snapshot: shared values are read once at state change.
-    setSteadinessSnapshot(steadinessSv.value);
     setDetectedSnapshot(detectedSv.value);
-  }, [state, pauseReason, steadinessSv, detectedSv]);
+  }, [state, pauseReason, detectedSv]);
 
-  const spec = specForState(
-    state,
-    pauseReason,
-    steadinessSnapshot,
-    detectedSnapshot,
-  );
+  const spec = specForState(state, pauseReason, detectedSnapshot);
 
   // Animated targets — opacity, stroke-width, glow radius. We tween
   // toward whatever the current spec dictates.
@@ -186,7 +181,10 @@ export function BottleSilhouetteOverlay({
   const glowOpacity = useSharedValue<number>(0);
 
   useEffect(() => {
-    // Detection-lands curve (§4.1): opacity 0 → 0.6 → 1.0 in 220ms.
+    // Detection-lands curve (§4.1): opacity 0 → 0.6 → 1.0 in 220ms. The
+    // `liveOpacity` derived value (below) caps this at the live
+    // steadiness ceiling so the 0.6 → 1.0 phase tracks the signal
+    // instead of holding at a snapshot.
     if (state === 'aligning' && detectedSnapshot && spec.opacity >= 0.6) {
       opacity.value = withSequence(
         withTiming(0.6, {
@@ -290,6 +288,20 @@ export function BottleSilhouetteOverlay({
     return frozenFrame.value;
   }, [spec.followLive, silhouetteSv]);
 
+  // §4.1 detection-lands phase: rendered opacity climbs 0.6 → 1.0 with
+  // live steadiness. The imperative animation tweens `opacity` toward
+  // the ceiling (1.0); this derived value caps the rendered value at
+  // 0.6 + 0.4 * steadiness while we're still in `aligning + detected`,
+  // so the user sees the silhouette firm up as their hand settles
+  // instead of resolving from a state-edge snapshot.
+  const liveOpacity = useDerivedValue<number>(() => {
+    if (state === 'aligning' && detectedSnapshot) {
+      const ceiling = 0.6 + 0.4 * steadinessSv.value;
+      return Math.min(opacity.value, ceiling);
+    }
+    return opacity.value;
+  }, [state, detectedSnapshot, opacity, steadinessSv]);
+
   const animatedProps = useAnimatedProps(() => {
     const f = renderFrame.value;
     const x = f.centerX - f.widthPx / 2;
@@ -299,7 +311,7 @@ export function BottleSilhouetteOverlay({
       y,
       width: f.widthPx,
       height: f.heightPx,
-      opacity: opacity.value,
+      opacity: liveOpacity.value,
       strokeWidth: strokeWidth.value,
     } as Partial<{
       x: number;

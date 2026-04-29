@@ -31,7 +31,6 @@ import {
   Rect,
   Fill,
   ImageShader,
-  vec,
 } from '@shopify/react-native-skia';
 import {
   Easing as ReanimatedEasing,
@@ -43,7 +42,6 @@ import type {
   SkCanvas,
   SkImage,
   SkSurface,
-  SkPaint,
 } from '@shopify/react-native-skia';
 
 import {
@@ -425,12 +423,6 @@ function makeImageFromRgb(
     if (typeof data.dispose === 'function') data.dispose();
   }
 }
-
-// Reference unused helpers so strict TS doesn't flag them — they exist
-// for clarity in the visual treatment and may be wired by the design
-// agent in a follow-up.
-void vec;
-type _UnusedPaint = SkPaint;
 
 const styles = StyleSheet.create({
   container: {

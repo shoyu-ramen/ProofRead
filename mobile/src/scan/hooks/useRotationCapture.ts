@@ -199,7 +199,10 @@ export function useRotationCapture(
       // to lastTriggeredRef on the JS side via runOnJS.
       runOnJS(maybeTrigger)(ckpt, coverage);
     },
-    [enabled, numCheckpoints, trackerStateSv],
+    // Stable-identity deps only — SharedValue refs trigger
+    // Reanimated's "_value access from JS" guard during dep
+    // comparison (see frameProcessor.ts deps comment).
+    [enabled, numCheckpoints],
   );
 
   const maybeTrigger = useCallback(

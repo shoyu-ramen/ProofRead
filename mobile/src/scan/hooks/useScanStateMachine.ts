@@ -79,26 +79,30 @@ export function useScanStateMachine(
       coverage: number;
       velocity: number;
       pauseReason: PauseReason | null;
-      nowMs: number;
     }) => {
+      // Read the timestamp here, after the runOnJS hop. Reading it in
+      // the worklet would let the value drift by 50–100ms under JS
+      // back-pressure, throwing off the STEADY_MS / STALL_MS windows.
+      const nowMs = Date.now();
+
       // Steadiness integrator on the JS side: bottleSteady fires only
       // after STEADY_MS of continuous detection.
       if (raw.steadyNow) {
-        if (steadySinceRef.current === null) steadySinceRef.current = raw.nowMs;
+        if (steadySinceRef.current === null) steadySinceRef.current = nowMs;
       } else {
         steadySinceRef.current = null;
       }
       const bottleSteady =
         steadySinceRef.current !== null &&
-        raw.nowMs - steadySinceRef.current >= STEADY_MS;
+        nowMs - steadySinceRef.current >= STEADY_MS;
 
       // Slow-rotation integrator: only emit `too_slow` after the
       // STALL_MS window. Reset on first accept-rate frame.
       let pauseReason = raw.pauseReason;
       const rotatingNow = raw.velocity >= MIN_REV_PER_SEC;
       if (raw.coverage > 0 && !rotatingNow && pauseReason === null) {
-        if (stalledSinceRef.current === null) stalledSinceRef.current = raw.nowMs;
-        if (raw.nowMs - stalledSinceRef.current >= STALL_MS) {
+        if (stalledSinceRef.current === null) stalledSinceRef.current = nowMs;
+        if (nowMs - stalledSinceRef.current >= STALL_MS) {
           pauseReason = 'too_slow';
         }
       } else {
@@ -158,10 +162,12 @@ export function useScanStateMachine(
         coverage: ts.coverage,
         velocity: v,
         pauseReason,
-        nowMs: Date.now(),
       });
     },
-    [trackerStateSv, frameTickSv],
+    // Empty deps — the reaction body captures the SharedValue refs
+    // (which are stable across renders); listing them in deps would
+    // trigger Reanimated's "_value from JS" guard via Object.is.
+    [],
   );
 
   // Stable imperative escape hatches.

@@ -344,22 +344,13 @@ export function useTrackerFrameProcessor(): TrackerFrameProcessor {
       const ms = performance.now() - t0;
       runOnJS(recordLatency)(ms);
     },
-    [
-      resize,
-      trackerStateSv,
-      frameTickSv,
-      latencyEmaSv,
-      frameStrideSv,
-      frameIdxSv,
-      lumaA,
-      lumaB,
-      lumaSlotSv,
-      lastFrameAtSv,
-      hasPrevSv,
-      steadinessEmaSv,
-      motionDetectedSv,
-      recordLatency,
-    ],
+    // SharedValue references are stable across renders (the wrapper
+    // object never changes; only `.value` mutates). Including them
+    // here is not just unnecessary — Vision Camera's internal
+    // useFrameProcessor compares deps via Object.is, and that
+    // comparison triggers `_value` access on the JS thread, which
+    // Reanimated 3 throws on. Only stable JS-side closures belong here.
+    [resize, recordLatency],
   );
 
   // JS-side staleness watchdog: if no frame has landed in
