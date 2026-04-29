@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { runOnJS, useSharedValue } from 'react-native-reanimated';
+import { useSharedValue } from 'react-native-reanimated';
 import {
   type Frame,
   useFrameProcessor,
@@ -158,26 +158,6 @@ export function useTrackerFrameProcessor(): TrackerFrameProcessor {
   useEffect(() => {
     motionDetectedSv.value = motionDetected;
   }, [motionDetected, motionDetectedSv]);
-
-  const recordLatency = useCallback(
-    (ms: number) => {
-      const prev = latencyEmaSv.value;
-      const next =
-        prev === 0 ? ms : prev * (1 - LATENCY_EMA_ALPHA) + ms * LATENCY_EMA_ALPHA;
-      latencyEmaSv.value = next;
-
-      const currentStride = frameStrideSv.value;
-      if (currentStride === FRAME_STRIDE_FAST && next > FRAME_BUDGET_MS) {
-        frameStrideSv.value = FRAME_STRIDE_SLOW;
-      } else if (
-        currentStride === FRAME_STRIDE_SLOW &&
-        next < FRAME_BUDGET_MS * 0.7
-      ) {
-        frameStrideSv.value = FRAME_STRIDE_FAST;
-      }
-    },
-    [latencyEmaSv, frameStrideSv],
-  );
 
   const bumpCapturedCheckpoints = useCallback(() => {
     const s = trackerStateSv.value;
@@ -341,8 +321,26 @@ export function useTrackerFrameProcessor(): TrackerFrameProcessor {
       lumaSlotSv.value = slot === 0 ? 1 : 0;
       hasPrevSv.value = true;
 
+      // EMA + stride decision are folded into the worklet so the JS
+      // thread doesn't wake on every accepted frame (~10–15 Hz). The
+      // EMA is read by parent screens via `latencyEmaSv`; stride changes
+      // are read by the worklet itself on the next tick.
       const ms = performance.now() - t0;
-      runOnJS(recordLatency)(ms);
+      const prevEma = latencyEmaSv.value;
+      const nextEma =
+        prevEma === 0
+          ? ms
+          : prevEma * (1 - LATENCY_EMA_ALPHA) + ms * LATENCY_EMA_ALPHA;
+      latencyEmaSv.value = nextEma;
+      const currentStride = frameStrideSv.value;
+      if (currentStride === FRAME_STRIDE_FAST && nextEma > FRAME_BUDGET_MS) {
+        frameStrideSv.value = FRAME_STRIDE_SLOW;
+      } else if (
+        currentStride === FRAME_STRIDE_SLOW &&
+        nextEma < FRAME_BUDGET_MS * 0.7
+      ) {
+        frameStrideSv.value = FRAME_STRIDE_FAST;
+      }
     },
     // SharedValue references are stable across renders (the wrapper
     // object never changes; only `.value` mutates). Including them
@@ -350,7 +348,7 @@ export function useTrackerFrameProcessor(): TrackerFrameProcessor {
     // useFrameProcessor compares deps via Object.is, and that
     // comparison triggers `_value` access on the JS thread, which
     // Reanimated 3 throws on. Only stable JS-side closures belong here.
-    [resize, recordLatency],
+    [resize],
   );
 
   // JS-side staleness watchdog: if no frame has landed in
