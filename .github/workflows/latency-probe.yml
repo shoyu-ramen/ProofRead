@@ -136,7 +136,10 @@ jobs:
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, pathlib
 
-          data = json.loads(pathlib.Path("backend/probe.json").read_text() or "{}")
+          # `defaults.run.working-directory: backend` already puts us in
+          # backend/, so probe.json is at the cwd root, not under another
+          # backend/ subdir.
+          data = json.loads(pathlib.Path("probe.json").read_text() or "{}")
           cold = data.get("cold", {}) or {}
           warm = data.get("warm", {}) or {}
 
