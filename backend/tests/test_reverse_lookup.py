@@ -104,6 +104,13 @@ def test_dhash_returns_none_on_garbage_bytes():
     assert compute_dhash_bytes(b"") is None
 
 
+def test_dhash_none_input_returns_none():
+    """Pin the `img is None` branch. Callers (e.g. a panel whose decode
+    failed upstream) can pass None straight through without breaking
+    the request — same fail-open contract as decode failure."""
+    assert compute_dhash(None) is None
+
+
 def test_hamming_basics():
     assert hamming(0, 0) == 0
     assert hamming(0, 1) == 1
