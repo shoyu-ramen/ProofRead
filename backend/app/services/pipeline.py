@@ -75,21 +75,16 @@ class ScanReport:
 
 
 def overall_status(results: list[RuleResult], *, image_quality: str = "good") -> str:
-    """Aggregate rule outcomes into a single verdict.
+    """Thin shim that delegates to the shared aggregator.
 
-    "unreadable" wins over everything: if the image is unreadable, the
-    rule engine's results don't reflect the label; the user must rescan.
-    Otherwise: FAIL > WARN > ADVISORY > PASS.
+    The canonical implementation now lives in `app.rules.aggregation` so
+    the verify and scan paths roll up identically. Kept as a module-level
+    function so any external caller / test that imported it directly
+    keeps working without import-path churn.
     """
-    if image_quality == "unreadable":
-        return "unreadable"
-    if any(r.status == CheckOutcome.FAIL for r in results):
-        return "fail"
-    if any(r.status == CheckOutcome.WARN for r in results):
-        return "warn"
-    if any(r.status == CheckOutcome.ADVISORY for r in results):
-        return "advisory"
-    return "pass"
+    from app.rules.aggregation import overall_status as _shared
+
+    return _shared(results, image_quality=image_quality)
 
 
 def process_scan(
@@ -375,6 +370,7 @@ def _downgrade_to_advisory(r: RuleResult, *, blob_occluded: bool = False) -> Rul
         expected=r.expected,
         fix_suggestion=r.fix_suggestion,
         bbox=r.bbox,
+        surface=r.surface,
     )
 
 

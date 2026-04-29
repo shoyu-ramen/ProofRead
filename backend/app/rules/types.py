@@ -92,3 +92,9 @@ class RuleResult:
     expected: str | None = None
     fix_suggestion: str | None = None
     bbox: Bbox | None = None
+    # The surface (front/back/...) the supporting field was read from.
+    # `None` when the rule isn't tied to a specific extracted field
+    # (e.g. cross-cutting rules) or when the field had no
+    # `source_image_id`. Mobile uses this to know which captured image
+    # to highlight when the user taps the result.
+    surface: str | None = None

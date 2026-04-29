@@ -92,6 +92,11 @@ class RuleResultDTO(BaseModel):
     expected: str | None
     fix_suggestion: str | None
     bbox: tuple[int, int, int, int] | None
+    # Which scan_image surface ("front"/"back"/...) the rule's evidence
+    # was read from. Mirrors the verify-path field so the mobile report
+    # screen can highlight the captured image when the user taps a result.
+    # `None` when the rule isn't tied to a specific extracted field.
+    surface: str | None = None
 
 
 class ReportResponse(BaseModel):
@@ -219,9 +224,18 @@ async def create_scan(
     storage: StorageBackend = Depends(get_storage),
 ) -> CreateScanResponse:
     if req.beverage_type != "beer":
+        # Same `{code, message}` envelope as /v1/verify so the mobile
+        # client only needs one error-shape parser. SPEC §1.2 lists wine
+        # and spirits as v1 non-goals for the multi-image scan flow;
+        # spirits is unlocked on the single-shot /v1/verify path.
         raise HTTPException(
-            status_code=400,
-            detail="v1 supports beer only; wine and spirits land in v2.",
+            status_code=422,
+            detail={
+                "code": "beverage_type_unsupported",
+                "message": (
+                    "v1 scans support beer only; wine and spirits land in v2."
+                ),
+            },
         )
 
     scan = Scan(
@@ -264,7 +278,32 @@ async def upload_image(
     scan = await _load_scan(session, scan_id)
     if surface not in _SUPPORTED_SURFACES:
         raise HTTPException(400, f"unknown surface {surface!r}")
+    # Reject oversize uploads before reading the body. `Content-Length` is
+    # advisory (clients can lie), so we also re-check the materialized size
+    # below — the early reject saves a buffer allocation in the common case.
+    max_bytes = settings.max_image_bytes
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"upload is {declared} bytes; the maximum is "
+                        f"{max_bytes} bytes. Resize before submitting."
+                    ),
+                )
+        except ValueError:
+            pass
     body = await request.body()
+    if len(body) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"upload is {len(body)} bytes; the maximum is {max_bytes} "
+                f"bytes. Resize before submitting."
+            ),
+        )
     if not body:
         raise HTTPException(400, "empty body")
 
@@ -388,6 +427,7 @@ async def finalize_scan(
                 fix_suggestion=r.fix_suggestion,
                 bbox=list(r.bbox) if r.bbox is not None else None,
                 image_id=None,
+                surface=r.surface,
             )
         )
 
@@ -451,6 +491,7 @@ async def get_report(
             expected=r.expected,
             fix_suggestion=r.fix_suggestion,
             bbox=tuple(r.bbox) if r.bbox is not None else None,
+            surface=r.surface,
         )
         for r in rule_rows
     ]

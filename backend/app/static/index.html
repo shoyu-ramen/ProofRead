@@ -492,6 +492,23 @@
     height: 100%;
     background: var(--pass);
   }
+  /* Per-field provenance pill, only rendered when the verdict came
+     from a multi-panel scan. Sits to the right of the confidence
+     bar so it doesn't push the value text down on long fields. */
+  .result-info dd .source-tag {
+    flex-shrink: 0;
+    margin-left: 8px;
+    padding: 2px 8px;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    background: var(--cream);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
 
   details.findings {
     margin-top: 16px;
@@ -756,6 +773,47 @@
     100% { opacity: 0; }
   }
 
+  /* Per-panel hint banner. Sits above the framing rect, below the top
+     icon bar. Soft pill, navy text, fades in from y=-6px so changing
+     between "Step 1 of 2 · Front" and "Step 2 of 2 · Now flip to the
+     back" feels like a discrete instruction rather than a static
+     label. The `.flip` modifier rotates the banner 360° once when
+     the second-panel prompt appears — cheap delight signal that
+     also reinforces "rotate the bottle". */
+  .cam-panel-hint {
+    position: absolute;
+    top: 64px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 4;
+    padding: 8px 16px;
+    border-radius: 999px;
+    background: rgba(14, 42, 74, 0.78);
+    color: var(--cream);
+    font-size: 13px;
+    letter-spacing: 0.4px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    animation: panelHintIn 0.32s ease-out;
+    pointer-events: none;
+    max-width: 80%;
+    text-align: center;
+  }
+  @keyframes panelHintIn {
+    from { opacity: 0; transform: translate(-50%, -10px); }
+    to   { opacity: 1; transform: translate(-50%, 0); }
+  }
+  .cam-panel-hint.flip {
+    background: rgba(170, 120, 50, 0.92);  /* amber emphasis on the flip step */
+    animation: panelHintFlip 0.6s ease-out;
+  }
+  @keyframes panelHintFlip {
+    0%   { opacity: 0; transform: translate(-50%, -10px) rotate(0deg); }
+    40%  { opacity: 1; transform: translate(-50%, 0) rotate(360deg); }
+    100% { opacity: 1; transform: translate(-50%, 0) rotate(360deg); }
+  }
+
   body.cam-open { overflow: hidden; }
 </style>
 </head>
@@ -892,6 +950,14 @@
       <span class="corner bl"></span>
       <span class="corner br"></span>
     </div>
+    <!-- Per-panel hint banner. Driven by `setPanelHint(panelIndex)`:
+         "Step 1 of 2 · Front" before the first capture, "Step 2 of 2 ·
+         Now flip to the back" after panel 0 is in the bag. The `.flip`
+         modifier animates a brief rotation so the prompt feels active
+         rather than a passive label. -->
+    <div class="cam-panel-hint" id="camPanelHint" aria-live="polite">
+      Hold steady on the label
+    </div>
     <div class="cam-flash" aria-hidden="true"></div>
     <div class="cam-spinner" id="camSpinner">Starting camera…</div>
     <div class="cam-bar cam-bar-top">
@@ -935,11 +1001,19 @@ const SAMPLES = {
 };
 
 // ─── State ─────────────────────────────────────────────────────
+// `panels` is the verify-path source of truth: an ordered list of
+// captured/uploaded label faces. The legacy `imageBlob`/`imageUrl`
+// handles mirror panels[0] so thumbnail/preview code that already
+// reads them keeps working unchanged. The camera flow grows panels
+// to length 2 (front + back) before running verification; sample
+// loads and file uploads stay length 1.
 const state = {
   imageBlob: null,
   imageType: "image/png",
   imageName: null,
   imageUrl: null,        // object URL for preview (revoked on reset)
+  panels: [],            // [{blob, type, name, url}] in submission order
+  panelTarget: 1,        // 2 during the camera dual-panel flow, 1 otherwise
   beverageType: "beer",  // default for live captures
   containerMl: 355,      // 12 oz US can
   isImported: false,
@@ -1023,11 +1097,48 @@ function resetLiveDefaults() {
 }
 
 function setImage(blob, name, type) {
-  if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+  // Single-panel reset: revoke any prior object URLs (camera-flow
+  // panels included), drop the panel list, install this blob as the
+  // sole submission. Mirrored into the legacy `imageBlob`/`imageUrl`
+  // fields so the thumbnail/preview UI doesn't need to learn about
+  // the panel array.
+  revokePanelUrls();
+  const url = URL.createObjectURL(blob);
+  state.panels = [{ blob, type, name, url }];
+  state.panelTarget = 1;
   state.imageBlob = blob;
   state.imageName = name;
   state.imageType = type;
-  state.imageUrl = URL.createObjectURL(blob);
+  state.imageUrl = url;
+}
+
+function pushCapturedPanel(blob, name, type) {
+  // Camera dual-shot flow: append a panel without resetting the list.
+  // The first call doubles as the legacy `imageBlob` setter so the
+  // progress/result thumbnail (which mirrors panel 0) renders the
+  // front face the user just captured.
+  const url = URL.createObjectURL(blob);
+  state.panels.push({ blob, type, name, url });
+  if (state.panels.length === 1) {
+    if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+    state.imageBlob = blob;
+    state.imageName = name;
+    state.imageType = type;
+    state.imageUrl = url;
+  }
+}
+
+function revokePanelUrls() {
+  for (const p of state.panels) {
+    if (p && p.url) URL.revokeObjectURL(p.url);
+  }
+  state.panels = [];
+  if (state.imageUrl) {
+    URL.revokeObjectURL(state.imageUrl);
+    state.imageUrl = null;
+  }
+  state.imageBlob = null;
+  state.imageName = null;
 }
 
 function renameExt(name, ext) {
@@ -1290,7 +1401,14 @@ async function openCamera() {
   $("camShutter").disabled = true;
   capturePending = false;
   autoCaptureScheduled = false;
+  // Camera flow always collects two panels (front + back). The user
+  // never taps a shutter in this flow — auto-capture fires on the
+  // first steady frame, then a "flip to back" overlay nudges them
+  // through the second capture.
+  revokePanelUrls();
+  state.panelTarget = 2;
   setDetectionState("searching");
+  setPanelHint(0);
   modal.hidden = false;
   document.body.classList.add("cam-open");
   try {
@@ -1305,6 +1423,25 @@ async function openCamera() {
     startDetectionLoop();
   } catch (err) {
     showCamError(err);
+  }
+}
+
+function setPanelHint(panelIndex) {
+  // Per-panel guidance shown over the viewfinder. panelIndex 0 = front,
+  // 1 = back. The hint element is positioned by the camera CSS; this
+  // function only swaps its text + active-class so the existing
+  // ready/searching/framing transitions continue to drive the corner
+  // colors independently.
+  const hint = $("camPanelHint");
+  if (!hint) return;
+  if (panelIndex === 0) {
+    hint.textContent = state.panelTarget > 1
+      ? "Step 1 of 2 · Front of the bottle"
+      : "Hold steady on the label";
+    hint.classList.remove("flip");
+  } else {
+    hint.textContent = "Step 2 of 2 · Now flip to the back";
+    hint.classList.add("flip");
   }
 }
 
@@ -1477,9 +1614,31 @@ async function capturePhoto() {
     startDetectionLoop();
     return;
   }
-  const name = `capture-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
-  resetLiveDefaults();
-  setImage(blob, name, "image/jpeg");
+  const name = `capture-${state.panels.length}-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
+  if (state.panels.length === 0) resetLiveDefaults();
+  pushCapturedPanel(blob, name, "image/jpeg");
+
+  if (state.panels.length < state.panelTarget) {
+    // Mid-flow: brief "captured · flip to back" affordance, then
+    // re-arm the detection loop for the second panel. The shutter
+    // flash already played in CSS via `.capturing`; we re-enable
+    // the live preview and let the user rotate the bottle.
+    setPanelHint(state.panels.length);
+    capturePending = false;
+    autoCaptureScheduled = false;
+    $("camStage").classList.remove("capturing");
+    $("camShutter").disabled = false;
+    detectionStreak = 0;
+    setDetectionState("searching");
+    // Tiny grace so the user has time to actually rotate before the
+    // detector says "ready" again on a still-front frame.
+    cameraReadyAt = performance.now();
+    startDetectionLoop();
+    return;
+  }
+
+  // All panels collected — close the camera and run verification with
+  // the merged set.
   closeCamera();
   runVerification();
 }
@@ -1553,14 +1712,16 @@ function clearLog() {
 }
 
 async function runVerification() {
-  if (!state.imageBlob) {
+  if (!state.panels.length) {
     showScanError("Pick an image first, or tap a sample.");
     return;
   }
 
-  // Move to progress view, prime the thumbnail.
-  $("progressThumb").src = state.imageUrl;
-  $("resultThumb").src = state.imageUrl;
+  // Move to progress view, prime the thumbnail with panel 0 (the front
+  // face — captured first in the dual-panel flow, the only face in the
+  // single-panel path).
+  $("progressThumb").src = state.panels[0].url;
+  $("resultThumb").src = state.panels[0].url;
   showView("progress");
   clearLog();
   
@@ -1602,11 +1763,16 @@ async function runVerification() {
     logProgress("Running compliance rule engine...", "active");
   }, 1800);
 
-  // Build the form payload. With no real filing, we send an empty
-  // producer_record — rules check label structure (presence, format,
-  // health-warning text) without cross-referencing a record.
+  // Build the form payload. Always use the multi-panel `images=` field;
+  // the backend accepts it for any panel count (1+) and merges per-field
+  // by highest confidence, tagging each value with its source panel.
+  // With no real filing, we send an empty producer_record — rules check
+  // label structure (presence, format, health-warning text) without
+  // cross-referencing a record.
   const fd = new FormData();
-  fd.append("image", state.imageBlob, state.imageName || "label.jpg");
+  state.panels.forEach((p, i) => {
+    fd.append("images", p.blob, p.name || `panel-${i}.jpg`);
+  });
   fd.append("beverage_type", state.beverageType);
   fd.append("container_size_ml", String(state.containerMl));
   fd.append("is_imported", state.isImported ? "true" : "false");
@@ -1710,15 +1876,16 @@ function renderResult(data, clientMs) {
     country_of_origin: { label: "Country", icon: "🌎" },
     health_warning: { label: "Health warning", icon: "⚠️" },
   };
+  const showSourceTag = (data.panel_count || 1) > 1;
   const order = Object.keys(FIELD_DEFS);
   for (const key of order) {
     const f = data.extracted[key];
     if (!f) continue;
     const def = FIELD_DEFS[key];
-    
+
     const dt = document.createElement("dt");
     dt.innerHTML = `<span class="field-icon">${def.icon}</span> ${def.label}`;
-    
+
     const dd = document.createElement("dd");
     if (f.unreadable || f.value == null || f.value === "") {
       dd.classList.add("unreadable");
@@ -1732,6 +1899,15 @@ function renderResult(data, clientMs) {
         span.className = "conf";
         span.innerHTML = `<span class="conf-bar"><span class="conf-fill" style="width: ${confPercent}%"></span></span> ${confPercent}%`;
         dd.appendChild(span);
+      }
+      // Multi-panel: tell the user which face this value was read from.
+      // panel_0 → "front", panel_1 → "back", panel_2+ → "panel N".
+      // Hidden in single-panel responses to keep the legacy UI quiet.
+      if (showSourceTag && f.source_image_id) {
+        const tag = document.createElement("span");
+        tag.className = "source-tag";
+        tag.textContent = panelLabel(f.source_image_id);
+        dd.appendChild(tag);
       }
     }
     fieldsEl.appendChild(dt);
@@ -1849,6 +2025,20 @@ function renderError(err) {
   $("findings").hidden = true;
 }
 
+function panelLabel(sourceId) {
+  // Map backend `panel_N` ids to human-friendly faces. The web demo
+  // captures front-then-back, so panel_0/panel_1 are "front"/"back".
+  // Beyond that we fall back to the raw ordinal — the dual-panel flow
+  // never produces those, but the API allows up to 4 panels and a
+  // future neck-band/base capture would surface here.
+  if (sourceId === "panel_0") return "from front";
+  if (sourceId === "panel_1") return "from back";
+  if (sourceId && sourceId.startsWith("panel_")) {
+    return `from panel ${Number(sourceId.slice(6)) + 1}`;
+  }
+  return "";
+}
+
 function verdictGlyph(v) {
   // Returns inline SVG path content for the chosen verdict.
   const checkmark = '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="5 12 10 17 19 7"/></svg>';
@@ -1874,12 +2064,12 @@ function escapeHtml(s) {
 
 // ─── Reset / scan again ────────────────────────────────────────
 $("scanAgainBtn").addEventListener("click", () => {
-  if (state.imageUrl) {
-    URL.revokeObjectURL(state.imageUrl);
-    state.imageUrl = null;
-  }
-  state.imageBlob = null;
-  state.imageName = null;
+  // `revokePanelUrls` handles both the legacy single-image fields
+  // (panels[0] mirrors them) and any second panel from the dual-shot
+  // camera flow. Without this, switching from a 2-panel scan back to
+  // the scan view leaks the back-panel object URL.
+  revokePanelUrls();
+  state.panelTarget = 1;
   $("file").value = "";
   $("fileCapture").value = "";
   hideScanError();

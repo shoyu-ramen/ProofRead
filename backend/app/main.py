@@ -52,55 +52,93 @@ async def ensure_test_user() -> None:
 
 
 async def _prewarm_prompt_cache() -> None:
-    """Fire one tiny call to warm Anthropic's prompt cache for the
-    verify-path system prompt.
+    """Fire tiny calls to warm Anthropic's prompt cache for both verify-path
+    system prompts (primary extractor + Government-Warning second-pass).
 
     Anthropic's ephemeral prompt cache has a 5-minute TTL. Railway scales
     the service to zero on idle, so the first /v1/verify after each cold
     boot otherwise pays the system-prompt cache-write cost on the user's
     clock (~300–500 ms on Sonnet 4.6 with the ~2 k-token static prompt).
-    A startup primer pays it on machine boot instead, where no user is
-    waiting. The primer call is intentionally minimal (max_tokens=1) so
-    it costs only the cache write, not a real generation.
+    Both prompts are warmed because the second-pass runs concurrently with
+    the primary on every cold call — leaving the second-pass unprimed
+    would still cost the user ~200–400 ms even with the primary primed
+    (the slower of the two wins). And with the recent SPEC §0.5 redundancy
+    restoration the second-pass is on a different model family from the
+    primary, so each has its own cache breakpoint to write.
+
+    Each primer call is intentionally minimal (max_tokens=1) so it costs
+    only the cache write. The two run concurrently so total startup
+    latency is bounded by the slower one.
 
     Failure (no API key, transient network error, rate limit) is
-    swallowed — pre-warming is a latency optimisation, not a correctness
-    path. The first user request will simply pay the miss it would have
-    paid anyway.
+    swallowed per-prompt — pre-warming is a latency optimisation, not a
+    correctness path. The first user request will simply pay the miss it
+    would have paid anyway for whichever prompt's primer was lost.
     """
-    try:
-        from app.config import settings
+    from app.config import settings
 
-        if not settings.anthropic_api_key:
-            return
-        from app.services.anthropic_client import build_client
-        from app.services.vision import SYSTEM_PROMPT
+    if not settings.anthropic_api_key:
+        return
+    from app.services.anthropic_client import build_client
+    from app.services.health_warning_second_pass import (
+        SYSTEM_PROMPT as SECOND_PASS_PROMPT,
+    )
+    from app.services.vision import SYSTEM_PROMPT as PRIMARY_PROMPT
 
-        client = build_client(timeout=10.0)
+    client = build_client(timeout=10.0)
 
-        def _call() -> None:
+    def _prime(model: str, system_prompt: str, label: str) -> None:
+        try:
             client.messages.create(
-                model=settings.anthropic_model,
+                model=model,
                 max_tokens=1,
                 temperature=0.0,
                 system=[
                     {
                         "type": "text",
-                        "text": SYSTEM_PROMPT,
+                        "text": system_prompt,
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
                 messages=[{"role": "user", "content": "ok"}],
             )
+            logger.info(
+                "Anthropic prompt cache pre-warmed for %s (%s)", model, label
+            )
+        except Exception as exc:
+            logger.debug("Prompt-cache pre-warm skipped (%s): %s", label, exc)
 
-        await asyncio.to_thread(_call)
-        logger.info("Anthropic prompt cache pre-warmed for %s", settings.anthropic_model)
-    except Exception as exc:
-        logger.debug("Prompt-cache pre-warm skipped: %s", exc)
+    await asyncio.gather(
+        asyncio.to_thread(_prime, settings.anthropic_model, PRIMARY_PROMPT, "primary"),
+        asyncio.to_thread(
+            _prime,
+            settings.anthropic_health_warning_model,
+            SECOND_PASS_PROMPT,
+            "second-pass",
+        ),
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Validate the rule definitions before the API accepts traffic. The
+    # loader's fail-fast checks (unknown check types, malformed
+    # applies_if/exempt_if, duplicate rule_ids) would otherwise only
+    # surface on the first scan to hit the affected rule.
+    from app.rules.loader import load_rules
+
+    load_rules()
+
+    # Telemetry init runs as early as possible so any startup errors after
+    # this line are captured. Both helpers no-op silently when the
+    # corresponding env vars / packages are missing — local dev sees
+    # nothing extra. OTel auto-instruments the FastAPI app when init
+    # succeeds, so every route becomes a span without per-handler code.
+    from app.telemetry import init_otel, init_sentry
+
+    init_sentry()
+    init_otel(app)
+
     try:
         await ensure_test_user()
     except Exception:
@@ -116,6 +154,11 @@ async def lifespan(app: FastAPI):
     # from being GC'd mid-flight while preserving fire-and-forget.
     app.state.prompt_cache_primer = asyncio.create_task(_prewarm_prompt_cache())
     yield
+    # Tear down the verify-pipeline thread pool before the engine so the
+    # workers don't try to use a disposed DB session in flight.
+    from app.services.verify import shutdown_pool
+
+    shutdown_pool()
     await dispose_engine()
 
 

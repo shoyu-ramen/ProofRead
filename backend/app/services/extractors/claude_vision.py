@@ -137,8 +137,16 @@ class LabelExtraction(BaseModel):
 
 
 # Fields whose confidence is below this threshold are declared "unreadable" —
-# the rule engine downgrades the matching rules to ADVISORY.
-DEFAULT_CONFIDENCE_THRESHOLD = 0.6
+# the rule engine downgrades the matching rules to ADVISORY. Read from
+# settings so a tuning change is picked up here AND in the rule engine
+# atomically rather than risking drift between the two.
+def _default_confidence_threshold() -> float:
+    from app.config import settings
+
+    return settings.low_confidence_threshold
+
+
+DEFAULT_CONFIDENCE_THRESHOLD = _default_confidence_threshold()
 
 
 @dataclass
@@ -161,7 +169,7 @@ class ClaudeVisionExtractor:
         self,
         client: Any | None = None,
         model: str = "claude-opus-4-7",
-        confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+        confidence_threshold: float | None = None,
         max_tokens: int = 8192,
         timeout: float | None = None,
     ) -> None:
@@ -176,7 +184,13 @@ class ClaudeVisionExtractor:
             )
         self._client = client
         self._model = model
-        self._threshold = confidence_threshold
+        # Resolve the threshold lazily so a runtime settings change (tests,
+        # ops tuning) takes effect without re-importing the module.
+        self._threshold = (
+            confidence_threshold
+            if confidence_threshold is not None
+            else _default_confidence_threshold()
+        )
         self._max_tokens = max_tokens
 
     def extract(

@@ -1,7 +1,10 @@
 import ast
+import dataclasses
 from typing import Any
 
+from app.config import settings
 from app.rules.checks import CHECK_REGISTRY
+from app.rules.inference import infer_is_imported
 from app.rules.types import (
     CheckOutcome,
     ExtractionContext,
@@ -10,6 +13,17 @@ from app.rules.types import (
     Severity,
     worse,
 )
+
+# Synthetic rule_id surfaced when the user's `is_imported` claim
+# disagrees with what the label says — i.e. the label declares a
+# country of origin but the request claimed domestic. Surfaced as an
+# ADVISORY so it never fails a report; the country-of-origin rule
+# itself is what enforces compliance. Citing SPEC §0.5 because this is
+# the fail-honestly path: rather than silently skip the rule on a stale
+# claim, we run it and tell the user we did.
+_CLAIM_CONSISTENCY_RULE_ID = "claim_consistency.is_imported"
+_CLAIM_CONSISTENCY_RULE_VERSION = 1
+_CLAIM_CONSISTENCY_CITATION = "SPEC §0.5"
 
 # Whitelist of names available to applies_if / exempt_if expressions.
 # Keep narrow: just the context attributes that are sensible to gate on.
@@ -22,10 +36,11 @@ _EXPR_ALLOWED_KEYS = {
 
 
 # Field-level confidence below this threshold triggers ADVISORY downgrade.
-# Matches the Claude vision extractor default. SPEC §0.5: "every check has an
-# explicit confidence threshold below which it downgrades from required to
-# advisory, with the reason surfaced to the user."
-LOW_CONFIDENCE_THRESHOLD = 0.6
+# Re-export of `settings.low_confidence_threshold` so callers reading the
+# value via `from app.rules.engine import LOW_CONFIDENCE_THRESHOLD` keep
+# working — the canonical store is the settings object, this is a
+# read-side alias.
+LOW_CONFIDENCE_THRESHOLD = settings.low_confidence_threshold
 
 
 class RuleEngine:
@@ -33,6 +48,19 @@ class RuleEngine:
         self.rules = rules
 
     def evaluate(self, ctx: ExtractionContext) -> list[RuleResult]:
+        # Reconcile the user's `is_imported` claim against the label
+        # (SPEC §0.5 fail-honestly). If the label declares a country of
+        # origin but the request claimed domestic, flip the flag so the
+        # country-of-origin rule fires — and emit an advisory so the
+        # user sees why. The original claim is left on the caller's
+        # context; we evaluate against a shallow clone with the inferred
+        # value so nothing else in the pipeline sees a mutated input.
+        effective_imported, divergence = infer_is_imported(
+            ctx.fields, ctx.is_imported
+        )
+        if divergence is not None:
+            ctx = dataclasses.replace(ctx, is_imported=effective_imported)
+
         results: list[RuleResult] = []
         for rule in self.rules:
             if ctx.beverage_type not in rule.beverage_types:
@@ -50,6 +78,9 @@ class RuleEngine:
                 )
                 continue
             results.append(self._evaluate_rule(rule, ctx))
+
+        if divergence is not None:
+            results.append(_claim_consistency_advisory(divergence, ctx.fields))
         return results
 
     def _applies(self, rule: Rule, ctx: ExtractionContext) -> bool:
@@ -73,6 +104,7 @@ class RuleEngine:
         # than guessing pass/fail. Advisory rules already short-circuit.
         referenced_fields = _referenced_fields(rule)
         unreliable = _unreliable_fields(referenced_fields, ctx)
+        surface = _surface_for_rule(referenced_fields, ctx)
 
         if rule.severity == Severity.REQUIRED and unreliable:
             joined = ", ".join(sorted(unreliable))
@@ -87,6 +119,7 @@ class RuleEngine:
                     f"Rescan recommended."
                 ),
                 fix_suggestion=rule.fix_suggestion,
+                surface=surface,
             )
 
         worst = CheckOutcome.PASS
@@ -125,7 +158,50 @@ class RuleEngine:
             expected=expected,
             fix_suggestion=rule.fix_suggestion,
             bbox=bbox,
+            surface=surface,
         )
+
+
+def _claim_consistency_advisory(
+    divergence: str,
+    fields: dict[str, Any],
+) -> RuleResult:
+    """Synthetic ADVISORY surfaced when claim/label disagree on `is_imported`.
+
+    `divergence` is the reason code from `infer_is_imported`. Today only
+    `"label_indicates_imported"` is emitted; the helper still switches
+    on it so future inference cases land here too.
+    """
+    coo = fields.get("country_of_origin")
+    coo_value = coo.value if coo is not None else None
+    if divergence == "label_indicates_imported":
+        finding = (
+            "Label indicates imported"
+            + (f" ({coo_value!r})" if coo_value else "")
+            + " but request claimed domestic — country-of-origin rule "
+            "applied as a precaution. Update the request's "
+            "`is_imported` flag to silence this advisory."
+        )
+    else:
+        finding = (
+            "Claim and label disagree on import status; rules evaluated "
+            "with the label-derived value as a precaution."
+        )
+    return RuleResult(
+        rule_id=_CLAIM_CONSISTENCY_RULE_ID,
+        rule_version=_CLAIM_CONSISTENCY_RULE_VERSION,
+        citation=_CLAIM_CONSISTENCY_CITATION,
+        status=CheckOutcome.ADVISORY,
+        finding=finding,
+        expected=None,
+        fix_suggestion=(
+            "If the label is imported, set `is_imported=true` on the "
+            "request. If the country statement on the label is incorrect, "
+            "remove it before resubmitting."
+        ),
+        bbox=coo.bbox if coo is not None else None,
+        surface=coo.source_image_id if coo is not None else None,
+    )
 
 
 def _referenced_fields(rule: Rule) -> set[str]:
@@ -144,14 +220,35 @@ def _unreliable_fields(referenced: set[str], ctx: ExtractionContext) -> set[str]
     with the proper reason."""
     if not referenced:
         return set()
+    threshold = settings.low_confidence_threshold
     unreadable = set(ctx.unreadable_fields) & referenced
     low_conf = {
         name
         for name in referenced
         if (f := ctx.fields.get(name)) is not None
-        and f.confidence < LOW_CONFIDENCE_THRESHOLD
+        and f.confidence < threshold
     }
     return unreadable | low_conf
+
+
+def _surface_for_rule(
+    referenced: set[str], ctx: ExtractionContext
+) -> str | None:
+    """Pick the surface to report on a rule_result.
+
+    Mobile uses this to know which captured image to highlight. Picks the
+    first referenced field that was extracted with a `source_image_id`
+    (sorted for determinism). Returns `None` when the rule isn't tied to
+    a specific field, when the field wasn't extracted, or when the
+    extractor didn't carry a source_image_id (verify path's seven-field
+    extractor only knows "front" today)."""
+    if not referenced:
+        return None
+    for name in sorted(referenced):
+        f = ctx.fields.get(name)
+        if f is not None and f.source_image_id:
+            return f.source_image_id
+    return None
 
 
 # ---------------------------------------------------------------------------

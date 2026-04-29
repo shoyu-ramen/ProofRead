@@ -303,6 +303,120 @@ def _print_summary(cold: CallResult, warm: list[CallResult]) -> None:
             print(f"    [{i}] status={w.status} error={w.error}")
 
 
+async def _wait_for_healthz(
+    client: httpx.AsyncClient, base: str, timeout_s: float
+) -> tuple[bool, float]:
+    """Poll `/healthz` until it returns 200 or `timeout_s` elapses.
+
+    Returns `(reached_ready, elapsed_seconds)`. Backs off in 250 ms
+    intervals so a fast boot reports near-zero wait while a slow boot
+    is still bounded by the timeout. Used to gate the cache-write probe
+    so the test image hits a primed instance, not a still-booting one.
+    """
+    deadline = time.monotonic() + timeout_s
+    started = time.monotonic()
+    while time.monotonic() < deadline:
+        try:
+            r = await client.get(f"{base}/healthz", timeout=2.0)
+            if r.status_code == 200:
+                return True, time.monotonic() - started
+        except httpx.HTTPError:
+            pass
+        await asyncio.sleep(0.25)
+    return False, time.monotonic() - started
+
+
+async def _run_cache_write_probe(
+    *,
+    base: str,
+    image_bytes: bytes,
+    image_name: str,
+    media_type: str,
+    beverage_type: str,
+    container_size_ml: int,
+    is_imported: bool,
+    timeout: float,
+    healthz_timeout_s: float,
+) -> tuple[CallResult | None, CallResult | None, float]:
+    """Cache-write probe: cold + warm verify against a fresh instance.
+
+    Returns `(cold, warm, healthz_wait_s)`. Either cold or warm may be
+    None if the corresponding call failed at the transport layer; the
+    caller treats that as a probe failure.
+    """
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        ok, healthz_wait = await _wait_for_healthz(client, base, healthz_timeout_s)
+        if not ok:
+            return None, None, healthz_wait
+
+        cold = await _one_call(
+            client,
+            base=base,
+            image_bytes=image_bytes,
+            image_name=image_name,
+            media_type=media_type,
+            beverage_type=beverage_type,
+            container_size_ml=container_size_ml,
+            is_imported=is_imported,
+        )
+        warm = await _one_call(
+            client,
+            base=base,
+            image_bytes=image_bytes,
+            image_name=image_name,
+            media_type=media_type,
+            beverage_type=beverage_type,
+            container_size_ml=container_size_ml,
+            is_imported=is_imported,
+        )
+        return cold, warm, healthz_wait
+
+
+def _print_probe(
+    cold: CallResult | None,
+    warm: CallResult | None,
+    healthz_wait_s: float,
+    min_savings_ms: int,
+) -> bool:
+    """Print probe summary and return True when the probe passed."""
+    print(f"healthz_wait = {healthz_wait_s:.2f} s")
+    if cold is None or warm is None:
+        print("✘ probe failed: cold or warm call could not complete")
+        if cold is None:
+            print("  cold = transport error or timeout before /healthz ready")
+        if warm is None:
+            print("  warm = transport error after cold")
+        return False
+    print(f"cold:  status={cold.status}  client_ms={_format_ms(cold.client_ms)}  "
+          f"server_ms={_format_ms(cold.server_ms)}  cache_hit={cold.cache_hit}")
+    print(f"warm:  status={warm.status}  client_ms={_format_ms(warm.client_ms)}  "
+          f"server_ms={_format_ms(warm.server_ms)}  cache_hit={warm.cache_hit}")
+    if cold.status != 200 or warm.status != 200:
+        print("✘ probe failed: non-200 from cold or warm")
+        return False
+    # Use server_ms when both sides reported it — it isolates the cache's
+    # wall-clock contribution from network jitter. Fall back to client_ms
+    # only when server_ms is missing (older API instance, transport hiccup).
+    if cold.server_ms is not None and warm.server_ms is not None:
+        savings_ms = float(cold.server_ms - warm.server_ms)
+        savings_source = "server"
+    else:
+        savings_ms = cold.client_ms - warm.client_ms
+        savings_source = "client"
+    print(
+        f"savings: cold − warm = {savings_ms:.0f} ms "
+        f"(source={savings_source}, min {min_savings_ms} ms)"
+    )
+    if savings_ms < min_savings_ms:
+        print(f"✘ probe failed: savings {savings_ms:.0f} ms < {min_savings_ms} ms")
+        return False
+    if not warm.cache_hit:
+        print("✘ probe failed: warm call did not report cache_hit=true")
+        return False
+    print("✓ probe passed")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -396,6 +510,35 @@ def main() -> int:
             "anything less is a determinism bug, not a transient miss."
         ),
     )
+    parser.add_argument(
+        "--probe-cache-write",
+        action="store_true",
+        help=(
+            "Cache-write smoke probe: wait for /healthz 200, then issue a "
+            "cold + warm verify and assert the delta (cold_ms - warm_ms) "
+            "exceeds --probe-min-savings-ms. Exits 0 on pass, 6 on fail. "
+            "Designed for post-deploy verification + scheduled health checks."
+        ),
+    )
+    parser.add_argument(
+        "--probe-min-savings-ms",
+        type=int,
+        default=150,
+        help=(
+            "Minimum cold→warm savings (ms) for --probe-cache-write to pass. "
+            "Default 150 ms covers Anthropic prompt-cache write savings on "
+            "Sonnet 4.6 (~300–500 ms typical, 150 is a safe floor)."
+        ),
+    )
+    parser.add_argument(
+        "--probe-healthz-timeout-s",
+        type=float,
+        default=30.0,
+        help=(
+            "Max wait for /healthz to return 200 before --probe-cache-write "
+            "starts. Boots above this take a longer cold-start hit anyway."
+        ),
+    )
     args = parser.parse_args()
 
     if args.n < 1:
@@ -416,6 +559,29 @@ def main() -> int:
     )
 
     base = args.base.rstrip("/")
+
+    if args.probe_cache_write:
+        # Probe mode: short-circuit the cold/warm/N flow with a focused
+        # cache-write smoke test. Useful in CI right after a deploy and
+        # in scheduled health checks where we only want a yes/no signal.
+        print(
+            f"Cache-write probe → {base}/v1/verify  ·  image: {image_path.name}"
+        )
+        cold_p, warm_p, hz = asyncio.run(
+            _run_cache_write_probe(
+                base=base,
+                image_bytes=image_bytes,
+                image_name=image_path.name,
+                media_type=media_type,
+                beverage_type=args.beverage_type,
+                container_size_ml=args.container_size_ml,
+                is_imported=args.imported,
+                timeout=args.timeout,
+                healthz_timeout_s=args.probe_healthz_timeout_s,
+            )
+        )
+        passed = _print_probe(cold_p, warm_p, hz, args.probe_min_savings_ms)
+        return 0 if passed else 6
 
     print(
         f"Target: {base}/v1/verify  ·  image: {image_path.name} "
@@ -458,6 +624,7 @@ def main() -> int:
     #   3  --expect-overall mismatch on cold or any warm call
     #   4  latency threshold exceeded (cold or warm p95)
     #   5  --require-warm-cache-hits failed
+    #   6  --probe-cache-write failed (cold/warm savings below threshold)
     if cold.status != 200 or cold.error:
         return 2
 

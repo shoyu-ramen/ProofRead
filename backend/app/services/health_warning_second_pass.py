@@ -40,7 +40,11 @@ CrossCheckOutcome = Literal[
     "confirmed_noncompliant",  # both reads agree but differ from canonical
     "disagreement",           # the two reads disagree — couldn't verify
     "primary_only",           # only the primary read is available
-    "no_warning_present",     # neither read found a warning
+    "no_warning_present",     # neither read found a warning, frame is clean
+    "unverifiable_obstructed",  # neither could read it, but obstruction signals
+                                # (glare, blur, region_visible=true) say the
+                                # warning is plausibly hidden — refuse to claim
+                                # missing
 ]
 
 
@@ -48,6 +52,15 @@ CrossCheckOutcome = Literal[
 # A few bytes of OCR jitter shouldn't be treated as disagreement; large
 # character-level deltas should.
 _SAME_TEXT_THRESHOLD = 5
+
+# A primary-only read this confident or below, combined with an obstruction
+# signal, is treated as unverifiable rather than primary_only. The primary
+# alone, partial and through glare, is not enough to FAIL on edit-distance —
+# we cannot tell whether the missing characters were the model's or the
+# label's. Tightened from a naive "any low confidence" rule: the cross-check
+# only escalates when there's an INDEPENDENT signal (obstruction) that the
+# label itself was hard to read.
+_PRIMARY_LOW_CONFIDENCE_THRESHOLD = 0.7
 
 
 SYSTEM_PROMPT = """You are a careful proofreader for U.S. alcohol-beverage \
@@ -57,9 +70,10 @@ and return it VERBATIM, character for character, as it is printed.
 Return ONLY a JSON object with this shape (no Markdown fences, no commentary):
 
 {
-  "value":      "<the warning text exactly as printed, or empty string>",
-  "found":      true | false,
-  "confidence": 0.0–1.0
+  "value":          "<the warning text exactly as printed, or empty string>",
+  "found":          true | false,
+  "confidence":     0.0–1.0,
+  "region_visible": true | false
 }
 
 Rules:
@@ -69,11 +83,35 @@ Rules:
   capitalization.
 - Preserve punctuation, parenthesised numerals (1)/(2), and word order
   exactly as printed. Do not paraphrase. Do not "correct" typos.
-- If you cannot read the warning at all, set found=false and value="".
-- If you can only partially read it, return what you can see verbatim and
-  drop confidence accordingly. Never make up text you cannot see.
-- Confidence: 1.0 = sharp and unambiguous; 0.85 = readable but small;
-  0.6 = partial / some characters uncertain; <0.6 = use found=false.
+- Recall is more important than completeness. Even ONE recognizable
+  fragment is enough — the "GOVERNMENT WARNING:" trigger header alone,
+  the phrase "Surgeon General", "(1) ... pregnancy ...", "(2) ...
+  operate machinery ...", or any unambiguous chunk. Return whatever
+  characters you can read verbatim and drop confidence to reflect the
+  partial read. Do NOT refuse a partial transcription just because
+  glare or smudging hides the rest — the cross-check will reconcile a
+  partial read honestly.
+- Never make up text you cannot see. Partial-but-honest beats full-but-
+  guessed.
+- `region_visible`: set true when you can see a block of fine-print text
+  in a typical warning location (back, side, or lower edge of the
+  label), EVEN IF glare, occlusion, smudging, or specular highlights
+  make the characters themselves unreadable. This is the signal the
+  downstream cross-check needs to distinguish "warning is missing from
+  this label" from "warning is present but I cannot transcribe it
+  through the glare". Set region_visible=false ONLY when you can see
+  the surface clearly end-to-end and there is genuinely no fine-print
+  warning paragraph anywhere on it.
+- Decision matrix:
+    Full clean read         → found=true,  region_visible=true,  confidence ≥ 0.85
+    Partial read (fragment) → found=true,  region_visible=true,  confidence 0.4–0.8
+    See block, cannot read  → found=false, region_visible=true,  confidence ≤ 0.3
+    No warning anywhere     → found=false, region_visible=false, confidence ≥ 0.7
+
+Confidence calibration: 1.0 = sharp and unambiguous; 0.85 = readable
+but small; 0.6 = partial / some characters uncertain; ≤ 0.3 = saw the
+region but the characters are not transcribable through the
+obstruction.
 
 This is a redundancy check — your read will be cross-checked against an
 independent reading. Honesty about uncertainty is what makes the
@@ -82,13 +120,44 @@ redundancy useful, so under-claim rather than over-claim."""
 
 @dataclass
 class WarningRead:
-    """One read of the Health Warning Statement."""
+    """One read of the Health Warning Statement.
+
+    `region_visible` is the recall-preserving signal: True when the reader
+    saw a block of fine-print text in a typical warning location even if
+    the characters themselves were not transcribable through glare,
+    occlusion, or smudging. Combined with `found=False`, this distinguishes
+    "warning is genuinely missing from the label" from "warning is present
+    but I cannot read it through the obstruction" — the cross-check uses
+    that distinction to refuse a confident wrong-fail.
+    """
 
     value: str | None
     found: bool
     confidence: float = 0.0
     source: str = "unknown"
     raw_response: str | None = None
+    region_visible: bool = False
+
+
+@dataclass
+class ObstructionSignal:
+    """Independent evidence that the warning region may be hidden.
+
+    Sourced from the sensor pre-check (glare blob fraction over the label,
+    label-region verdict, motion blur direction) and used by the cross-check
+    to decide whether a "neither read found anything" conclusion is honest
+    or merely a glare-cascade.
+
+    The verify orchestrator constructs this from the per-panel
+    `SurfaceCaptureQuality` metrics; tests can build it directly.
+    """
+
+    is_obstructed: bool
+    reason: str = ""
+
+    @classmethod
+    def clear(cls) -> ObstructionSignal:
+        return cls(is_obstructed=False, reason="")
 
 
 @dataclass
@@ -196,22 +265,47 @@ class ClaudeHealthWarningExtractor:
 
 
 class MockHealthWarningExtractor:
-    """Deterministic second-pass extractor for tests."""
+    """Deterministic second-pass extractor for tests.
 
-    def __init__(self, *, value: str | None, confidence: float = 0.95) -> None:
+    `value=None` simulates a failed read. `region_visible` lets a test
+    simulate the "I saw the warning region but couldn't transcribe it
+    through glare" case — the recall-preserving signal the cross-check
+    uses to refuse a confident "missing warning" verdict.
+    """
+
+    def __init__(
+        self,
+        *,
+        value: str | None,
+        confidence: float = 0.95,
+        region_visible: bool | None = None,
+    ) -> None:
         self._value = value
         self._confidence = confidence
+        # If unset, default region_visible=True for found reads (we read
+        # it, so it must be visible) and False for not-found reads (clean
+        # frame with no warning anywhere). Tests can override either.
+        if region_visible is None:
+            region_visible = value is not None
+        self._region_visible = region_visible
 
     def read_warning(
         self, image_bytes: bytes, media_type: str = "image/png"
     ) -> WarningRead:
         if self._value is None:
-            return WarningRead(value=None, found=False, confidence=0.0, source="mock")
+            return WarningRead(
+                value=None,
+                found=False,
+                confidence=self._confidence,
+                source="mock",
+                region_visible=self._region_visible,
+            )
         return WarningRead(
             value=self._value,
             found=True,
             confidence=self._confidence,
             source="mock",
+            region_visible=self._region_visible,
         )
 
 
@@ -223,16 +317,35 @@ def _parse_response(text: str) -> WarningRead:
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
-        # Defensive: if the model deviated from the JSON contract, return a
-        # not-found read so the cross-check downgrades to advisory rather
-        # than crashing the request.
-        return WarningRead(
-            value=None,
-            found=False,
-            confidence=0.0,
-            source="claude_second_pass",
-            raw_response=text,
-        )
+        # Haiku occasionally appends prose after the JSON object — our system
+        # prompt forbids it, but the model honours the rule unevenly on
+        # degraded images where it wants to qualify a low-confidence read.
+        # Trying to outlaw the prose at prompt level would just push the
+        # failure into a different shape, so we recover here instead: pull
+        # the first balanced JSON object out of the text and parse THAT.
+        # The previous behaviour — return found=False — silently discarded
+        # otherwise-perfectly-valid 0.6+ reads, which is exactly the kind
+        # of "couldn't read the label" failure the redundant second-pass
+        # was designed to prevent.
+        extracted = _extract_first_json_object(cleaned)
+        if extracted is None:
+            return WarningRead(
+                value=None,
+                found=False,
+                confidence=0.0,
+                source="claude_second_pass",
+                raw_response=text,
+            )
+        try:
+            data = json.loads(extracted)
+        except json.JSONDecodeError:
+            return WarningRead(
+                value=None,
+                found=False,
+                confidence=0.0,
+                source="claude_second_pass",
+                raw_response=text,
+            )
     if not isinstance(data, dict):
         return WarningRead(
             value=None,
@@ -243,6 +356,7 @@ def _parse_response(text: str) -> WarningRead:
         )
     found = bool(data.get("found"))
     value = data.get("value")
+    region_visible = bool(data.get("region_visible", False))
     if not found or value is None or (isinstance(value, str) and not value.strip()):
         return WarningRead(
             value=None,
@@ -250,6 +364,7 @@ def _parse_response(text: str) -> WarningRead:
             confidence=float(data.get("confidence", 0.0) or 0.0),
             source="claude_second_pass",
             raw_response=text,
+            region_visible=region_visible,
         )
     confidence = data.get("confidence", 0.85)
     try:
@@ -262,7 +377,52 @@ def _parse_response(text: str) -> WarningRead:
         confidence=max(0.0, min(1.0, confidence)),
         source="claude_second_pass",
         raw_response=text,
+        # The decision matrix says found=true implies region_visible=true.
+        # If the model omitted region_visible while reporting a successful
+        # read, infer it as True — recall is preserved either way.
+        region_visible=region_visible or True,
     )
+
+
+def _extract_first_json_object(text: str) -> str | None:
+    """Return the substring of `text` covering the first balanced top-level
+    JSON object, or None if no balanced object can be found.
+
+    Walks the bytes once tracking brace depth, and is string-literal aware
+    so braces inside quoted values don't confuse the depth counter. The
+    Government Warning paragraph contains ":", "(1)", "(2)" but no real
+    braces, so this is overkill on canonical content — but the same parser
+    is used for paraphrased/garbled reads where the model could conceivably
+    quote brace-bearing text, and the extra robustness costs almost
+    nothing.
+    """
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
 
 
 def _normalize(text: str | None) -> str:
@@ -276,20 +436,42 @@ def cross_check(
     secondary: WarningRead | None,
     *,
     canonical_ref: str = "health_warning",
+    obstruction_signal: ObstructionSignal | None = None,
 ) -> CrossCheckResult:
     """Reconcile two independent reads against the statutory canonical text.
 
+    Recall guarantee (SPEC §0.5 mandate): the cross-check refuses to
+    return `no_warning_present` whenever there is ANY independent signal
+    that the warning could be obscured rather than missing. The signals
+    are:
+
+      1. Either reader's `region_visible=True` (model saw a fine-print
+         block in a typical warning location even if characters were
+         not transcribable).
+      2. `obstruction_signal.is_obstructed=True` (sensor pre-check found
+         glare blobs, motion blur, or a degraded label region).
+
+    Under either signal, what would have been `no_warning_present` is
+    upgraded to `unverifiable_obstructed`, and what would have been
+    `primary_only` with a low-confidence partial primary read is
+    similarly upgraded — the upstream rule downgrades both to ADVISORY
+    rather than letting the engine FAIL on "warning missing" or on a
+    high edit-distance that's really a glare hole.
+
     Decision tree (case-insensitive comparisons; whitespace normalized):
 
-      * Neither read found a warning → no_warning_present.
-      * Primary matches canonical and secondary either matches canonical
-        or wasn't run → confirmed_compliant.
+      * Neither read found text:
+          - region_visible OR obstruction_signal → unverifiable_obstructed
+          - clean frame                          → no_warning_present
+      * Both reads match canonical (or single read matches and other
+        was unavailable) → confirmed_compliant.
       * Both reads agree (Levenshtein ≤ 5) but differ from canonical →
         confirmed_noncompliant.
-      * The two reads disagree → disagreement (caller should downgrade
-        the rule to advisory).
-      * Only the primary is available → primary_only (caller leaves the
-        primary verdict alone).
+      * The two reads disagree → disagreement (caller downgrades to
+        advisory).
+      * Only the primary is available:
+          - primary confidence < 0.7 AND obstruction signal → unverifiable_obstructed
+          - else → primary_only (caller leaves the primary verdict alone).
     """
     canonical = _normalize(load_canonical(canonical_ref))
     p_text = _normalize(primary.value if primary and primary.found else None)
@@ -297,7 +479,26 @@ def cross_check(
     has_primary = bool(p_text)
     has_secondary = bool(s_text)
 
+    obstructed = bool(obstruction_signal and obstruction_signal.is_obstructed)
+    region_visible_signal = bool(
+        (primary and primary.region_visible)
+        or (secondary and secondary.region_visible)
+    )
+
     if not has_primary and not has_secondary:
+        if region_visible_signal or obstructed:
+            return CrossCheckResult(
+                outcome="unverifiable_obstructed",
+                primary=primary,
+                secondary=secondary,
+                edit_distance_to_canonical=None,
+                edit_distance_between_reads=None,
+                notes=_obstruction_note(
+                    primary, secondary, obstruction_signal,
+                    base="Neither reader could transcribe the warning, "
+                    "but obstruction signals indicate it is plausibly hidden",
+                ),
+            )
         return CrossCheckResult(
             outcome="no_warning_present",
             primary=primary,
@@ -320,13 +521,53 @@ def cross_check(
         else None
     )
 
-    primary_matches = primary_canonical_dist == 0 if has_primary else False
-    secondary_matches = secondary_canonical_dist == 0 if has_secondary else False
+    # Case-sensitive byte equality drives the `confirmed_compliant`
+    # promotion. The engine's `health_warning.exact_text` rule FAILs a
+    # title-case warning, so the cross-check cannot label the same input
+    # `confirmed_compliant` — it's a contract drift that would let a
+    # future caller use the cross-check verdict as the source of truth
+    # and silently mis-pass a label the engine refuses. Case-folded
+    # distance still drives `confirmed_noncompliant` and `disagreement`
+    # (a few bytes of OCR jitter shouldn't be treated as case mismatch).
+    primary_matches = (
+        has_primary and p_text == canonical
+    )
+    secondary_matches = (
+        has_secondary and s_text == canonical
+    )
     reads_agree = (
         between_dist is not None and between_dist <= _SAME_TEXT_THRESHOLD
     )
 
     if not has_secondary:
+        # Primary alone, low confidence, AND obstruction signal: refuse
+        # to FAIL on edit-distance — we cannot tell whether the missing
+        # characters were the model's or the label's. Without obstruction
+        # signal, an under-confident primary is still the model's
+        # judgment call and we honor it.
+        primary_confidence = float(primary.confidence) if primary else 0.0
+        if (
+            obstructed
+            and has_primary
+            and primary_confidence < _PRIMARY_LOW_CONFIDENCE_THRESHOLD
+        ):
+            return CrossCheckResult(
+                outcome="unverifiable_obstructed",
+                primary=primary,
+                secondary=secondary,
+                edit_distance_to_canonical=primary_canonical_dist,
+                edit_distance_between_reads=None,
+                notes=_obstruction_note(
+                    primary, secondary, obstruction_signal,
+                    base=(
+                        f"Primary returned a partial read at confidence "
+                        f"{primary_confidence:.2f} and the second pass was "
+                        "unavailable; obstruction signals indicate the "
+                        "missing characters may be hidden rather than "
+                        "absent"
+                    ),
+                ),
+            )
         return CrossCheckResult(
             outcome="primary_only",
             primary=primary,
@@ -339,6 +580,30 @@ def cross_check(
         )
 
     if not has_primary:
+        # Symmetrically: secondary alone with low confidence under an
+        # obstruction signal escalates to unverifiable. The single
+        # successful read is the second pass, so we read its confidence.
+        secondary_confidence = float(secondary.confidence) if secondary else 0.0
+        if (
+            obstructed
+            and has_secondary
+            and secondary_confidence < _PRIMARY_LOW_CONFIDENCE_THRESHOLD
+        ):
+            return CrossCheckResult(
+                outcome="unverifiable_obstructed",
+                primary=primary,
+                secondary=secondary,
+                edit_distance_to_canonical=secondary_canonical_dist,
+                edit_distance_between_reads=None,
+                notes=_obstruction_note(
+                    primary, secondary, obstruction_signal,
+                    base=(
+                        f"Only the second pass returned text, at confidence "
+                        f"{secondary_confidence:.2f}; obstruction signals "
+                        "indicate the warning is plausibly partially hidden"
+                    ),
+                ),
+            )
         return CrossCheckResult(
             outcome="primary_only",
             primary=primary,
@@ -385,3 +650,29 @@ def cross_check(
             "Government Warning with confidence — rescan recommended."
         ),
     )
+
+
+def _obstruction_note(
+    primary: WarningRead | None,
+    secondary: WarningRead | None,
+    obstruction_signal: ObstructionSignal | None,
+    *,
+    base: str,
+) -> str:
+    """Compose a human-readable explanation citing every obstruction
+    signal the cross-check considered. Helps the agent UI tell the user
+    *why* the verdict is advisory rather than the dread "couldn't verify"
+    stub the original branch produced."""
+    reasons: list[str] = []
+    if obstruction_signal and obstruction_signal.is_obstructed:
+        reasons.append(
+            obstruction_signal.reason
+            or "sensor pre-check observed obstruction over the label"
+        )
+    if primary and primary.region_visible and not primary.found:
+        reasons.append("primary reader saw the warning region but could not read it")
+    if secondary and secondary.region_visible and not secondary.found:
+        reasons.append("second-pass reader saw the warning region but could not read it")
+    if not reasons:
+        return f"{base}. Reshoot recommended."
+    return f"{base}: {'; '.join(reasons)}. Reshoot recommended."

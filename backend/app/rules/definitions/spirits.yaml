@@ -25,9 +25,13 @@
         record_key: brand_name
 
 - id: spirits.class_type.matches_application
-  version: 1
+  version: 2
   beverage_types: [spirits]
-  citation: 27 CFR 5.35
+  # 5.32(a)(2) (modernised) governs the *presence* of a class/type
+  # designation on the label. The substantive class-of-spirits standards
+  # (whiskey, gin, vodka, rum, tequila, etc.) live at 5.143 — those are
+  # enforced by the v2 taxonomy work, not by this presence rule.
+  citation: 27 CFR 5.32(a)(2)
   description: Class/type designation must be present and match the producer record
   severity: required
   fix_suggestion: |
@@ -97,9 +101,9 @@
         tolerance: 0.01
 
 - id: spirits.name_address.presence
-  version: 1
+  version: 2
   beverage_types: [spirits]
-  citation: 27 CFR 5.36
+  citation: 27 CFR 5.66
   description: Bottler/producer name and address must be present
   severity: required
   fix_suggestion: |

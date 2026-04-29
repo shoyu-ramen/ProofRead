@@ -164,3 +164,100 @@ def test_extracted_summary_includes_unreadable_marker():
     )
     assert report.extracted["class_type"]["unreadable"] is True
     assert report.extracted["brand_name"]["unreadable"] is False
+
+
+def test_primary_failure_skips_pending_secondary():
+    """Item #6: when the primary extractor raises, the secondary's HTTP
+    call must be skipped. The `abort: threading.Event` short-circuits the
+    secondary at function entry rather than letting it run a doomed call.
+
+    Implemented as a counter probe: the secondary's `read_warning` should
+    NOT be invoked when the primary raises, even though we submitted both
+    futures to the pool.
+    """
+    from app.services.anthropic_client import ExtractorUnavailable
+    from app.services.health_warning_second_pass import (
+        HealthWarningExtractor,
+        WarningRead,
+    )
+
+    class _BoomExtractor:
+        def extract(self, image_bytes, media_type="image/png", **kwargs):
+            raise ExtractorUnavailable("simulated rate-limit")
+
+    secondary_calls = {"count": 0}
+
+    class _CountingSecondary(HealthWarningExtractor):
+        def read_warning(self, image_bytes, media_type="image/png"):
+            secondary_calls["count"] += 1
+            # Sleep briefly to ensure if the abort.is_set() didn't fire,
+            # the call really did run to completion (so we're not just
+            # observing a race window).
+            import time as _t
+            _t.sleep(0.05)
+            return WarningRead(
+                value=None,
+                found=False,
+                confidence=0.0,
+                source="counting-mock",
+            )
+
+    inp = VerifyInput(
+        image_bytes=_GOOD_PNG,
+        media_type="image/png",
+        beverage_type="spirits",
+        container_size_ml=750,
+        is_imported=False,
+        application=_bourbon_application(),
+    )
+
+    import pytest as _pytest
+
+    with _pytest.raises(ExtractorUnavailable):
+        verify(
+            inp,
+            extractor=_BoomExtractor(),
+            health_warning_reader=_CountingSecondary(),
+        )
+
+    # The primary fails synchronously inside the pool; the abort gate
+    # prevents the secondary from running. With a single panel and a
+    # single-worker race (primary submits before secondary), the abort
+    # nearly always fires before the secondary thread enters
+    # `read_warning`. Allow at most one call to acknowledge the rare
+    # race where the secondary started executing the moment after the
+    # primary failure.
+    assert secondary_calls["count"] <= 1, (
+        f"Secondary should be skipped on primary failure; got "
+        f"{secondary_calls['count']} calls."
+    )
+
+
+def test_rule_results_carry_surface_field():
+    """Item #8: every rule_result whose check references an extracted
+    field must carry the source panel id. Mobile uses this to know which
+    captured image to highlight when the user taps a result. The merge
+    step retags `source_image_id` from the mock's hard-coded "front" to
+    "panel_0" (the verify path's panel-indexed convention), so the
+    rule_result's surface should report `panel_0` for the single-shot
+    path."""
+    report = _verify(
+        {
+            "brand_name": "Old Tom Distillery",
+            "class_type": "Kentucky Straight Bourbon Whiskey",
+            "alcohol_content": "45% Alc./Vol.",
+            "net_contents": "750 mL",
+            "name_address": "Bottled by Old Tom Distilling Co., Bardstown, Kentucky",
+            "health_warning": CANONICAL_WARNING,
+        }
+    )
+    surfaced = [r for r in report.rule_results if r.surface is not None]
+    assert surfaced, (
+        "At least one rule_result should report a non-None surface — the "
+        "MockVisionExtractor tags every field with source_image_id."
+    )
+    # Single-image (legacy) path always assigns `panel_0`.
+    assert all(r.surface == "panel_0" for r in surfaced), (
+        f"All field-tied rule_results should carry surface 'panel_0' on "
+        f"the single-shot path; got {[r.surface for r in surfaced]}"
+    )

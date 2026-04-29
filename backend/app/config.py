@@ -25,25 +25,45 @@ class Settings(BaseSettings):
 
     health_warning_max_edit_distance: int = 0
 
+    # Field-level confidence below this threshold downgrades a required rule
+    # from pass/fail to ADVISORY. SPEC §0.5: "every check has an explicit
+    # confidence threshold below which it downgrades from required to
+    # advisory, with the reason surfaced to the user." Single source of
+    # truth — extractors and the rule engine import from here so a future
+    # tuning change cannot drift between the read side and the judge side.
+    low_confidence_threshold: float = 0.6
+
+    # Verify-path upload cap. SPEC v1 acceptance criteria assume ~1 MB
+    # photos; 15 MiB is generous headroom for raw 12 MP captures while
+    # bounding the worst-case memory hit on a 256 MB Fly/Railway machine
+    # (raw + base64 ~= 40 MB at the cap, vs unbounded today).
+    max_image_bytes: int = 15 * 1024 * 1024
+
+    # Hard ceiling on wall-clock for one /v1/verify call. The orchestrator
+    # already times out the underlying Anthropic SDK call individually, but
+    # with retries a flaky upstream can chain together to 60+ s. This caps
+    # the request from the FastAPI side so a small batch of stuck calls
+    # cannot eat every uvicorn worker.
+    verify_request_timeout_s: float = 30.0
+
     anthropic_api_key: str | None = None
     # Haiku 4.5 is the right size for the verify-path OCR/extraction job:
     # it transcribes label fields character-for-character as accurately as
     # Sonnet 4.6 on the bundled samples (verified manually) but typically
     # returns ~2× faster — measured 3.8 s vs 7.5 s on a real beer label —
     # which is the dominant share of the user-facing latency budget the
-    # iterative-design workflow runs against. The redundant Government-
-    # Warning second-pass already runs on Haiku 4.5 and we trust it to
-    # adjudicate the most consequential field on the label, so trusting
-    # the same tier for the rest of the verbatim transcription is
-    # consistent. Override to `claude-sonnet-4-6` (or Opus) only when
-    # tuning a specific accuracy regression.
+    # iterative-design workflow runs against. Override to `claude-sonnet-4-6`
+    # (or Opus) only when tuning a specific accuracy regression.
     anthropic_model: str = "claude-haiku-4-5-20251001"
-    # SPEC §0.5 mandates a redundant read of the Government Warning. Haiku
-    # 4.5 is the cheapest, fastest model with strong vision OCR — perfect
-    # for a single-paragraph re-read whose only job is to produce a second
-    # independent transcription for the cross-check to reconcile against
-    # the primary read. Override only when explicitly tuning.
-    anthropic_health_warning_model: str = "claude-haiku-4-5-20251001"
+    # SPEC §0.5 mandates *two independent reads* of the Government Warning.
+    # Routing the second pass to a different model family from the primary
+    # is the load-bearing piece of that redundancy: two reads from the
+    # same Haiku version are correlated and tend to agree on the same
+    # mistake (e.g. misreading "(1)" as "(I)"). Sonnet 4.6 here keeps the
+    # two reads genuinely independent while still finishing inside the
+    # second-pass timeout (8 s; a one-paragraph transcription on Sonnet
+    # lands well under that). Override only when explicitly tuning.
+    anthropic_health_warning_model: str = "claude-sonnet-4-6"
     vision_extractor: str = "claude"  # "claude" | "mock"
 
     # Toggle the health-warning redundant second-pass. Default ON because
@@ -75,6 +95,16 @@ class Settings(BaseSettings):
     # is overrideable per environment rather than a hard-coded module
     # constant.
     qwen_vl_timeout_s: float = 30.0
+
+    # Telemetry. All three are optional — missing values mean the
+    # corresponding init is a no-op and local dev / CI never sees a
+    # remote callout. `environment` and `release` tag every event so
+    # Sentry / Honeycomb dashboards can scope by deploy.
+    sentry_dsn: str | None = None
+    honeycomb_api_key: str | None = None
+    otel_exporter_otlp_endpoint: str | None = None
+    deploy_environment: str = "dev"
+    deploy_release: str | None = None
 
 
 settings = Settings()

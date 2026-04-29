@@ -24,10 +24,10 @@ from app.config import settings
 from app.rules.types import ExtractionContext
 from app.services.anthropic_client import ExtractorUnavailable
 from app.services.extractors.claude_vision import (
-    DEFAULT_CONFIDENCE_THRESHOLD,
     SYSTEM_PROMPT,
     LabelExtraction,
     ProducerRecord,
+    _default_confidence_threshold,
     _detect_media,
     _to_context,
 )
@@ -85,14 +85,18 @@ class QwenVLExtractor:
         base_url: str | None = None,
         model: str | None = None,
         api_key: str | None = None,
-        confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+        confidence_threshold: float | None = None,
         max_tokens: int = 8192,
         timeout: float = DEFAULT_QWEN_TIMEOUT_S,
     ) -> None:
         self._base_url = (base_url or settings.qwen_vl_base_url or "").rstrip("/")
         self._model = model or settings.qwen_vl_model
         self._api_key = api_key or settings.qwen_vl_api_key
-        self._threshold = confidence_threshold
+        self._threshold = (
+            confidence_threshold
+            if confidence_threshold is not None
+            else _default_confidence_threshold()
+        )
         self._max_tokens = max_tokens
         self._timeout = timeout
         if not self._base_url:

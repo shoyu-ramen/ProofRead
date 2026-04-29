@@ -1,5 +1,7 @@
 """Direct rule-engine tests — the riskiest piece in v1."""
 
+import pytest
+
 from app.rules.engine import RuleEngine
 from app.rules.loader import load_rules
 from app.rules.types import CheckOutcome, ExtractedField, ExtractionContext
@@ -99,6 +101,96 @@ def test_country_of_origin_passes_when_imported_and_declared():
     )
     [result] = engine.evaluate(ctx)
     assert result.status == CheckOutcome.PASS
+
+
+# --- is_imported claim/label divergence inference (SPEC §0.5) ---
+
+
+_CLAIM_RULE_ID = "claim_consistency.is_imported"
+
+
+def test_is_imported_inferred_from_label_when_user_claimed_domestic():
+    """User claimed domestic but label declares "Product of Germany" — the
+    country-of-origin rule must fire (FAIL or PASS based on extraction),
+    and an advisory must be emitted to surface the divergence."""
+    engine = RuleEngine([_rule("beer.country_of_origin.presence_if_imported")])
+    ctx = _ctx(
+        {"country_of_origin": ExtractedField(value="Germany")},
+        is_imported=False,
+    )
+    results = engine.evaluate(ctx)
+    statuses = {r.rule_id: r.status for r in results}
+
+    # Country rule fired (the field is present, so it passes).
+    assert statuses["beer.country_of_origin.presence_if_imported"] == CheckOutcome.PASS
+    # Claim-consistency advisory was appended.
+    assert _CLAIM_RULE_ID in statuses
+    assert statuses[_CLAIM_RULE_ID] == CheckOutcome.ADVISORY
+    advisory = next(r for r in results if r.rule_id == _CLAIM_RULE_ID)
+    assert "Germany" in (advisory.finding or "")
+    assert "claimed domestic" in (advisory.finding or "")
+
+
+def test_is_imported_unchanged_when_user_claimed_imported():
+    """User already said imported; nothing to infer, no advisory."""
+    engine = RuleEngine([_rule("beer.country_of_origin.presence_if_imported")])
+    ctx = _ctx(
+        {"country_of_origin": ExtractedField(value="Germany")},
+        is_imported=True,
+    )
+    results = engine.evaluate(ctx)
+    rule_ids = {r.rule_id for r in results}
+    assert _CLAIM_RULE_ID not in rule_ids
+
+
+def test_is_imported_unchanged_when_country_field_empty():
+    """No country on the label and user claimed domestic — leave as-is."""
+    engine = RuleEngine([_rule("beer.country_of_origin.presence_if_imported")])
+    ctx = _ctx({}, is_imported=False)
+    results = engine.evaluate(ctx)
+    rule_ids = {r.rule_id for r in results}
+    assert _CLAIM_RULE_ID not in rule_ids
+    # And the country rule itself reports NA (rule did not apply).
+    [country] = [r for r in results if r.rule_id.startswith("beer.country_of_origin")]
+    assert country.status == CheckOutcome.NA
+
+
+def test_is_imported_consistent_no_advisory():
+    """Claim=imported, label=Germany — consistent, no advisory."""
+    engine = RuleEngine([_rule("beer.country_of_origin.presence_if_imported")])
+    ctx = _ctx(
+        {"country_of_origin": ExtractedField(value="Germany")},
+        is_imported=True,
+    )
+    results = engine.evaluate(ctx)
+    advisories = [r for r in results if r.rule_id == _CLAIM_RULE_ID]
+    assert advisories == []
+
+
+def test_is_imported_inference_does_not_mutate_caller_context():
+    """The engine must clone the ctx for inference rather than mutating
+    the caller's input — `process_scan` and `verify()` build the context
+    once and may inspect it after rule evaluation."""
+    engine = RuleEngine([_rule("beer.country_of_origin.presence_if_imported")])
+    ctx = _ctx(
+        {"country_of_origin": ExtractedField(value="Germany")},
+        is_imported=False,
+    )
+    engine.evaluate(ctx)
+    assert ctx.is_imported is False, (
+        "evaluate() must not mutate the caller's is_imported flag"
+    )
+
+
+def test_is_imported_inference_treats_whitespace_only_country_as_empty():
+    """A whitespace-only country value isn't a real declaration; don't flip."""
+    engine = RuleEngine([_rule("beer.country_of_origin.presence_if_imported")])
+    ctx = _ctx(
+        {"country_of_origin": ExtractedField(value="   ")},
+        is_imported=False,
+    )
+    results = engine.evaluate(ctx)
+    assert _CLAIM_RULE_ID not in {r.rule_id for r in results}
 
 
 def test_abv_format_optional_passes_when_absent():
@@ -220,3 +312,168 @@ def test_canonical_health_warning_file_matches_fixture(canonical_warning):
         "canonical/health_warning.txt has drifted from the test fixture. "
         "Either the file or the fixture needs updating to match."
     )
+
+
+# --- beer.net_contents.presence — format check ---
+
+
+def test_net_contents_passes_with_recognised_units():
+    engine = RuleEngine([_rule("beer.net_contents.presence")])
+    for value in ("12 FL OZ", "355 mL", "12 fl. oz", "1 L", "16 fluid ounces"):
+        ctx = _ctx({"net_contents": ExtractedField(value=value)})
+        [result] = engine.evaluate(ctx)
+        assert result.status == CheckOutcome.PASS, f"Expected PASS for {value!r}: {result.finding}"
+
+
+def test_net_contents_fails_on_unitless_number():
+    """A bare '12' is unitless and not a TTB-recognised statement."""
+    engine = RuleEngine([_rule("beer.net_contents.presence")])
+    ctx = _ctx({"net_contents": ExtractedField(value="12")})
+    [result] = engine.evaluate(ctx)
+    assert result.status == CheckOutcome.FAIL
+
+
+def test_net_contents_fails_on_spelled_out_number():
+    """'twelve fluid ounces' has the right unit but no digits."""
+    engine = RuleEngine([_rule("beer.net_contents.presence")])
+    ctx = _ctx({"net_contents": ExtractedField(value="twelve fluid ounces")})
+    [result] = engine.evaluate(ctx)
+    assert result.status == CheckOutcome.FAIL
+
+
+def test_net_contents_still_fails_when_missing():
+    """Original presence behavior preserved."""
+    engine = RuleEngine([_rule("beer.net_contents.presence")])
+    ctx = _ctx({})
+    [result] = engine.evaluate(ctx)
+    assert result.status == CheckOutcome.FAIL
+
+
+# --- loader fail-fast behavior ---
+
+
+def test_loader_rejects_unknown_check_type(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.rules.loader import RuleDefinitionError, reset_cache
+
+    bad_yaml = tmp_path / "bogus.yaml"
+    bad_yaml.write_text(
+        "- id: beer.bogus.rule\n"
+        "  version: 1\n"
+        "  beverage_types: [beer]\n"
+        "  citation: 27 CFR 7.99\n"
+        "  description: Bogus rule with an unknown check type\n"
+        "  severity: required\n"
+        "  checks:\n"
+        "    - type: this_check_type_does_not_exist\n"
+        "      params:\n"
+        "        field: brand_name\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "rule_definitions_path", str(tmp_path))
+    reset_cache()
+    try:
+        with pytest.raises(RuleDefinitionError) as exc_info:
+            load_rules()
+        assert "this_check_type_does_not_exist" in str(exc_info.value)
+        assert "beer.bogus.rule" in str(exc_info.value)
+    finally:
+        reset_cache()
+
+
+def test_loader_rejects_malformed_applies_if(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.rules.loader import RuleDefinitionError, reset_cache
+
+    bad_yaml = tmp_path / "bad_expr.yaml"
+    bad_yaml.write_text(
+        "- id: beer.bad_expr.rule\n"
+        "  version: 1\n"
+        "  beverage_types: [beer]\n"
+        "  citation: 27 CFR 7.99\n"
+        "  description: Has a syntactically broken applies_if\n"
+        "  severity: required\n"
+        "  applies_if: 'is_imported ===='\n"
+        "  checks:\n"
+        "    - type: presence\n"
+        "      params:\n"
+        "        field: brand_name\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "rule_definitions_path", str(tmp_path))
+    reset_cache()
+    try:
+        with pytest.raises(RuleDefinitionError) as exc_info:
+            load_rules()
+        assert "applies_if" in str(exc_info.value)
+        assert "beer.bad_expr.rule" in str(exc_info.value)
+    finally:
+        reset_cache()
+
+
+def test_loader_rejects_duplicate_rule_id(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.rules.loader import RuleDefinitionError, reset_cache
+
+    dup_yaml = tmp_path / "dup.yaml"
+    dup_yaml.write_text(
+        "- id: beer.dup.rule\n"
+        "  version: 1\n"
+        "  beverage_types: [beer]\n"
+        "  citation: 27 CFR 7.99\n"
+        "  description: First definition\n"
+        "  severity: required\n"
+        "  checks:\n"
+        "    - type: presence\n"
+        "      params:\n"
+        "        field: brand_name\n"
+        "- id: beer.dup.rule\n"
+        "  version: 2\n"
+        "  beverage_types: [beer]\n"
+        "  citation: 27 CFR 7.99\n"
+        "  description: Duplicate id (should fail)\n"
+        "  severity: required\n"
+        "  checks:\n"
+        "    - type: presence\n"
+        "      params:\n"
+        "        field: brand_name\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "rule_definitions_path", str(tmp_path))
+    reset_cache()
+    try:
+        with pytest.raises(RuleDefinitionError) as exc_info:
+            load_rules()
+        assert "duplicate" in str(exc_info.value).lower()
+        assert "beer.dup.rule" in str(exc_info.value)
+    finally:
+        reset_cache()
+
+
+def test_loader_accepts_valid_applies_if(tmp_path, monkeypatch):
+    """Sanity check: a well-formed expression loads cleanly."""
+    from app.config import settings
+    from app.rules.loader import reset_cache
+
+    good_yaml = tmp_path / "good.yaml"
+    good_yaml.write_text(
+        "- id: beer.good.rule\n"
+        "  version: 1\n"
+        "  beverage_types: [beer]\n"
+        "  citation: 27 CFR 7.99\n"
+        "  description: Has a valid applies_if\n"
+        "  severity: required\n"
+        "  applies_if: 'is_imported == True'\n"
+        "  checks:\n"
+        "    - type: presence\n"
+        "      params:\n"
+        "        field: brand_name\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "rule_definitions_path", str(tmp_path))
+    reset_cache()
+    try:
+        rules = load_rules()
+        assert any(r.id == "beer.good.rule" for r in rules)
+    finally:
+        reset_cache()
