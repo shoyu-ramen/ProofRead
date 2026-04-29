@@ -148,3 +148,44 @@ def test_extract_concatenates_text_blocks_from_response():
 def test_parse_vision_response_rejects_non_json():
     with pytest.raises(ValueError):
         _parse_vision_response("not json at all")
+
+
+def test_parse_vision_response_recovers_json_with_trailing_prose():
+    """Regression: Haiku occasionally appends qualifying commentary after
+    the JSON object on degraded labels ("**Note:** the warning text was
+    at an angle…"), even though the system prompt forbids it. The strict
+    end-of-string fence regex used to bail on that case, raising
+    ValueError → 500 from the verify endpoint, throwing away an
+    otherwise-perfectly-valid extraction. Recover by walking the first
+    balanced JSON object out of the response."""
+    inner = json.dumps(
+        {
+            "brand_name": {"value": "GLARE-FOULED IPA", "confidence": 0.7},
+            "class_type": {"value": None, "unreadable": True, "confidence": 0.0},
+            "health_warning": {
+                "value": (
+                    "GOVERNMENT WARNING: (1) According to the Surgeon "
+                    "General, women should not drink"
+                ),
+                "confidence": 0.65,
+            },
+            "image_quality": "degraded",
+            "image_quality_notes": "specular highlight on right third",
+            "beverage_type_observed": "beer",
+        }
+    )
+    raw = (
+        "```json\n"
+        + inner
+        + "\n```\n\n"
+        + "**Note:** Image is at an angle and the warning text is partially "
+        + "obscured by glare; transcribed what was legible."
+    )
+    result = _parse_vision_response(raw)
+    assert "brand_name" in result.fields
+    assert result.fields["brand_name"].value == "GLARE-FOULED IPA"
+    assert "health_warning" in result.fields
+    assert result.fields["health_warning"].value.startswith("GOVERNMENT WARNING")
+    # The class_type field came back unreadable, so it's in the unreadable
+    # list rather than fields.
+    assert "class_type" in result.unreadable

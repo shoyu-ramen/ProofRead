@@ -1,12 +1,13 @@
 # v1 beer rule set — 8 rules.
-# Citations reference 27 CFR (Code of Federal Regulations).
-# Each rule_id is versioned independently; reports record the version
-# used at evaluation time so historical reports remain reproducible.
+# Citations reference 27 CFR (Code of Federal Regulations), updated to the
+# modernised Part 7 sections (effective 2023). Each rule_id is versioned
+# independently; reports record the version used at evaluation time so
+# historical reports remain reproducible across rule changes.
 
 - id: beer.brand_name.presence
-  version: 1
+  version: 2
   beverage_types: [beer]
-  citation: 27 CFR 7.22
+  citation: 27 CFR 7.51
   description: Brand name must be present on the label
   severity: required
   fix_suggestion: Add a clear brand name on the front of the label.
@@ -21,9 +22,9 @@
         optional: true
 
 - id: beer.class_type.presence
-  version: 1
+  version: 2
   beverage_types: [beer]
-  citation: 27 CFR 7.24
+  citation: 27 CFR 7.61
   description: Class/type designation must be present
   severity: required
   fix_suggestion: Add a recognized beer class/type designation (e.g. "Ale", "Lager", "IPA").
@@ -53,21 +54,31 @@
         optional: true
 
 - id: beer.net_contents.presence
-  version: 1
+  version: 2
   beverage_types: [beer]
-  citation: 27 CFR 7.27
-  description: Net contents statement must be present
+  citation: 27 CFR 7.65
+  description: Net contents statement must be present and use a recognised unit
   severity: required
-  fix_suggestion: Add a net contents statement (e.g. "12 FL OZ" or "355 mL").
+  fix_suggestion: |
+    Add a net contents statement that pairs a number with a TTB-recognised
+    unit (e.g. "12 FL OZ" or "355 mL"). Spelled-out numbers and unitless
+    figures are not accepted.
   checks:
     - type: presence
       params:
         field: net_contents
+    - type: regex
+      params:
+        field: net_contents
+        # Mirrors NET_CONTENTS_RE in app/services/extractors/beer.py — keep
+        # in sync if you broaden the unit list.
+        pattern: '\d+(\.\d+)?\s*(ml|fl\.?\s*oz|fluid\s+ounces?|liters?|litres?|l)\b'
+        flags: i
 
 - id: beer.name_address.presence
-  version: 1
+  version: 2
   beverage_types: [beer]
-  citation: 27 CFR 7.25
+  citation: 27 CFR 7.62(a)
   description: Name and address of bottler/producer must be present
   severity: required
   fix_suggestion: 'Add bottler/producer name and address (e.g. "Brewed and bottled by [Name], [City], [State]").'
@@ -77,9 +88,9 @@
         field: name_address
 
 - id: beer.country_of_origin.presence_if_imported
-  version: 1
+  version: 2
   beverage_types: [beer]
-  citation: 27 CFR 7.25(b)
+  citation: 27 CFR 7.63
   description: If imported, country of origin must be declared
   severity: required
   applies_if: is_imported == True

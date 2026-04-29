@@ -135,8 +135,7 @@ class VerifyCache:
 
 def make_cache_key(
     *,
-    image_bytes: bytes,
-    media_type: str,
+    panels: list[tuple[bytes, str]],
     beverage_type: str,
     container_size_ml: int,
     is_imported: bool,
@@ -145,19 +144,33 @@ def make_cache_key(
 ) -> str:
     """Stable hash over every input that can change the verdict.
 
-    `media_type` is included because the model receives it via the
-    multimodal payload and could conceivably treat the same bytes
-    differently if the declared MIME changes. `rules` is fingerprinted
-    by `(id, version)` so a rule edit in `definitions/*.yaml`
-    invalidates every cached verdict for that beverage type without us
-    having to bump a manual version constant.
+    `panels` is a list of `(image_bytes, media_type)` for each label panel
+    that contributed to the verdict, in submission order. Order matters —
+    a request that sends `[front, back]` is a different verdict input than
+    `[back, front]` because the merge picks "panel_0" / "panel_1" surface
+    IDs that propagate into the response. `media_type` is hashed alongside
+    each panel for the same reason it was on the single-image path: the
+    model receives it via the multimodal payload and could conceivably
+    treat the same bytes differently if the declared MIME changes.
+    `rules` is fingerprinted by `(id, version)` so a rule edit in
+    `definitions/*.yaml` invalidates every cached verdict for that
+    beverage type without us having to bump a manual version constant.
     """
+    if not panels:
+        raise ValueError("make_cache_key requires at least one panel")
     h = hashlib.sha256()
-    h.update(b"v1\x00")  # cache schema version — bump on serialization changes
-    h.update(image_bytes)
+    # Schema version bumped from v1 → v2 on the multi-panel cutover so the
+    # in-process cache discards any single-image entries hashed under the
+    # old layout (different field ordering would otherwise produce
+    # spurious "hits" with the wrong verdict structure).
+    h.update(b"v2\x00")
+    h.update(str(len(panels)).encode("ascii"))
     h.update(b"\x00")
-    h.update(media_type.encode("utf-8"))
-    h.update(b"\x00")
+    for image_bytes, media_type in panels:
+        h.update(image_bytes)
+        h.update(b"\x00")
+        h.update(media_type.encode("utf-8"))
+        h.update(b"\x00")
     h.update(beverage_type.encode("utf-8"))
     h.update(b"\x00")
     h.update(str(container_size_ml).encode("ascii"))

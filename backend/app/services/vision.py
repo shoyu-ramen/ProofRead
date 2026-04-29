@@ -156,6 +156,30 @@ Field definitions (FORMAT GUIDANCE — do not copy any wording from this list):
                       return it that way. If it uses a different case
                       (e.g. "Government Warning:"), return it that way.
                       The compliance check is character-exact.
+                      Recall is critical for THIS field — the warning
+                      is the most legally consequential element on the
+                      label and the costliest to wrongly mark missing.
+                      If glare or specular highlights hide part of the
+                      paragraph, return whatever fragment you can read
+                      verbatim ("GOVERNMENT WARNING:" header alone,
+                      "Surgeon General", "(1) ... pregnancy ...", or
+                      any unambiguous chunk) with confidence dropped
+                      accordingly — partial text still sets value with
+                      unreadable=false. Only set unreadable=true when
+                      you have inspected the entire label end-to-end
+                      and there is genuinely no warning paragraph
+                      anywhere on it.
+                      When you can SEE a block of fine print in a
+                      typical warning location (back, side, lower
+                      edge) but glare or smudging makes the characters
+                      themselves unreadable, set unreadable=true AND
+                      ensure image_quality_notes explicitly mentions
+                      both the warning region and the obstruction
+                      (e.g. "warning paragraph visible but glared
+                      out", "fine-print block obscured by specular
+                      highlight"). The downstream cross-check parses
+                      those notes for the obstruction cue and uses it
+                      to refuse a confident "warning missing" verdict.
 
 Confidence scale:
 
@@ -507,9 +531,29 @@ def _parse_vision_response(text: str) -> VisionExtraction:
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"Vision extractor returned non-JSON output: {text[:200]!r}"
-        ) from exc
+        # Same defence as the second-pass parser: Haiku occasionally
+        # appends qualifying prose ("**Note:** the warning text was at an
+        # angle…") after the JSON object on degraded labels, even though
+        # the system prompt forbids it. The end-of-string fence regex
+        # above doesn't catch that, so the JSON parse fails and the
+        # whole verify request blows up at 500 — discarding a perfectly
+        # valid extraction. Recover by walking out the first balanced
+        # JSON object from the response and parsing that instead.
+        from app.services.health_warning_second_pass import (
+            _extract_first_json_object,
+        )
+
+        recovered = _extract_first_json_object(cleaned)
+        if recovered is None:
+            raise ValueError(
+                f"Vision extractor returned non-JSON output: {text[:200]!r}"
+            ) from exc
+        try:
+            data = json.loads(recovered)
+        except json.JSONDecodeError as exc2:
+            raise ValueError(
+                f"Vision extractor returned non-JSON output: {text[:200]!r}"
+            ) from exc2
 
     if not isinstance(data, dict):
         raise ValueError(

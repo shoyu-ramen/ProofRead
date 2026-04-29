@@ -19,7 +19,7 @@ from app.services.health_warning_second_pass import (
     ClaudeHealthWarningExtractor,
     HealthWarningExtractor,
 )
-from app.services.verify import VerifyInput, verify
+from app.services.verify import Panel, VerifyInput, verify
 from app.services.verify_cache import VerifyCache
 from app.services.vision import VisionExtractor, get_default_extractor
 
@@ -30,9 +30,27 @@ router = APIRouter(prefix="/verify", tags=["verify"])
 # to a friendly message rather than dumping `detail` verbatim, so the
 # detail is allowed to be developer-facing.
 _SERVICE_UNAVAILABLE_CODE = "vision_unavailable"
+# 422 payload code for beverage_type values the rule engine does not yet
+# cover — same `{code, message}` shape as the 503 above so the client only
+# has one error envelope to parse. SPEC §1.2 lists wine + spirits as v2;
+# we ship spirits in v1 and gate wine here until the wine rule set lands.
+_UNSUPPORTED_BEVERAGE_CODE = "beverage_type_unsupported"
+# 413 payload code for uploads larger than `settings.max_image_bytes`. Same
+# `{code, message}` envelope so a single client handler covers every error
+# mode — UI maps the code to a friendly "image too large" affordance.
+_IMAGE_TOO_LARGE_CODE = "image_too_large"
+# 504 payload code for requests that exceed `settings.verify_request_timeout_s`.
+# Distinct from 503 (vision_unavailable) because the failure mode is
+# different — a timeout means the upstream is slow, not absent.
+_VERIFY_TIMEOUT_CODE = "verify_timeout"
 
 
-_BEVERAGE_TYPES = {"beer", "wine", "spirits"}
+# Beverage types accepted by /v1/verify. Wine is intentionally omitted —
+# the rule engine has no wine.yaml in v1, so accepting wine here would
+# 500 inside `verify()` (`load_rules` returns []). SPEC §1.2 schedules
+# wine for v2; the verify path mirrors the scans-API gate at
+# `app/api/scans.py:create_scan`.
+_BEVERAGE_TYPES = {"beer", "spirits"}
 
 
 class RuleResultDTO(BaseModel):
@@ -44,6 +62,12 @@ class RuleResultDTO(BaseModel):
     expected: str | None = None
     fix_suggestion: str | None = None
     bbox: tuple[int, int, int, int] | None = None
+    # Which submitted panel this rule's evidence was read from. Matches
+    # the `source_image_id` shape on `FieldExtractionDTO` ("panel_0",
+    # "panel_1", …). `None` when the rule isn't tied to a specific field
+    # or when the field had no source_image_id. Mobile uses this to know
+    # which captured image to highlight when the user taps a result.
+    surface: str | None = None
 
 
 class FieldExtractionDTO(BaseModel):
@@ -51,6 +75,13 @@ class FieldExtractionDTO(BaseModel):
     confidence: float = 0.0
     bbox: list[int] | None = None
     unreadable: bool = False
+    # Which submitted panel this field's value came from. `panel_0` is
+    # the first image in the request (the legacy single-image path
+    # always reports `panel_0` here); subsequent panels are `panel_1`,
+    # `panel_2`, …, in submission order. The web UI uses this to render
+    # "Brand — front" / "Warning — back" alongside the extracted text,
+    # and to know which captured image the bbox is relative to.
+    source_image_id: str | None = None
 
 
 class VerifyResponse(BaseModel):
@@ -80,6 +111,11 @@ class VerifyResponse(BaseModel):
     # into why a warning rule was downgraded to advisory; dashboards key off
     # `outcome` to track inter-pass agreement rate over time.
     health_warning_cross_check: dict | None = None
+    # How many panels contributed to this verdict. `1` for the legacy
+    # single-image path, ≥ 2 when the multi-panel path was used. The UI
+    # uses this to decide whether to render per-field source labels and
+    # how to lay out the captured-image thumbnails.
+    panel_count: int = 1
 
 
 # Module-level extractor cache so we don't recreate the Anthropic client per
@@ -196,12 +232,27 @@ def _reset_verify_cache() -> None:
 
 @router.post("", response_model=VerifyResponse)
 async def verify_label(
-    image: UploadFile = File(...),
+    image: UploadFile | None = File(None),
+    images: list[UploadFile] | None = File(None),
     beverage_type: str = Form(...),
     container_size_ml: int = Form(...),
     is_imported: bool = Form(False),
     application: str = Form(...),
 ) -> VerifyResponse:
+    if beverage_type == "wine":
+        # Distinct 422 (rather than the generic 400 below) so the UI can
+        # surface a friendly "wine support arrives in v2" affordance
+        # instead of treating this as a malformed request.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": _UNSUPPORTED_BEVERAGE_CODE,
+                "message": (
+                    "Wine support arrives in v2; submit a beer or spirits "
+                    "label today."
+                ),
+            },
+        )
     if beverage_type not in _BEVERAGE_TYPES:
         raise HTTPException(400, f"beverage_type must be one of {sorted(_BEVERAGE_TYPES)}")
     if container_size_ml <= 0 or container_size_ml > 10_000:
@@ -214,13 +265,76 @@ async def verify_label(
     if not isinstance(application_obj, dict):
         raise HTTPException(400, "application must be a JSON object")
 
-    image_bytes = await image.read()
-    if not image_bytes:
-        raise HTTPException(400, "image upload is empty")
+    # Multi-panel input: `images=` (list) takes precedence; the legacy
+    # `image=` (single) still works for callers that only have one
+    # face. At least one is required. We cap the panel count to keep
+    # a malicious or buggy client from blowing up the thread pool —
+    # 4 is enough for front + back + neck + base on the worst-shaped
+    # bottle, and beyond that the UX stops being "snap two photos".
+    submitted: list[UploadFile] = []
+    if images:
+        submitted = [u for u in images if u is not None]
+    if not submitted and image is not None:
+        submitted = [image]
+    if not submitted:
+        raise HTTPException(
+            400,
+            "At least one image is required: provide `image` (single) "
+            "or `images` (multipart list).",
+        )
+    if len(submitted) > 4:
+        raise HTTPException(
+            400,
+            f"Too many panels: at most 4 supported, got {len(submitted)}.",
+        )
 
-    media_type = image.content_type or "image/png"
-    if not media_type.startswith("image/"):
-        raise HTTPException(400, f"image content_type must be image/*, got {media_type!r}")
+    # Per-upload size cap. Reject *before* `read()` materializes the bytes
+    # so a 50 MB POST can't blow the worker's RSS on a 256 MB Fly/Railway
+    # machine. Uvicorn already buffers the upload to memory once `read()`
+    # is called; checking `upload.size` first lets us 413 the request
+    # without ever touching that buffer.
+    max_bytes = settings.max_image_bytes
+    panels: list[Panel] = []
+    for idx, upload in enumerate(submitted):
+        # `upload.size` is populated by Starlette from the multipart parser;
+        # `None` means streaming-mode (rare for our flow, but defensive
+        # branch reads + counts).
+        declared = getattr(upload, "size", None)
+        if declared is not None and declared > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "code": _IMAGE_TOO_LARGE_CODE,
+                    "message": (
+                        f"Image upload {idx} is {declared} bytes; the maximum "
+                        f"is {max_bytes} bytes. Resize before submitting."
+                    ),
+                },
+            )
+        panel_bytes = await upload.read()
+        if len(panel_bytes) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "code": _IMAGE_TOO_LARGE_CODE,
+                    "message": (
+                        f"Image upload {idx} is {len(panel_bytes)} bytes; the "
+                        f"maximum is {max_bytes} bytes. Resize before submitting."
+                    ),
+                },
+            )
+        if not panel_bytes:
+            raise HTTPException(
+                400, f"image upload {idx} is empty"
+            )
+        panel_media = upload.content_type or "image/png"
+        if not panel_media.startswith("image/"):
+            raise HTTPException(
+                400,
+                f"image upload {idx} content_type must be image/*, got "
+                f"{panel_media!r}",
+            )
+        panels.append(Panel(image_bytes=panel_bytes, media_type=panel_media))
 
     try:
         extractor = get_extractor()
@@ -239,12 +353,13 @@ async def verify_label(
         raise HTTPException(500, str(exc)) from exc
 
     inp = VerifyInput(
-        image_bytes=image_bytes,
-        media_type=media_type,
+        image_bytes=panels[0].image_bytes,
+        media_type=panels[0].media_type,
         beverage_type=beverage_type,
         container_size_ml=container_size_ml,
         is_imported=is_imported,
         application=application_obj,
+        extra_panels=panels[1:],
     )
 
     # `verify()` is a synchronous orchestrator that issues blocking HTTP
@@ -256,13 +371,36 @@ async def verify_label(
     # their own thread pool.
     second_pass = get_health_warning_extractor()
     try:
-        report = await asyncio.to_thread(
-            verify,
-            inp,
-            extractor=extractor,
-            health_warning_reader=second_pass,
-            cache=get_verify_cache(),
+        # `asyncio.wait_for` enforces a wall-clock cap on the whole verify
+        # call so a flaky upstream cannot chain SDK retries together (each
+        # SDK call is 20 s × 2 retries → 60 s+ worst case) and exhaust
+        # uvicorn's worker pool. SPEC §0 caps the success path at 25 s p95;
+        # this is the safety net for the worst-case, not the success budget.
+        report = await asyncio.wait_for(
+            asyncio.to_thread(
+                verify,
+                inp,
+                extractor=extractor,
+                health_warning_reader=second_pass,
+                cache=get_verify_cache(),
+            ),
+            timeout=settings.verify_request_timeout_s,
         )
+    except asyncio.TimeoutError as exc:
+        # 504 (Gateway Timeout) so the client distinguishes "vision backend
+        # was slow" from "vision backend was missing" (503). Same envelope
+        # shape so a single error handler covers both.
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": _VERIFY_TIMEOUT_CODE,
+                "message": (
+                    f"Verification exceeded the "
+                    f"{settings.verify_request_timeout_s:.0f}s wall-clock cap. "
+                    f"The vision backend may be degraded; retry shortly."
+                ),
+            },
+        ) from exc
     except ExtractorUnavailable as exc:
         # Every backend in the chain failed at request time (e.g. Anthropic
         # rate-limit + Qwen socket error). Same 503 shape as the construction
@@ -294,6 +432,7 @@ async def verify_label(
                 expected=r.expected,
                 fix_suggestion=r.fix_suggestion,
                 bbox=r.bbox,
+                surface=r.surface,
             )
             for r in report.rule_results
         ],
@@ -303,6 +442,7 @@ async def verify_label(
                 confidence=info.get("confidence", 0.0),
                 bbox=info.get("bbox"),
                 unreadable=info.get("unreadable", False),
+                source_image_id=info.get("source_image_id"),
             )
             for name, info in report.extracted.items()
         },
@@ -312,4 +452,56 @@ async def verify_label(
         elapsed_ms=report.elapsed_ms,
         cache_hit=report.cache_hit,
         health_warning_cross_check=report.health_warning_cross_check,
+        panel_count=len(panels),
+    )
+
+
+class VerifyStatsResponse(BaseModel):
+    """Snapshot of in-process verify-pipeline counters.
+
+    Cheap to compute (counters live in memory) and safe to poll. Intended
+    for an admin dashboard / on-call quick-check; not a replacement for
+    OpenTelemetry → Honeycomb (SPEC §0). Counters reset on process restart;
+    `cold_count + warm_count` is the number of /v1/verify calls served by
+    THIS instance since boot.
+    """
+
+    cold_count: int
+    warm_count: int
+    cold_elapsed_ms_recent: list[int]
+    warm_elapsed_ms_recent: list[int]
+    second_pass_outcomes: dict[str, int]
+    overall_verdicts: dict[str, int]
+    cache: dict[str, int] | None = None
+
+
+@router.get("/_stats", response_model=VerifyStatsResponse)
+async def verify_stats_endpoint() -> VerifyStatsResponse:
+    """Operator-facing peek at this instance's verify counters.
+
+    Not gated yet — tag for admin auth when the auth middleware lands. The
+    payload is read-only (snapshots only; never mutates) so the worst a
+    leaked URL can do is leak rough rate-of-traffic and verdict mix.
+    """
+    from app.services.verify_stats import snapshot
+
+    snap = snapshot()
+    cache_payload: dict[str, int] | None = None
+    cache = get_verify_cache()
+    if cache is not None:
+        cs = cache.stats()
+        cache_payload = {
+            "hits": cs.hits,
+            "misses": cs.misses,
+            "size": cs.size,
+            "max_entries": cs.max_entries,
+        }
+    return VerifyStatsResponse(
+        cold_count=snap.cold_count,
+        warm_count=snap.warm_count,
+        cold_elapsed_ms_recent=snap.cold_elapsed_ms_recent,
+        warm_elapsed_ms_recent=snap.warm_elapsed_ms_recent,
+        second_pass_outcomes=snap.second_pass_outcomes,
+        overall_verdicts=snap.overall_verdicts,
+        cache=cache_payload,
     )

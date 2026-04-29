@@ -142,16 +142,30 @@ def test_scan_lifecycle_typo_in_warning_fails(db_setup, temp_storage):
     assert hw["citation"] == "27 CFR 16.21"
     assert hw["expected"]
     assert hw["fix_suggestion"]
+    # The Health Warning rule reads from the `back` surface in the OCR
+    # pipeline; the rule_result should report it so mobile can highlight
+    # the right captured image when the user taps the failure.
+    assert hw["surface"] == "back", (
+        f"Health Warning rule_result should surface 'back'; got {hw.get('surface')!r}"
+    )
 
 
 def test_create_scan_rejects_wine(db_setup, temp_storage):
+    """Wine + spirits both gated on /v1/scans (multi-image OCR flow).
+
+    Returns 422 with the shared `{code, message}` envelope used across
+    /v1/verify and /v1/scans so the mobile client only parses one error
+    shape.
+    """
     client = TestClient(app)
     r = client.post(
         "/v1/scans",
         json={"beverage_type": "wine", "container_size_ml": 750},
     )
-    assert r.status_code == 400
-    assert "v1 supports beer only" in r.json()["detail"]
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["code"] == "beverage_type_unsupported"
+    assert "v1 scans support beer only" in detail["message"]
 
 
 def test_unreadable_capture_surfaces_in_api_response(db_setup, temp_storage):
@@ -200,3 +214,27 @@ def test_finalize_rejects_when_uploads_missing(db_setup, temp_storage):
     finalize = client.post(f"/v1/scans/{scan_id}/finalize")
     assert finalize.status_code == 400
     assert "missing surfaces" in finalize.json()["detail"]
+
+
+def test_scan_upload_rejects_oversized_body(db_setup, temp_storage, monkeypatch):
+    """A PUT body larger than `settings.max_image_bytes` must be rejected
+    at the API layer with 413 — never written to storage."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "max_image_bytes", 1024)
+
+    client = TestClient(app)
+    create = client.post(
+        "/v1/scans",
+        json={"beverage_type": "beer", "container_size_ml": 355},
+    )
+    scan_id = create.json()["scan_id"]
+
+    big = b"\x00" * 4096  # 4 KiB > 1 KiB cap
+    res = client.put(
+        f"/v1/scans/{scan_id}/upload/front",
+        content=big,
+        headers={"Content-Type": "image/png"},
+    )
+    assert res.status_code == 413, res.text
+    assert "1024" in res.json()["detail"]

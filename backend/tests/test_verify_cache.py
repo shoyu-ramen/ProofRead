@@ -246,8 +246,7 @@ def test_cache_key_changes_when_rules_change(cache: VerifyCache):
 
     rules_v1 = rules_loader.load_rules(beverage_type="spirits")
     key_v1 = make_cache_key(
-        image_bytes=_GOOD_PNG,
-        media_type="image/png",
+        panels=[(_GOOD_PNG, "image/png")],
         beverage_type="spirits",
         container_size_ml=750,
         is_imported=False,
@@ -260,8 +259,7 @@ def test_cache_key_changes_when_rules_change(cache: VerifyCache):
         rules_v1[1:]
     )
     key_v2 = make_cache_key(
-        image_bytes=_GOOD_PNG,
-        media_type="image/png",
+        panels=[(_GOOD_PNG, "image/png")],
         beverage_type="spirits",
         container_size_ml=750,
         is_imported=False,

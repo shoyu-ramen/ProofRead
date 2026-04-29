@@ -162,3 +162,8 @@ class RuleResultRow(Base):
     image_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("scan_images.id"), nullable=True
     )
+    # Which scan_image surface (front/back/...) the rule's evidence was
+    # read from. Mirrors the verify-path `RuleResult.surface` so the
+    # mobile report screen can highlight the captured image when the
+    # user taps a result.
+    surface: Mapped[str | None] = mapped_column(String(16), nullable=True)

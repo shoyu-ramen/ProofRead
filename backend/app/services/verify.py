@@ -32,8 +32,9 @@ calls for.
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -43,7 +44,6 @@ from app.rules.types import (
     CheckOutcome,
     ExtractionContext,
     RuleResult,
-    worse,
 )
 from app.services.adversarial import (
     detect_foreign_language,
@@ -53,6 +53,7 @@ from app.services.adversarial import (
 from app.services.health_warning_second_pass import (
     CrossCheckResult,
     HealthWarningExtractor,
+    ObstructionSignal,
     cross_check,
 )
 from app.services.sensor_check import (
@@ -76,15 +77,83 @@ logger = logging.getLogger(__name__)
 # more confident in the text than the frame allows.
 _QUALITY_RANK = {"good": 0, "degraded": 1, "unreadable": 2}
 
+# Process-wide pool reused across requests. Per-request `ThreadPoolExecutor`
+# allocation pays ~1–2 ms per worker for thread create + join; on a hot
+# verify endpoint that is wasted overhead the singleton avoids. Sized for
+# 4 panels × 2 extractors (primary + second-pass) × 4 concurrent requests
+# on a small Fly/Railway box. Lazy and lock-protected so two cold requests
+# can't each construct their own pool. `shutdown_pool()` is invoked from
+# the FastAPI lifespan so the workers exit cleanly on graceful restart.
+_POOL_MAX_WORKERS = 32
+_pool: ThreadPoolExecutor | None = None
+_pool_lock = threading.Lock()
+
+
+def _get_pool() -> ThreadPoolExecutor:
+    global _pool
+    if _pool is not None:
+        return _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = ThreadPoolExecutor(
+                max_workers=_POOL_MAX_WORKERS,
+                thread_name_prefix="verify-extractor",
+            )
+    return _pool
+
+
+def shutdown_pool() -> None:
+    """Tear down the singleton pool. Called from FastAPI lifespan exit so
+    the workers finish in-flight calls before the process exits. Safe to
+    call when the pool was never lazily constructed (no-op)."""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            _pool.shutdown(wait=False, cancel_futures=True)
+            _pool = None
+
+
+@dataclass
+class Panel:
+    """One label face submitted to the verify pipeline.
+
+    A bottle's TTB-relevant text is split across surfaces — brand on the
+    front, gov-warning usually on the back, name/address often on a neck
+    band — so a single capture can never read every required field on a
+    real product. The panel list is the unit the multi-panel verify path
+    iterates over: each panel runs through the sensor pre-check, the
+    primary extractor, and the redundant Government-Warning second-pass
+    independently, then their reads are merged field-by-field with
+    highest-confidence-wins (`_merge_panel_extractions`).
+    """
+
+    image_bytes: bytes
+    media_type: str
+
 
 @dataclass
 class VerifyInput:
+    # Legacy single-panel handles. Every request has at least this one
+    # face; multi-panel callers pass additional faces via `extra_panels`.
+    # Keeping the legacy names rather than collapsing into a `panels`
+    # list lets the dozens of existing tests in `tests/test_verify*.py`
+    # build inputs unchanged — `inp.panels` (the property below) is the
+    # uniform handle the verify pipeline reads.
     image_bytes: bytes
     media_type: str
     beverage_type: str
     container_size_ml: int
     is_imported: bool
     application: dict[str, Any]
+    # Additional panels in submission order. Empty for the single-shot
+    # path. Surface IDs in the merged extraction are `panel_0` (always
+    # the legacy `image_bytes`), `panel_1` for `extra_panels[0]`, etc.,
+    # so the UI can label which panel each extracted field came from.
+    extra_panels: list[Panel] = field(default_factory=list)
+
+    @property
+    def panels(self) -> list[Panel]:
+        return [Panel(self.image_bytes, self.media_type), *self.extra_panels]
 
 
 @dataclass
@@ -109,20 +178,20 @@ def _aggregate_overall(
     unreadable_fields: list[str],
     image_quality: str,
 ) -> str:
-    """Roll per-rule results up to a single user-facing verdict.
+    """Thin shim that delegates to the shared aggregator.
 
-    "unreadable" wins over everything: when the image is unreadable, the
-    rule engine's results don't reflect the actual label and any pass/fail
-    is a guess. Otherwise: FAIL > WARN > ADVISORY > PASS > NA.
+    Kept as a module-level callable so any external caller / test that
+    imported it directly keeps working — the canonical implementation
+    now lives in `app.rules.aggregation` so the verify and scan paths
+    can never drift on the empty-rule-list interpretation.
     """
-    if image_quality == "unreadable":
-        return "unreadable"
-    if not results and unreadable_fields:
-        return "unreadable"
-    worst = CheckOutcome.NA
-    for r in results:
-        worst = worse(worst, r.status)
-    return worst.value
+    from app.rules.aggregation import overall_status
+
+    return overall_status(
+        results,
+        image_quality=image_quality,
+        unreadable_fields=unreadable_fields,
+    )
 
 
 def verify(
@@ -153,40 +222,58 @@ def verify(
     cold path produced — the cache only ever returns what was once a
     fresh, fail-honestly run.
     """
+    from app.telemetry import current_trace_id, traced_span
+
     started = time.monotonic()
+    panels = inp.panels
 
     # Fast path. Compute the cache key as cheaply as possible so a miss
     # adds no measurable cost and a hit returns inside the 50 ms budget
     # the iterative-design workflow demands.
     cache_key: str | None = None
     if cache is not None:
-        rules_for_key = load_rules(beverage_type=inp.beverage_type)
-        cache_key = make_cache_key(
-            image_bytes=inp.image_bytes,
-            media_type=inp.media_type,
-            beverage_type=inp.beverage_type,
-            container_size_ml=inp.container_size_ml,
-            is_imported=inp.is_imported,
-            application=inp.application,
-            rules=rules_for_key,
-        )
-        cached = cache.get(cache_key)
+        with traced_span("verify.cache_lookup"):
+            rules_for_key = load_rules(beverage_type=inp.beverage_type)
+            cache_key = make_cache_key(
+                panels=[(p.image_bytes, p.media_type) for p in panels],
+                beverage_type=inp.beverage_type,
+                container_size_ml=inp.container_size_ml,
+                is_imported=inp.is_imported,
+                application=inp.application,
+                rules=rules_for_key,
+            )
+            cached = cache.get(cache_key)
         if cached is not None:
             elapsed_ms = int((time.monotonic() - started) * 1000)
             hit = restamp_report(cached, elapsed_ms)
             hit.cache_hit = True
+            from app.services import verify_stats
+
+            verify_stats.record_warm(
+                elapsed_ms=elapsed_ms, overall=hit.overall
+            )
+            logger.info(
+                "verify warm path=warm elapsed_ms=%d overall=%s trace_id=%s",
+                elapsed_ms,
+                hit.overall,
+                current_trace_id() or "-",
+            )
             return hit
 
-    # 1. Sensor pre-check — every byte goes through this first. Cheap, PIL
-    #    only, deterministic. The result is forwarded to the VLM and
-    #    merged into the final image_quality verdict pessimistically.
-    if skip_capture_quality:
-        capture = CaptureQualityReport(
-            surfaces=[], overall_verdict="good", overall_confidence=1.0
-        )
-    else:
-        capture = _safe_capture_quality(inp.image_bytes)
-    front = capture.surfaces[0] if capture.surfaces else None
+    # 1. Sensor pre-check — every panel goes through this first. The
+    #    `assess_capture_quality` API is already multi-surface; we feed
+    #    it `{panel_0: bytes, panel_1: bytes, …}` and it returns a
+    #    pessimistic overall verdict ("unreadable" if any panel is
+    #    unreadable) plus per-surface metrics. The merged verdict drives
+    #    the same fail-honestly short-circuit the single-shot path used.
+    with traced_span("verify.sensor_check"):
+        if skip_capture_quality:
+            capture = CaptureQualityReport(
+                surfaces=[], overall_verdict="good", overall_confidence=1.0
+            )
+        else:
+            capture = _safe_capture_quality_multi(panels)
+        surfaces_by_panel = _surfaces_by_panel_index(capture, len(panels))
 
     rules = load_rules(beverage_type=inp.beverage_type)
     if not rules:
@@ -222,50 +309,68 @@ def verify(
     if not isinstance(producer_record, dict):
         producer_record = None
 
-    # Reduce the bytes we send to the model. Two compounding wins:
+    # Reduce the bytes we send to the model. Two compounding wins per
+    # panel:
     #   1. Crop to the detected label region when one was localized — the
     #      model isn't billed to look at the user's hand or the bar wall.
-    #   2. Cap the long edge at TARGET_LONG_EDGE (≈1568 px). Anthropic
-    #      auto-resizes anything larger to that limit on its side anyway,
-    #      so pre-resizing is free quality-wise and saves wire bytes +
-    #      Anthropic's resize step. Re-encoding to JPEG-85 cuts upload
-    #      size further with no perceptible OCR loss at this resolution.
+    #   2. Cap the long edge at TARGET_LONG_EDGE. Anthropic auto-resizes
+    #      anything larger to that limit on its side anyway, so pre-
+    #      resizing is free quality-wise and saves wire bytes.
     # When normalisation cropped, we suppress the per-region sensor
-    # briefing (its coordinates no longer match what the model sees) and
-    # translate any returned bboxes back to original-image space.
-    normalized = _normalize_for_vision(inp.image_bytes, capture)
-    image_bytes_for_model = normalized.bytes
-    media_type_for_model = normalized.media_type
-    capture_for_briefing = None if normalized.cropped else capture
+    # briefing for that panel (its coordinates no longer match what the
+    # model sees) and translate any returned bboxes back to that panel's
+    # original-image space.
+    normalized_panels = [
+        _normalize_for_vision(p.image_bytes, capture, surface_index=i)
+        for i, p in enumerate(panels)
+    ]
 
-    # Primary extraction + redundant Government-Warning second-pass run
-    # concurrently. Both are blocking HTTP calls to Anthropic, so a thread
-    # pool is the simplest way to overlap their wall-clock cost — the
-    # second pass becomes effectively free in latency terms (it finishes
-    # well before the larger primary call) while still giving us the
-    # independent read SPEC §0.5 mandates. A second-pass failure (timeout,
-    # rate-limit, malformed JSON) is logged and the verdict falls back to
-    # primary-only, identical to the previous serial behaviour.
-    extraction, second_warning_read = _run_extractors_concurrently(
-        extractor=extractor,
-        health_warning_reader=health_warning_reader,
-        image_bytes=image_bytes_for_model,
-        media_type=media_type_for_model,
-        capture=capture_for_briefing,
-        producer_record=producer_record,
-        beverage_type=inp.beverage_type,
-        container_size_ml=inp.container_size_ml,
-        is_imported=inp.is_imported,
-    )
+    # Per-panel primary extraction + redundant Government-Warning second-
+    # pass, all concurrent in one thread pool. With N panels and second-
+    # pass enabled, this dispatches up to 2N blocking HTTP calls so wall-
+    # clock is bounded by the slowest individual call rather than the
+    # serial sum. The second pass becomes effectively free in latency
+    # terms (the smaller model finishes well before the primary) while
+    # still giving us the independent read SPEC §0.5 mandates.
+    with traced_span("verify.extractors", panel_count=len(panels)):
+        per_panel_primary, per_panel_secondary = _run_extractors_concurrently(
+            extractor=extractor,
+            health_warning_reader=health_warning_reader,
+            panels=normalized_panels,
+            capture=capture,
+            producer_record=producer_record,
+            beverage_type=inp.beverage_type,
+            container_size_ml=inp.container_size_ml,
+            is_imported=inp.is_imported,
+        )
 
-    if normalized.cropped:
-        _translate_extraction_bboxes(extraction, normalized.offset)
+    # Merge per-panel reads field-by-field, highest-confidence-wins, and
+    # tag each merged field's `source_image_id` with the panel it came
+    # from so the UI can render "Brand — front" / "Warning — back".
+    extraction = _merge_panel_extractions(per_panel_primary)
 
-    # Cap field confidence at the surface confidence. The model can only be
-    # as confident in a reading as the frame it came from supports.
-    if front is not None:
-        for f in extraction.fields.values():
-            f.confidence = round(min(f.confidence, front.confidence), 3)
+    # Translate bboxes back to each panel's original-upload coordinates
+    # using that panel's crop offset. The merged extraction's
+    # source_image_id ("panel_N") tells us which panel's offset to apply.
+    _translate_merged_bboxes(extraction, normalized_panels)
+
+    # Cap field confidence at the source panel's surface confidence. The
+    # model can only be as confident in a reading as the frame it came
+    # from supports — and "the frame" is now per-panel, not a single
+    # `front`. Fields whose source panel had no surface (skip_capture_
+    # quality path) keep their raw confidence.
+    for f in extraction.fields.values():
+        idx = _panel_index_from_source(f.source_image_id)
+        surface = surfaces_by_panel.get(idx) if idx is not None else None
+        if surface is not None:
+            f.confidence = round(min(f.confidence, surface.confidence), 3)
+
+    # Pick the strongest second-pass read across all panels. The warning
+    # is usually on the back; running second-pass on every panel and
+    # picking the highest-confidence found read means we don't have to
+    # know in advance which panel carries it.
+    second_warning_read = _pick_best_secondary_warning(per_panel_secondary)
+    front = surfaces_by_panel.get(0)
 
     # Adversarial-input guards (SPEC §0.5). Foreign-language labels are
     # OUT of scope for v1 — refuse with a clear message rather than
@@ -275,6 +380,26 @@ def verify(
     foreign_language = detect_foreign_language(
         *(f.value for f in extraction.fields.values()),
     )
+    # Recall guard for the warning: when the warning is hidden by glare,
+    # the primary extractor's other fields are often sparse (label crop
+    # focused on the back, fine-print obscured) and the foreign-language
+    # heuristic fires on too few English keywords. The second-pass reader
+    # is an independent signal — if it saw any warning text, OR even saw
+    # the warning region, the label is plausibly English-with-obstruction
+    # and we'd rather refuse the foreign-language shortcut so the
+    # cross-check + ADVISORY downgrade can do their job. The cost of a
+    # false suppress is one extra rule-engine pass on a Spanish label
+    # (which the warning rule will FAIL on anyway); the cost of a false
+    # foreign-language is a confident "unreadable" verdict on a glared
+    # English label, which is exactly the recall miss we are paying off.
+    if foreign_language is not None and _warning_signals_english(
+        second_warning_read, getattr(extraction, "image_quality_notes", None)
+    ):
+        logger.debug(
+            "Suppressing foreign-language guard: warning signals indicate "
+            "English label with obstruction"
+        )
+        foreign_language = None
     # Reuse the sensor pre-check's capture-source classification rather than
     # re-decoding the image to inspect EXIF a second time. `front` is None
     # only when `skip_capture_quality=True`, which already implies the caller
@@ -337,8 +462,9 @@ def verify(
         unreadable_fields=list(extraction.unreadable),
     )
 
-    engine = RuleEngine(rules)
-    rule_results = engine.evaluate(ctx)
+    with traced_span("verify.rule_engine", n_rules=len(rules)):
+        engine = RuleEngine(rules)
+        rule_results = engine.evaluate(ctx)
 
     if image_quality in {"degraded", "unreadable"}:
         rule_results = _downgrade_fails_for_unreadable_surface(
@@ -351,13 +477,35 @@ def verify(
     #    the warning rule to advisory — confident-wrong is the failure
     #    mode we refuse to ship. Agreement leaves the engine's verdict
     #    intact, with both reads supporting it.
+    #
+    #    The obstruction signal comes from the sensor pre-check (any
+    #    panel's glare blobs, motion blur, or degraded label region) and
+    #    lets the cross-check refuse a confident "missing warning"
+    #    verdict whenever the warning could plausibly be hidden — recall
+    #    on the warning is load-bearing for SPEC §0.5.
+    obstruction = _build_obstruction_signal(capture)
     cross_check_result: CrossCheckResult | None = None
     if second_warning_read is not None:
         primary_warning = _primary_warning_read(extraction, ctx)
-        cross_check_result = cross_check(primary_warning, second_warning_read)
+        cross_check_result = cross_check(
+            primary_warning,
+            second_warning_read,
+            obstruction_signal=obstruction,
+        )
         rule_results = _apply_warning_cross_check(
             rule_results, cross_check_result, inp.beverage_type
         )
+
+    # Backstop for the no-second-pass path (and for any second-pass path
+    # whose cross_check left the engine's "missing warning" FAIL alone):
+    # when the engine's verdict is "warning missing" but the capture
+    # report shows obstruction over the label, downgrade to ADVISORY.
+    # The same recall principle that drives the cross-check applies even
+    # when only one reader ran — we cannot claim the warning is missing
+    # if glare could be hiding it.
+    rule_results = _downgrade_missing_warning_under_obstruction(
+        rule_results, ctx, obstruction
+    )
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
@@ -368,6 +516,7 @@ def verify(
             "confidence": ef.confidence,
             "bbox": list(ef.bbox) if ef.bbox else None,
             "unreadable": name in ctx.unreadable_fields,
+            "source_image_id": ef.source_image_id,
         }
     for name in extraction.unreadable:
         extracted_summary[name] = {
@@ -375,6 +524,7 @@ def verify(
             "confidence": 0.0,
             "bbox": None,
             "unreadable": True,
+            "source_image_id": None,
         }
 
     return _finalize(
@@ -440,7 +590,10 @@ class _NormalizedImage:
 
 
 def _normalize_for_vision(
-    image_bytes: bytes, capture: CaptureQualityReport
+    image_bytes: bytes,
+    capture: CaptureQualityReport,
+    *,
+    surface_index: int = 0,
 ) -> _NormalizedImage:
     """Crop + downscale + re-encode the upload before the model sees it.
 
@@ -460,6 +613,10 @@ def _normalize_for_vision(
         often beats JPEG, and uploading the larger output would slow the
         request rather than speed it up.
 
+    `surface_index` is the position of this panel inside `capture.surfaces`.
+    The crop bbox is read from the matching surface so a back-panel call
+    uses the back panel's detected label region instead of the front's.
+
     Any failure (decode error, no bbox, edge case) returns the original
     bytes unchanged — normalisation is a *speed* optimisation, never a
     correctness path.
@@ -475,7 +632,7 @@ def _normalize_for_vision(
         logger.debug("Vision normalisation skipped — decode failed: %s", exc)
         return _passthrough(image_bytes)
 
-    crop_box, offset = _label_crop_box(capture, img.size)
+    crop_box, offset = _label_crop_box(capture, img.size, surface_index=surface_index)
     cropped = False
     if crop_box is not None:
         try:
@@ -545,15 +702,18 @@ def _passthrough(image_bytes: bytes) -> _NormalizedImage:
 
 
 def _label_crop_box(
-    capture: CaptureQualityReport, image_size: tuple[int, int]
+    capture: CaptureQualityReport,
+    image_size: tuple[int, int],
+    *,
+    surface_index: int = 0,
 ) -> tuple[tuple[int, int, int, int] | None, tuple[int, int]]:
     """Return `((x0, y0, x1, y1), (dx, dy))` for the label crop, or
     `(None, (0, 0))` when cropping wouldn't help.
     """
-    if not capture.surfaces:
+    if not capture.surfaces or surface_index >= len(capture.surfaces):
         return None, (0, 0)
-    front = capture.surfaces[0]
-    bbox = front.label_bbox
+    surface = capture.surfaces[surface_index]
+    bbox = surface.label_bbox
     if bbox is None:
         return None, (0, 0)
     frame_w, frame_h = image_size
@@ -577,24 +737,35 @@ def _label_crop_box(
     return (x0, y0, x1, y1), (x0, y0)
 
 
-def _translate_extraction_bboxes(
-    extraction: Any, offset: tuple[int, int]
+def _translate_merged_bboxes(
+    extraction: Any, normalized_panels: list[_NormalizedImage]
 ) -> None:
-    """Map model-returned bboxes back to original-image space.
+    """Map merged-extraction bboxes back to each source panel's original
+    coordinates.
 
-    The model worked from a (cropped, resized) image. Its bboxes come back
-    in that frame's pixel coordinates, but downstream consumers (the API
-    response, future UI overlays) expect coordinates relative to the
-    original upload. Adding the crop offset is approximate after the
-    resize step — it's accurate to within the resize ratio, which is more
-    than precise enough for highlight rendering. If we ever need exact
-    pre-resize coordinates we'll need to also scale by the resize ratio.
+    The merged extraction's `source_image_id` is `panel_N`; we look up
+    that panel's normalisation offset (`(dx, dy)` from the crop step)
+    and add it to the bbox to put coordinates back in the panel's
+    original-upload space. Each panel has its own coordinate system —
+    a back-panel bbox is relative to the back image, not the front.
+    The UI uses `source_image_id` to know which panel image to overlay.
+
+    Adding the crop offset is approximate after the resize step — it's
+    accurate to within the resize ratio, which is more than precise
+    enough for highlight rendering. Fields whose `source_image_id` we
+    can't resolve (unknown shape, no matching panel) are left alone.
     """
-    dx, dy = offset
-    if dx == 0 and dy == 0:
-        return
     for ef in extraction.fields.values():
         if ef.bbox is None:
+            continue
+        idx = _panel_index_from_source(ef.source_image_id)
+        if idx is None or idx >= len(normalized_panels):
+            continue
+        norm = normalized_panels[idx]
+        if not norm.cropped:
+            continue
+        dx, dy = norm.offset
+        if dx == 0 and dy == 0:
             continue
         x, y, w, h = ef.bbox
         ef.bbox = (x + dx, y + dy, w, h)
@@ -616,31 +787,42 @@ def _run_extractors_concurrently(
     *,
     extractor: VisionExtractor,
     health_warning_reader: HealthWarningExtractor | None,
-    image_bytes: bytes,
-    media_type: str,
+    panels: list[_NormalizedImage],
     capture: CaptureQualityReport | None,
     producer_record: dict[str, Any] | None,
     beverage_type: str,
     container_size_ml: int,
     is_imported: bool,
 ):
-    """Dispatch the primary extractor and the optional second-pass reader on
-    independent threads so their wall-clock cost overlaps.
+    """Dispatch primary + optional second-pass for every panel concurrently.
 
-    Returns `(primary_extraction, second_warning_read | None)`.
+    Returns `(primary_extractions_per_panel, secondary_reads_per_panel)`,
+    each list aligned to `panels` order. With N panels and second-pass
+    enabled, this dispatches up to 2N HTTP calls in one thread pool so
+    wall-clock is bounded by the slowest call rather than the serial sum.
 
     The primary extractor's failure propagates — the verify path cannot
     serve a verdict without it. The second-pass reader's failure is logged
     and swallowed: the cross-check tolerates a missing secondary by leaving
     the engine's verdict alone, which is the same behaviour the previous
-    serial path had.
+    serial path had. Per-panel briefing suppression: when normalisation
+    cropped a panel, the sensor briefing for *that panel* would point at
+    the wrong region, so we strip the briefing for cropped panels and
+    keep it for uncropped ones.
     """
-    capture_kwarg = capture if (capture is not None and capture.surfaces) else None
 
-    def _primary():
+    def _primary_for_panel(panel_idx: int):
+        norm = panels[panel_idx]
+        # Cropped panels must drop the briefing — its label-bbox and
+        # glare-blob coordinates are in the original frame, not the crop.
+        # Uncropped panels keep the briefing so the model still gets
+        # the sensor signal it can act on.
+        capture_kwarg = (
+            capture if (capture is not None and capture.surfaces and not norm.cropped) else None
+        )
         return extractor.extract(
-            image_bytes,
-            media_type=media_type,
+            norm.bytes,
+            media_type=norm.media_type,
             capture_quality=capture_kwarg,
             producer_record=producer_record,
             beverage_type=beverage_type,
@@ -648,80 +830,141 @@ def _run_extractors_concurrently(
             is_imported=is_imported,
         )
 
-    def _secondary():
+    def _secondary_for_panel(panel_idx: int, abort: threading.Event):
         if health_warning_reader is None:
             return None
+        # Fast-cancel hatch: if the primary already failed, the request is
+        # toast — don't burn the secondary's HTTP budget on a verdict the
+        # caller will never see. Checked at function entry; the in-flight
+        # call itself can't be cooperatively interrupted, so we accept
+        # that calls already past this gate run to completion.
+        if abort.is_set():
+            return None
+        from app.services import verify_stats
+
+        norm = panels[panel_idx]
         try:
-            return health_warning_reader.read_warning(
-                image_bytes, media_type=media_type
+            read = health_warning_reader.read_warning(
+                norm.bytes, media_type=norm.media_type
             )
         except Exception as exc:
-            # Same swallow-and-log behaviour as the prior serial path —
-            # the cross-check tolerates a None secondary read.
+            outcome = verify_stats.classify_second_pass_exception(exc)
+            verify_stats.record_second_pass(outcome)
             logger.warning(
-                "Health-warning second-pass failed; falling back to "
-                "primary-only verdict: %s",
+                "Health-warning second-pass failed on panel %d (%s/%s); "
+                "falling back to primary-only on this panel: %s",
+                panel_idx,
+                outcome,
+                type(exc).__name__,
                 exc,
             )
+            # Surface to Sentry so a rate-limit / connection-error spike
+            # is visible in the dashboard. No-op when Sentry is not
+            # initialized; tags scope the breadcrumb to second-pass calls.
+            from app.telemetry import capture_exception
+
+            capture_exception(
+                exc, outcome=outcome, component="health_warning_second_pass"
+            )
             return None
+        verify_stats.record_second_pass("success")
+        return read
 
-    # max_workers=2 is the upper bound we ever need (one primary + one
-    # secondary). Building the pool inline keeps thread lifetimes scoped
-    # to a single request — no shared state survives the call.
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        primary_future = pool.submit(_primary)
-        secondary_future = (
-            pool.submit(_secondary) if health_warning_reader is not None else None
-        )
-        # Resolve the primary first: any extractor exception (including
-        # ExtractorUnavailable from the chain) must surface to the caller
-        # before we even look at the secondary.
-        primary_result = primary_future.result()
-        secondary_result = (
-            secondary_future.result() if secondary_future is not None else None
-        )
-    return primary_result, secondary_result
+    n = len(panels)
+    pool = _get_pool()
+
+    # Submit all primaries first so they start in parallel. Secondaries are
+    # gated on a shared abort event — when any primary raises we set the
+    # event so still-queued secondaries return None immediately rather than
+    # making a doomed HTTP call.
+    abort = threading.Event()
+    primary_futures = [pool.submit(_primary_for_panel, i) for i in range(n)]
+    secondary_futures: list = (
+        [pool.submit(_secondary_for_panel, i, abort) for i in range(n)]
+        if health_warning_reader is not None
+        else [None] * n
+    )
+
+    # FIRST_EXCEPTION semantics: as soon as any primary raises, bail. This
+    # prevents a fast-failing primary (rate-limit, network) from being
+    # blocked on the slower secondary's 8 s timeout.
+    done, _pending = wait(primary_futures, return_when=FIRST_EXCEPTION)
+    failed = next((f for f in done if f.exception() is not None), None)
+    if failed is not None:
+        # Cancel still-queued primaries (already-running ones can't be
+        # interrupted; their results are discarded). Set the abort event
+        # so still-queued secondaries return None immediately.
+        for f in primary_futures:
+            f.cancel()
+        for f in secondary_futures:
+            if f is not None:
+                f.cancel()
+        abort.set()
+        raise failed.exception()  # type: ignore[misc]
+
+    # All primaries succeeded — drain the secondaries the same way the
+    # serial path would have.
+    primary_results = [f.result() for f in primary_futures]
+    secondary_results = [
+        (f.result() if f is not None else None) for f in secondary_futures
+    ]
+    return primary_results, secondary_results
 
 
-def _finalize(
-    report: VerifyReport,
-    *,
-    cache: VerifyCache | None,
-    cache_key: str | None,
-) -> VerifyReport:
-    """Single seam where cold-path results land in the cache.
+def _surfaces_by_panel_index(
+    capture: CaptureQualityReport, panel_count: int
+) -> dict[int, SurfaceCaptureQuality]:
+    """Map panel index → the sensor surface for that panel.
 
-    Every cold-path return funnels through here so the three exit points
-    (sensor-unreadable short-circuit, foreign-language short-circuit,
-    full-success) cache identically. `cache_hit` is left at its dataclass
-    default of False — the *next* request that resolves to a hit will
-    flip it via `restamp_report` + assignment in the fast path.
+    The pre-check is fed `{panel_0: ..., panel_1: ...}` so each surface's
+    `surface` attribute is the panel id. Tolerates the skip-capture-
+    quality path (empty surfaces list) by returning an empty mapping —
+    callers default-on-miss when they look up a missing index.
     """
-    if cache is not None and cache_key is not None:
-        cache.put(cache_key, report)
-    return report
+    out: dict[int, SurfaceCaptureQuality] = {}
+    for s in capture.surfaces:
+        idx = _panel_index_from_source(s.surface)
+        if idx is not None and 0 <= idx < panel_count:
+            out[idx] = s
+    return out
 
 
-def _safe_capture_quality(image_bytes: bytes) -> CaptureQualityReport:
-    """Run the sensor pre-check; never let it crash the verify path.
+def _panel_index_from_source(source: str | None) -> int | None:
+    """Extract `N` from `panel_N` (or return None for any other shape).
 
-    A failure inside the pre-check (e.g. unsupported format) shouldn't take
-    the whole request down. Surface it as a "degraded" verdict so the rest
-    of the path still runs but the report carries an honest unknown.
-
-    Decode-only failures (no surface produced any pixels) are likewise
-    downgraded to "degraded" — without any pre-check signal we have no
-    basis to short-circuit before the extractor has a chance to run. The
-    rule engine remains responsible for flagging genuinely unreadable
-    extractions via its own confidence-based downgrades.
+    Defensive against the pre-multi-panel surface ids ("front", "back")
+    and against extractors that set their own `source_image_id` — those
+    just don't get surface-confidence capping or bbox translation.
     """
+    if not source or not source.startswith("panel_"):
+        return None
     try:
-        report = assess_capture_quality({"front": image_bytes})
+        return int(source[len("panel_"):])
+    except ValueError:
+        return None
+
+
+def _safe_capture_quality_multi(panels: list[Panel]) -> CaptureQualityReport:
+    """Run the multi-surface sensor pre-check; tolerate failures the same
+    way the single-image path did.
+
+    Surface ids are `panel_0`, `panel_1`, … so downstream code can map
+    a surface back to its panel by parsing the id. A failure inside the
+    pre-check is downgraded to "degraded" rather than killing the
+    request — the rule engine's own confidence-aware degradation
+    catches genuinely unreadable extractions.
+    """
+    if not panels:
+        return CaptureQualityReport(
+            surfaces=[], overall_verdict="degraded", overall_confidence=0.0
+        )
+    images = {f"panel_{i}": p.image_bytes for i, p in enumerate(panels)}
+    try:
+        report = assess_capture_quality(images)
     except Exception:
         return CaptureQualityReport(
             surfaces=[], overall_verdict="degraded", overall_confidence=0.0
         )
-    # All surfaces failed at decode time → no signal, not "unreadable".
     if report.surfaces and all(
         s.verdict == "unreadable" and s.metrics.megapixels == 0.0
         for s in report.surfaces
@@ -731,6 +974,185 @@ def _safe_capture_quality(image_bytes: bytes) -> CaptureQualityReport:
             overall_verdict="degraded",
             overall_confidence=0.0,
         )
+    return report
+
+
+def _merge_panel_extractions(
+    per_panel: list[Any],
+) -> Any:
+    """Merge per-panel `VisionExtraction`s into a single extraction.
+
+    Field-by-field: highest-confidence wins. The winning field's
+    `source_image_id` is rewritten to `panel_<index>` so the response
+    can label which panel each value came from.
+
+    `unreadable` reports per-field whether the field was not found on
+    *any* panel — a field that any panel read successfully is no longer
+    "unreadable" overall, since we have a value for it. Otherwise the
+    intersection of unreadable lists shows which fields nothing on the
+    bottle covered.
+
+    Top-level signals (`image_quality`, `image_quality_notes`,
+    `beverage_type_observed`) are aggregated:
+      * image_quality → worst across panels (pessimistic, same rationale
+        as `_worse_quality`).
+      * image_quality_notes → concatenated with panel labels so the user
+        sees per-panel diagnostics.
+      * beverage_type_observed → the strongest non-`unknown` consensus,
+        else `unknown`. Disagreement is recorded in image_quality_notes
+        upstream by the model itself.
+    """
+    from app.services.vision import VisionExtraction
+    from dataclasses import replace as dc_replace
+
+    if not per_panel:
+        return VisionExtraction(
+            fields={}, unreadable=[], raw_response="", image_quality=None
+        )
+    if len(per_panel) == 1:
+        # Single-panel call: just retag the source_image_id to panel_0
+        # for consistency with the multi-panel response shape.
+        single = per_panel[0]
+        retagged = {
+            name: dc_replace(f, source_image_id="panel_0")
+            for name, f in single.fields.items()
+        }
+        return VisionExtraction(
+            fields=retagged,
+            unreadable=list(single.unreadable),
+            raw_response=single.raw_response,
+            image_quality=single.image_quality,
+            image_quality_notes=single.image_quality_notes,
+            beverage_type_observed=single.beverage_type_observed,
+        )
+
+    merged_fields: dict[str, Any] = {}
+    unreadable_per_field: dict[str, int] = {}
+    for idx, ex in enumerate(per_panel):
+        for name, f in ex.fields.items():
+            tagged = dc_replace(f, source_image_id=f"panel_{idx}")
+            existing = merged_fields.get(name)
+            if existing is None or tagged.confidence > existing.confidence:
+                merged_fields[name] = tagged
+        for name in ex.unreadable:
+            unreadable_per_field[name] = unreadable_per_field.get(name, 0) + 1
+
+    # Only fields that NO panel produced a value for stay unreadable.
+    final_unreadable = [
+        name for name in unreadable_per_field if name not in merged_fields
+    ]
+
+    # Worst image_quality across panels.
+    qualities = [e.image_quality for e in per_panel if e.image_quality]
+    if qualities:
+        worst = qualities[0]
+        for q in qualities[1:]:
+            worst = _worse_quality(worst, q)
+        merged_quality: str | None = worst
+    else:
+        merged_quality = None
+
+    # Per-panel notes get a "[panel N] " prefix so the user can tell which
+    # diagnosis applies to which face. Empty notes drop out.
+    note_parts: list[str] = []
+    for idx, ex in enumerate(per_panel):
+        if ex.image_quality_notes:
+            note_parts.append(f"[panel {idx}] {ex.image_quality_notes}")
+    merged_notes = " | ".join(note_parts) if note_parts else None
+
+    # Bev consensus: pick the most common non-"unknown" reading.
+    seen: dict[str, int] = {}
+    for ex in per_panel:
+        bev = ex.beverage_type_observed
+        if bev and bev != "unknown":
+            seen[bev] = seen.get(bev, 0) + 1
+    if seen:
+        merged_bev = max(seen.items(), key=lambda kv: kv[1])[0]
+    else:
+        merged_bev = "unknown"
+
+    return VisionExtraction(
+        fields=merged_fields,
+        unreadable=final_unreadable,
+        raw_response="",  # per-panel raw payloads are large; debug via logs
+        image_quality=merged_quality,
+        image_quality_notes=merged_notes,
+        beverage_type_observed=merged_bev,
+    )
+
+
+def _pick_best_secondary_warning(
+    per_panel_secondary: list[Any],
+) -> Any:
+    """Select the strongest second-pass warning read across panels.
+
+    Preference order:
+      1. A read with `found=True` and the highest confidence — this is
+         the best we have on what the warning actually says.
+      2. A read with `found=False` (the model looked, didn't see one) —
+         indicates the warning isn't on any panel, which the cross-check
+         can use to leave the engine's "missing warning" verdict alone.
+      3. `None` — every second-pass call failed or was disabled.
+
+    Single-panel: returns that panel's read unchanged. Multi-panel: lets
+    us run the second-pass on every panel concurrently without having
+    to know in advance which one carries the warning.
+    """
+    if not per_panel_secondary:
+        return None
+    found_reads = [r for r in per_panel_secondary if r is not None and getattr(r, "found", False)]
+    if found_reads:
+        return max(found_reads, key=lambda r: getattr(r, "confidence", 0.0))
+    not_found_reads = [r for r in per_panel_secondary if r is not None]
+    if not_found_reads:
+        return not_found_reads[0]
+    return None
+
+
+def _finalize(
+    report: VerifyReport,
+    *,
+    cache: VerifyCache | None,
+    cache_key: str | None,
+    extractor_label: str = "primary",
+) -> VerifyReport:
+    """Single seam where cold-path results land in the cache + observability.
+
+    Every cold-path return funnels through here so the three exit points
+    (sensor-unreadable short-circuit, foreign-language short-circuit,
+    full-success) cache identically AND emit one structured log line +
+    one stats bump. `cache_hit` is left at its dataclass default of False
+    — the *next* request that resolves to a hit will flip it via
+    `restamp_report` + assignment in the fast path.
+    """
+    if cache is not None and cache_key is not None:
+        cache.put(cache_key, report)
+
+    # Stats + structured log. Kept inside _finalize so every cold exit
+    # (full-success, foreign-language refusal, sensor-unreadable
+    # short-circuit) records identically without forcing every caller
+    # to remember to bump.
+    from app.services import verify_stats
+    from app.telemetry import current_trace_id
+
+    verify_stats.record_cold(elapsed_ms=report.elapsed_ms, overall=report.overall)
+    cross_check_outcome = (
+        report.health_warning_cross_check.get("outcome")
+        if isinstance(report.health_warning_cross_check, dict)
+        else None
+    )
+    logger.info(
+        "verify cold path=cold elapsed_ms=%d overall=%s image_quality=%s "
+        "cross_check=%s extractor=%s n_rules=%d n_unreadable=%d trace_id=%s",
+        report.elapsed_ms,
+        report.overall,
+        report.image_quality,
+        cross_check_outcome,
+        extractor_label,
+        len(report.rule_results),
+        len(report.unreadable_fields),
+        current_trace_id() or "-",
+    )
     return report
 
 
@@ -804,7 +1226,17 @@ def _unreadable_rule_results(rules: list) -> list[RuleResult]:
 
 
 def _primary_warning_read(extraction: Any, ctx: ExtractionContext):
-    """Pack the primary extractor's health-warning reading as a WarningRead."""
+    """Pack the primary extractor's health-warning reading as a WarningRead.
+
+    Infers `region_visible` from the model's image_quality_notes: when the
+    notes mention a glared/obscured warning region, we treat that as a
+    region_visible=true signal even though the field came back unreadable.
+    The primary extractor doesn't have a structured `region_visible`
+    field (its schema covers seven fields and complicating it costs
+    latency on every label), so we lift the signal out of free text.
+    Anything matching `warning` near `glar(e|ed)`, `obscur`, `washed`,
+    `cover`, or `hidden` counts.
+    """
     from app.services.health_warning_second_pass import WarningRead
 
     field_obj = ctx.fields.get("health_warning")
@@ -814,20 +1246,79 @@ def _primary_warning_read(extraction: Any, ctx: ExtractionContext):
             found=True,
             confidence=field_obj.confidence,
             source="primary_extractor",
+            region_visible=True,
         )
-    if "health_warning" in (extraction.unreadable or []):
-        return WarningRead(
-            value=None,
-            found=False,
-            confidence=0.0,
-            source="primary_extractor",
-        )
+    region_visible = _primary_notes_indicate_warning_obstruction(
+        getattr(extraction, "image_quality_notes", None)
+    )
     return WarningRead(
         value=None,
         found=False,
         confidence=0.0,
         source="primary_extractor",
+        region_visible=region_visible,
     )
+
+
+def _warning_signals_english(
+    second_warning_read: Any | None, image_quality_notes: str | None
+) -> bool:
+    """Independent evidence that the label is English-with-obstruction
+    rather than foreign-language.
+
+    The foreign-language guard fires when the primary's extracted text
+    is too sparse to confirm English vocabulary — but a glared warning
+    is exactly the case where the primary's text WILL be sparse (other
+    fields readable, the warning paragraph blocked by glare). Without
+    this suppression, every glared English label gets flagged as
+    foreign-language and the cross-check never runs.
+
+    Strong-evidence signals (any one suppresses the guard):
+      * second-pass found warning text (anything from a fragment up to
+        the full canonical text) — recognizable English compliance
+        vocabulary by definition
+      * second-pass set region_visible=true — the model recognized a
+        warning-shaped block on the label, which is uniquely English
+        (Spanish/French/German labels have their own native warnings)
+      * primary's image_quality_notes mention a glared/obscured warning
+        region — same signal, lifted from free text
+    """
+    if second_warning_read is not None:
+        if getattr(second_warning_read, "found", False):
+            return True
+        if getattr(second_warning_read, "region_visible", False):
+            return True
+    if _primary_notes_indicate_warning_obstruction(image_quality_notes):
+        return True
+    return False
+
+
+def _primary_notes_indicate_warning_obstruction(notes: str | None) -> bool:
+    """True when the primary extractor's free-text notes describe an
+    obstructed warning region.
+
+    Conservative pattern: a sentence/clause must mention a warning concept
+    AND an obstruction concept. This avoids the false-positive where the
+    notes say "warning region clear; brand glared" — that's the brand
+    that's glared, not the warning.
+    """
+    if not notes:
+        return False
+    import re as _re
+    lowered = notes.lower()
+    if "warning" not in lowered and "fine print" not in lowered:
+        return False
+    obstruction_terms = (
+        r"glar(e|ed|ing)|obscur|washed|cover(?:ed|ing)?|"
+        r"hidden|specular|saturat|smudg|illegible|unreadab"
+    )
+    # Look for an obstruction term within 60 characters of "warning" /
+    # "fine print" — same clause, in the noise-prose of a one-line note.
+    for m in _re.finditer(r"warning|fine print", lowered):
+        window = lowered[max(0, m.start() - 60) : m.end() + 60]
+        if _re.search(obstruction_terms, window):
+            return True
+    return False
 
 
 def _apply_warning_cross_check(
@@ -844,10 +1335,13 @@ def _apply_warning_cross_check(
         label's text is wrong; the verdict is well-supported)
       * disagreement → downgrade the warning rule to ADVISORY regardless
         of the engine's call — we couldn't verify, so we don't claim
+      * unverifiable_obstructed → downgrade to ADVISORY: the warning may
+        be hidden under glare/blur/occlusion, so a "missing warning" or
+        edit-distance FAIL would be a confident wrong-fail
       * primary_only / no_warning_present → leave the engine's call alone
     """
     target_id_substring = "health_warning"
-    if cc.outcome not in {"disagreement"}:
+    if cc.outcome not in {"disagreement", "unverifiable_obstructed"}:
         return results
 
     out: list[RuleResult] = []
@@ -866,10 +1360,155 @@ def _apply_warning_cross_check(
                     expected=r.expected,
                     fix_suggestion=r.fix_suggestion,
                     bbox=r.bbox,
+                    surface=r.surface,
                 )
             )
             continue
         out.append(r)
+    return out
+
+
+def _build_obstruction_signal(
+    capture: CaptureQualityReport,
+) -> ObstructionSignal:
+    """Translate the sensor pre-check into the cross-check's obstruction signal.
+
+    The warning is usually on the back panel and lives in fine-print at the
+    bottom or side of the label. Any of the following on ANY panel makes the
+    no-warning conclusion suspect — recall on the warning is load-bearing,
+    so we err on the side of "could be obstructed":
+
+      * label_verdict is degraded or unreadable on any panel
+      * glare blobs whose total area covers ≥ 5 % of the label region
+      * label-region glare fraction over the GLARE_DEGRADED threshold
+      * motion_blur_direction is set on a panel whose label is degraded
+
+    Each branch produces a human-readable reason that flows into the
+    cross-check's finding string so the agent UI can tell the user why
+    the rule is advisory rather than the dread "couldn't verify" stub.
+    """
+    from app.services.sensor_check import GLARE_DEGRADED
+
+    reasons: list[str] = []
+    for s in capture.surfaces:
+        panel_label = s.surface or "panel"
+        if s.label_verdict in {"degraded", "unreadable"}:
+            reasons.append(
+                f"{panel_label} label region grades '{s.label_verdict}'"
+            )
+        elif s.verdict in {"degraded", "unreadable"}:
+            # Frame-level degradation without a label-region verdict
+            # (no label localized) — still relevant: the glare/blur is
+            # SOMEWHERE in the frame and we couldn't isolate the label,
+            # so we cannot rule out obstruction over the warning.
+            reasons.append(
+                f"{panel_label} frame grades '{s.verdict}'"
+            )
+        if s.glare_blobs:
+            label_glare = sum(b.area_fraction_label for b in s.glare_blobs)
+            if label_glare >= 0.05:
+                reasons.append(
+                    f"{panel_label}: glare blobs cover "
+                    f"{label_glare * 100:.0f}% of the label region"
+                )
+        metrics_label = s.metrics_label
+        if (
+            metrics_label is not None
+            and metrics_label.glare_fraction > GLARE_DEGRADED
+        ):
+            reasons.append(
+                f"{panel_label} label region is "
+                f"{metrics_label.glare_fraction * 100:.0f}% saturated"
+            )
+        if s.motion_blur_direction and s.label_verdict in {"degraded", "unreadable"}:
+            reasons.append(
+                f"{panel_label}: {s.motion_blur_direction} motion blur over "
+                "the label"
+            )
+        if s.backlit:
+            reasons.append(f"{panel_label} is backlit (label silhouetted)")
+
+    if not reasons:
+        return ObstructionSignal.clear()
+    return ObstructionSignal(
+        is_obstructed=True,
+        # Deduplicate while preserving order — the same panel can produce
+        # multiple reasons (e.g. degraded AND glare AND backlit) and the
+        # agent UI doesn't need to see them stacked verbatim.
+        reason="; ".join(dict.fromkeys(reasons)),
+    )
+
+
+def _downgrade_missing_warning_under_obstruction(
+    results: list[RuleResult],
+    ctx: ExtractionContext,
+    obstruction: ObstructionSignal,
+) -> list[RuleResult]:
+    """Refuse to FAIL on a missing Government Warning when the capture
+    report shows obstruction over the label.
+
+    Backstops two paths the cross-check doesn't cover:
+
+      1. The no-second-pass path: when `verify()` is called without a
+         `health_warning_reader`, there is no cross-check at all — but the
+         engine can still FAIL on a missing warning if the primary
+         extractor produced no value, and that FAIL would be a confident
+         wrong-fail under glare just as surely.
+      2. Cross-check returned `no_warning_present` because both reads
+         said no-warning AND neither set region_visible AND there was
+         no obstruction signal at the cross-check level — but a frame-
+         level obstruction we computed AFTER the cross-check still
+         applies. (Defense in depth: the cross-check's obstruction-
+         signal path is the primary defense; this is the safety net.)
+
+    Recognizes a "warning missing" FAIL by:
+      * rule_id contains "health_warning"
+      * status is FAIL
+      * the health_warning field was unreadable / absent (i.e. the FAIL
+        is on missing text rather than on edit-distance against text we
+        actually read)
+
+    An edit-distance FAIL on actual text is NOT downgraded here: if we
+    read characters successfully and they don't match canonical, that's
+    a substantive non-compliance we want to surface. Only the "I see
+    nothing" branch becomes advisory under obstruction.
+    """
+    if not obstruction.is_obstructed:
+        return results
+    health_warning_field = ctx.fields.get("health_warning")
+    has_text = (
+        health_warning_field is not None
+        and health_warning_field.value
+        and health_warning_field.value.strip()
+    )
+    if has_text:
+        # The reader saw real text; an edit-distance FAIL on that text is
+        # still a substantive verdict. Don't downgrade.
+        return results
+
+    out: list[RuleResult] = []
+    for r in results:
+        if "health_warning" not in r.rule_id or r.status != CheckOutcome.FAIL:
+            out.append(r)
+            continue
+        out.append(
+            RuleResult(
+                rule_id=r.rule_id,
+                rule_version=r.rule_version,
+                citation=r.citation,
+                status=CheckOutcome.ADVISORY,
+                finding=(
+                    "Couldn't verify the Government Warning — the warning "
+                    "field came back empty, but the capture report shows "
+                    f"obstruction over the label ({obstruction.reason}). "
+                    "Reshoot before relying on this verdict."
+                ),
+                expected=r.expected,
+                fix_suggestion=r.fix_suggestion,
+                bbox=r.bbox,
+                surface=r.surface,
+            )
+        )
     return out
 
 
@@ -894,6 +1533,7 @@ def _serialize_warning_read(read: Any) -> dict[str, Any] | None:
         "found": read.found,
         "confidence": read.confidence,
         "source": read.source,
+        "region_visible": getattr(read, "region_visible", False),
     }
 
 
@@ -925,6 +1565,7 @@ def _downgrade_fails_for_unreadable_surface(
                 expected=r.expected,
                 fix_suggestion=r.fix_suggestion,
                 bbox=r.bbox,
+                surface=r.surface,
             )
         )
     return out
