@@ -64,6 +64,15 @@ export interface RuleResultDTO {
   expected: string | null;
   fix_suggestion: string | null;
   bbox: BBox | null;
+  // Which submission this rule's evidence came from. Two shapes ship
+  // depending on the endpoint:
+  //   - /v1/verify (web): "panel_0" / "panel_1" / … in submission order.
+  //   - /v1/scans/:id/report (mobile): "front" / "back" — the scan_image
+  //     surface name directly.
+  // `null` when the rule isn't tied to a specific extracted field.
+  // Use surfaceForPanel() to translate either shape into a local
+  // `Surface` slot.
+  surface?: string | null;
 }
 
 export interface FieldSummary {

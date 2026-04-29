@@ -25,7 +25,7 @@ import { BBoxOverlay, Button, StatusBadge } from '@src/components';
 import type { BBoxOverlayItem } from '@src/components';
 import { apiClient } from '@src/api/client';
 import { queryKeys } from '@src/state/queryClient';
-import { useScanStore } from '@src/state/scanStore';
+import { surfaceForPanel, useScanStore } from '@src/state/scanStore';
 import type { RuleResultDTO, Surface } from '@src/api/types';
 import { colors, radius, spacing, typography } from '@src/theme';
 
@@ -45,18 +45,26 @@ export default function CapturesPreviewScreen(): React.ReactElement {
     queryFn: () => apiClient.getReport(scanId),
   });
 
-  // Every rule with a bbox becomes a colored overlay item. Today the
-  // backend doesn't tell us which surface a bbox belongs to — same
-  // TODO(bbox-image-source) as rule detail. For now we draw every
-  // bboxed rule on whichever surface the user opened.
+  // Every rule with a bbox AND that maps to this capture becomes an
+  // overlay item. Backend rule_results carry a `surface` panel id
+  // (e.g. "panel_0"); surfaceForPanel maps it to a local capture slot
+  // and we keep only the matches. When `surface` is missing on the
+  // wire (scans.py is mid-rollout — verify.py emits the field today)
+  // the rule is treated as un-attributed and drawn on every capture
+  // the user opens, which preserves today's behavior. Once both
+  // endpoints ship the field, the un-attributed branch can go.
   const items = useMemo<BBoxOverlayItem[]>(() => {
     if (!data) return [];
     return data.rule_results
       .filter((r): r is RuleResultDTO & { bbox: NonNullable<RuleResultDTO['bbox']> } =>
         r.bbox !== null
       )
+      .filter((r) => {
+        const mapped = surfaceForPanel(r.surface);
+        return mapped === null || mapped === surface;
+      })
       .map((r) => ({ id: r.rule_id, bbox: r.bbox, status: r.status }));
-  }, [data]);
+  }, [data, surface]);
 
   if (!surface) {
     return (

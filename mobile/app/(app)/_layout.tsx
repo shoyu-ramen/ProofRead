@@ -25,7 +25,6 @@ export default function AuthenticatedLayout(): React.ReactElement {
       }}
     >
       <Stack.Screen name="home" options={{ title: 'ProofRead' }} />
-      <Stack.Screen name="history" options={{ title: 'History' }} />
       <Stack.Screen name="settings" options={{ title: 'Settings' }} />
 
       <Stack.Screen
