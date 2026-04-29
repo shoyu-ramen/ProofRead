@@ -14,7 +14,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.vision import ClaudeVisionExtractor, _parse_vision_response
+from app.services.vision import (
+    ClaudeVisionExtractor,
+    _parse_vision_response,
+)
 
 _VALID_RESPONSE = json.dumps(
     {
@@ -37,6 +40,14 @@ _VALID_RESPONSE = json.dumps(
 )
 
 
+def _response_namespace(scripted: str) -> SimpleNamespace:
+    """Pack a scripted JSON string into the same shape `messages.create`
+    returns: a list of content blocks the extractor concatenates."""
+    return SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=scripted)],
+    )
+
+
 class _FakeMessages:
     def __init__(self, scripted: str) -> None:
         self._scripted = scripted
@@ -44,9 +55,7 @@ class _FakeMessages:
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(
-            content=[SimpleNamespace(type="text", text=self._scripted)]
-        )
+        return _response_namespace(self._scripted)
 
 
 class _FakeClient:
@@ -62,23 +71,35 @@ def _png_bytes() -> bytes:
     )
 
 
-def test_extract_sends_adaptive_thinking_and_cached_system_prompt():
-    """Regression: /v1/verify must hit the model with adaptive thinking and
-    cache the system prompt. Dropping either is the silent kind of regression
-    that wouldn't show up in functional tests but would tank reasoning
-    quality on degraded labels."""
+def test_extract_sends_deterministic_call_with_cached_system_prompt():
+    """Regression: /v1/verify must hit the model with a cached system prompt
+    (so the static OCR instructions don't pay the prefix cost on every
+    request) and a deterministic temperature (so identical bytes produce
+    identical transcriptions, which the in-process verify cache and any
+    upstream cache tier rely on).
+
+    Adaptive thinking was intentionally removed: on a structured-JSON
+    transcription task the schema already disciplines the model, and the
+    end-to-end latency budget rewards a fast, deterministic single pass
+    plus the redundant Government-Warning second-pass running concurrently
+    in `verify()`.
+    """
     fake = _FakeClient(_VALID_RESPONSE)
-    extractor = ClaudeVisionExtractor(client=fake, model="claude-opus-4-7")
+    extractor = ClaudeVisionExtractor(client=fake, model="claude-sonnet-4-6")
 
     result = extractor.extract(_png_bytes(), media_type="image/png")
     assert "brand_name" in result.fields
 
     [call] = fake.messages.calls
-    assert call["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert "thinking" not in call, (
+        "Adaptive thinking was dropped from the verify-path extractor; the "
+        "presence of `thinking` here implies a regression that re-introduces "
+        "the latency it was removed to save."
+    )
+    assert call["temperature"] == 0.0
     [system_block] = call["system"]
     assert system_block["cache_control"] == {"type": "ephemeral"}
-    assert call["model"] == "claude-opus-4-7"
-    # max_tokens has to leave headroom for thinking on top of the JSON output.
+    assert call["model"] == "claude-sonnet-4-6"
     assert call["max_tokens"] >= 4096
 
 
@@ -94,11 +115,11 @@ def test_extract_attaches_image_with_correct_media_type():
     assert image_block["source"]["media_type"] == "image/jpeg"
 
 
-def test_extract_filters_thinking_blocks_from_response():
-    """When adaptive thinking is on, the SDK returns content blocks of type
-    'thinking' alongside the actual JSON 'text' block. The extractor must
-    only concatenate 'text' blocks before parsing — feeding a thinking
-    summary to the JSON parser would crash the request."""
+def test_extract_concatenates_text_blocks_from_response():
+    """`messages.create` returns a list of content blocks; thinking and tool
+    blocks may be interleaved. The extractor must concatenate only the
+    text blocks before parsing JSON — picking up a thinking block as
+    body would tank parse rates."""
 
     class _FakeMessagesWithThinking:
         def __init__(self) -> None:
@@ -108,10 +129,7 @@ def test_extract_filters_thinking_blocks_from_response():
             self.calls.append(kwargs)
             return SimpleNamespace(
                 content=[
-                    SimpleNamespace(
-                        type="thinking",
-                        thinking="Considering the label looks fine; brand is large and clear.",
-                    ),
+                    SimpleNamespace(type="thinking", thinking="…"),
                     SimpleNamespace(type="text", text=_VALID_RESPONSE),
                 ]
             )

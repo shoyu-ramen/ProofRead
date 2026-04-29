@@ -33,11 +33,18 @@ class ChainedVerifyExtractor:
             raise ValueError("ChainedVerifyExtractor requires at least one extractor")
         self._extractors = extractors
 
-    def extract(self, image_bytes: bytes, media_type: str = "image/png"):
+    def extract(
+        self, image_bytes: bytes, media_type: str = "image/png", **kwargs: Any
+    ):
+        """Forward arbitrary context kwargs (capture_quality, producer_record,
+        beverage_type, container_size_ml, is_imported) to each link in the
+        chain. The verify-path extractors all accept the same SPEC §0.5
+        briefing kwargs; passing them through keeps every fallback level
+        equally informed."""
         last: ExtractorUnavailable | None = None
         for ex in self._extractors:
             try:
-                return ex.extract(image_bytes, media_type=media_type)
+                return ex.extract(image_bytes, media_type=media_type, **kwargs)
             except ExtractorUnavailable as exc:
                 last = exc
                 logger.warning(

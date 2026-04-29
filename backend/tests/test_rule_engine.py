@@ -108,11 +108,22 @@ def test_abv_format_optional_passes_when_absent():
     assert result.status == CheckOutcome.PASS
 
 
-def test_abv_format_passes_on_well_formed_value():
+def test_abv_format_passes_on_varied_ttb_formats():
     engine = RuleEngine([_rule("beer.alcohol_content.format")])
-    ctx = _ctx({"alcohol_content": ExtractedField(value="5.5% ABV")})
-    [result] = engine.evaluate(ctx)
-    assert result.status == CheckOutcome.PASS
+    valid_formats = [
+        "4.8% ABV",
+        "4.8% ABV.",
+        "4.8% ALC./VOL.",
+        "4.8% alc/vol",
+        "4.8% ALC BY VOL",
+        "4.8%",
+        "ALC 4.8% BY VOL",
+        "ALCOHOL 4.8% BY VOLUME",
+    ]
+    for fmt in valid_formats:
+        ctx = _ctx({"alcohol_content": ExtractedField(value=fmt)})
+        [result] = engine.evaluate(ctx)
+        assert result.status == CheckOutcome.PASS, f"Failed on: {fmt}"
 
 
 def test_abv_format_fails_on_garbled_value():

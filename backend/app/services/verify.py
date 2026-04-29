@@ -15,13 +15,27 @@ SPEC §0.5 fail-honestly guarantees apply here too:
      extractor's verdict pessimistically. Whichever is worse wins: if the
      sensor sees obvious motion blur but the model says "good", we surface
      "degraded" so a confident wrong-pass is impossible.
+
+Fast path (cache hit): when a `VerifyCache` is supplied and an identical
+prior request has been served, the cached `VerifyReport` is restamped
+with this run's elapsed_ms and returned directly. The cache key is a
+SHA-256 over the image bytes plus everything that can change the
+verdict — beverage type, container size, imported flag, claim payload,
+rule-set fingerprint — so a hit is genuinely the same request as
+before, and a hit's verdict is identical to what the cold path would
+have produced. The hit cost is dominated by `hashlib.sha256` and the
+rule-set fingerprint (sub-millisecond on a typical frame), keeping the
+end-to-end well under the 50 ms budget the iterative-design workflow
+calls for.
 """
 
 from __future__ import annotations
 
+import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.rules.engine import RuleEngine
 from app.rules.loader import load_rules
@@ -46,7 +60,15 @@ from app.services.sensor_check import (
     SurfaceCaptureQuality,
     assess_capture_quality,
 )
+from app.services.verify_cache import make_cache_key, restamp_report
 from app.services.vision import VisionExtractor
+
+if TYPE_CHECKING:
+    # Type-only — avoids the same circular concern that pushed VerifyReport
+    # out of `verify_cache`'s runtime imports.
+    from app.services.verify_cache import VerifyCache
+
+logger = logging.getLogger(__name__)
 
 # Field-level confidence cap (matches the rule engine threshold). Once a
 # field has been pulled out of a degraded surface, its model-supplied
@@ -75,6 +97,11 @@ class VerifyReport:
     image_quality_notes: str | None = None
     health_warning_cross_check: dict[str, Any] | None = None
     elapsed_ms: int = 0
+    # Set by the cache layer on a hit so the API can surface a
+    # "verified instantly" affordance and dashboards can compute
+    # cold/warm latency separately. False on the cold path so a
+    # degraded run is never silently labelled as cached.
+    cache_hit: bool = False
 
 
 def _aggregate_overall(
@@ -104,6 +131,7 @@ def verify(
     extractor: VisionExtractor,
     health_warning_reader: HealthWarningExtractor | None = None,
     skip_capture_quality: bool = False,
+    cache: VerifyCache | None = None,
 ) -> VerifyReport:
     """Run a single image end-to-end: sensor pre-check → vision → rules.
 
@@ -118,8 +146,36 @@ def verify(
     extraction and the two reads are reconciled with `cross_check()`:
     a disagreement downgrades the warning rule to ADVISORY ("couldn't
     verify"), a confirmed-noncompliant agreement leaves the FAIL alone.
+
+    `cache`, when supplied, short-circuits the entire pipeline (sensor
+    pre-check, VLM call, second-pass reader, rules) for repeats of an
+    identical request. The cached verdict is the very same one the
+    cold path produced — the cache only ever returns what was once a
+    fresh, fail-honestly run.
     """
     started = time.monotonic()
+
+    # Fast path. Compute the cache key as cheaply as possible so a miss
+    # adds no measurable cost and a hit returns inside the 50 ms budget
+    # the iterative-design workflow demands.
+    cache_key: str | None = None
+    if cache is not None:
+        rules_for_key = load_rules(beverage_type=inp.beverage_type)
+        cache_key = make_cache_key(
+            image_bytes=inp.image_bytes,
+            media_type=inp.media_type,
+            beverage_type=inp.beverage_type,
+            container_size_ml=inp.container_size_ml,
+            is_imported=inp.is_imported,
+            application=inp.application,
+            rules=rules_for_key,
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            hit = restamp_report(cached, elapsed_ms)
+            hit.cache_hit = True
+            return hit
 
     # 1. Sensor pre-check — every byte goes through this first. Cheap, PIL
     #    only, deterministic. The result is forwarded to the VLM and
@@ -144,17 +200,47 @@ def verify(
         #    frame the sensor module already proved unreadable.
         rule_results = _unreadable_rule_results(rules)
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        return VerifyReport(
-            overall="unreadable",
-            rule_results=rule_results,
-            extracted={},
-            unreadable_fields=[],
-            image_quality="unreadable",
-            image_quality_notes=_summarize_capture_issues(capture),
-            elapsed_ms=elapsed_ms,
+        return _finalize(
+            VerifyReport(
+                overall="unreadable",
+                rule_results=rule_results,
+                extracted={},
+                unreadable_fields=[],
+                image_quality="unreadable",
+                image_quality_notes=_summarize_capture_issues(capture),
+                elapsed_ms=elapsed_ms,
+            ),
+            cache=cache,
+            cache_key=cache_key,
         )
 
-    extraction = extractor.extract(inp.image_bytes, media_type=inp.media_type)
+    # SPEC §0.5: hand the extractor everything we already know — the sensor
+    # pre-check, the producer's claim, and the user-supplied beverage
+    # type/container/imported flags. The model uses these as priors only;
+    # the rule engine still does the actual claim-vs-label cross-check.
+    producer_record = inp.application.get("producer_record")
+    if not isinstance(producer_record, dict):
+        producer_record = None
+
+    # Primary extraction + redundant Government-Warning second-pass run
+    # concurrently. Both are blocking HTTP calls to Anthropic, so a thread
+    # pool is the simplest way to overlap their wall-clock cost — the
+    # second pass becomes effectively free in latency terms (it finishes
+    # well before the larger primary call) while still giving us the
+    # independent read SPEC §0.5 mandates. A second-pass failure (timeout,
+    # rate-limit, malformed JSON) is logged and the verdict falls back to
+    # primary-only, identical to the previous serial behaviour.
+    extraction, second_warning_read = _run_extractors_concurrently(
+        extractor=extractor,
+        health_warning_reader=health_warning_reader,
+        image_bytes=inp.image_bytes,
+        media_type=inp.media_type,
+        capture=capture,
+        producer_record=producer_record,
+        beverage_type=inp.beverage_type,
+        container_size_ml=inp.container_size_ml,
+        is_imported=inp.is_imported,
+    )
 
     # Cap field confidence at the surface confidence. The model can only be
     # as confident in a reading as the frame it came from supports.
@@ -181,25 +267,41 @@ def verify(
     if foreign_language is not None:
         rule_results = _unreadable_rule_results(rules)
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        return VerifyReport(
-            overall="unreadable",
-            rule_results=rule_results,
-            extracted={},
-            unreadable_fields=[],
-            image_quality="unreadable",
-            image_quality_notes=merge_signals(
-                (foreign_language, screenshot_signal),
-                existing_notes=_summarize_capture_issues(capture),
+        return _finalize(
+            VerifyReport(
+                overall="unreadable",
+                rule_results=rule_results,
+                extracted={},
+                unreadable_fields=[],
+                image_quality="unreadable",
+                image_quality_notes=merge_signals(
+                    (foreign_language, screenshot_signal),
+                    existing_notes=_summarize_capture_issues(capture),
+                ),
+                elapsed_ms=elapsed_ms,
             ),
-            elapsed_ms=elapsed_ms,
+            cache=cache,
+            cache_key=cache_key,
         )
 
     image_quality = _worse_quality(
         capture.overall_verdict, _quality_from_extraction(extraction)
     )
+    # The model's own notes ("hand occludes lower text", "specular highlight
+    # over right third of label") are exactly the kind of region-specific
+    # diagnosis the user message benefits from. Surface them alongside the
+    # sensor pre-check's frame-level summary.
+    sensor_summary = _summarize_capture_issues(capture)
+    model_notes = getattr(extraction, "image_quality_notes", None)
+    if model_notes:
+        sensor_summary = (
+            f"{sensor_summary} | [model] {model_notes}"
+            if sensor_summary
+            else f"[model] {model_notes}"
+        )
     image_quality_notes = merge_signals(
         (screenshot_signal,),
-        existing_notes=_summarize_capture_issues(capture),
+        existing_notes=sensor_summary,
     )
 
     ctx = ExtractionContext(
@@ -224,25 +326,19 @@ def verify(
             rule_results, ctx, front
         )
 
-    # 3. Health Warning redundant second-pass (SPEC §0.5). The Government
-    #    Warning is the most legally consequential element on the label;
-    #    two independent readings raise the trust bar significantly. A
-    #    disagreement between primary and second-pass downgrades the
-    #    warning rule to advisory.
+    # 3. Reconcile the redundant Government-Warning read (SPEC §0.5). The
+    #    second-pass ran in parallel with the primary above; here we
+    #    cross-check the two independent reads. Disagreement downgrades
+    #    the warning rule to advisory — confident-wrong is the failure
+    #    mode we refuse to ship. Agreement leaves the engine's verdict
+    #    intact, with both reads supporting it.
     cross_check_result: CrossCheckResult | None = None
-    if health_warning_reader is not None:
-        try:
-            second = health_warning_reader.read_warning(
-                inp.image_bytes, media_type=inp.media_type
-            )
-        except Exception:
-            second = None
-        if second is not None:
-            primary_warning = _primary_warning_read(extraction, ctx)
-            cross_check_result = cross_check(primary_warning, second)
-            rule_results = _apply_warning_cross_check(
-                rule_results, cross_check_result, inp.beverage_type
-            )
+    if second_warning_read is not None:
+        primary_warning = _primary_warning_read(extraction, ctx)
+        cross_check_result = cross_check(primary_warning, second_warning_read)
+        rule_results = _apply_warning_cross_check(
+            rule_results, cross_check_result, inp.beverage_type
+        )
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
@@ -262,23 +358,117 @@ def verify(
             "unreadable": True,
         }
 
-    return VerifyReport(
-        overall=_aggregate_overall(
-            rule_results, list(extraction.unreadable), image_quality
+    return _finalize(
+        VerifyReport(
+            overall=_aggregate_overall(
+                rule_results, list(extraction.unreadable), image_quality
+            ),
+            rule_results=rule_results,
+            extracted=extracted_summary,
+            unreadable_fields=list(extraction.unreadable),
+            image_quality=image_quality,
+            image_quality_notes=image_quality_notes,
+            health_warning_cross_check=_serialize_cross_check(cross_check_result),
+            elapsed_ms=elapsed_ms,
         ),
-        rule_results=rule_results,
-        extracted=extracted_summary,
-        unreadable_fields=list(extraction.unreadable),
-        image_quality=image_quality,
-        image_quality_notes=image_quality_notes,
-        health_warning_cross_check=_serialize_cross_check(cross_check_result),
-        elapsed_ms=elapsed_ms,
+        cache=cache,
+        cache_key=cache_key,
     )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _run_extractors_concurrently(
+    *,
+    extractor: VisionExtractor,
+    health_warning_reader: HealthWarningExtractor | None,
+    image_bytes: bytes,
+    media_type: str,
+    capture: CaptureQualityReport,
+    producer_record: dict[str, Any] | None,
+    beverage_type: str,
+    container_size_ml: int,
+    is_imported: bool,
+):
+    """Dispatch the primary extractor and the optional second-pass reader on
+    independent threads so their wall-clock cost overlaps.
+
+    Returns `(primary_extraction, second_warning_read | None)`.
+
+    The primary extractor's failure propagates — the verify path cannot
+    serve a verdict without it. The second-pass reader's failure is logged
+    and swallowed: the cross-check tolerates a missing secondary by leaving
+    the engine's verdict alone, which is the same behaviour the previous
+    serial path had.
+    """
+    capture_kwarg = capture if capture.surfaces else None
+
+    def _primary():
+        return extractor.extract(
+            image_bytes,
+            media_type=media_type,
+            capture_quality=capture_kwarg,
+            producer_record=producer_record,
+            beverage_type=beverage_type,
+            container_size_ml=container_size_ml,
+            is_imported=is_imported,
+        )
+
+    def _secondary():
+        if health_warning_reader is None:
+            return None
+        try:
+            return health_warning_reader.read_warning(
+                image_bytes, media_type=media_type
+            )
+        except Exception as exc:
+            # Same swallow-and-log behaviour as the prior serial path —
+            # the cross-check tolerates a None secondary read.
+            logger.warning(
+                "Health-warning second-pass failed; falling back to "
+                "primary-only verdict: %s",
+                exc,
+            )
+            return None
+
+    # max_workers=2 is the upper bound we ever need (one primary + one
+    # secondary). Building the pool inline keeps thread lifetimes scoped
+    # to a single request — no shared state survives the call.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        primary_future = pool.submit(_primary)
+        secondary_future = (
+            pool.submit(_secondary) if health_warning_reader is not None else None
+        )
+        # Resolve the primary first: any extractor exception (including
+        # ExtractorUnavailable from the chain) must surface to the caller
+        # before we even look at the secondary.
+        primary_result = primary_future.result()
+        secondary_result = (
+            secondary_future.result() if secondary_future is not None else None
+        )
+    return primary_result, secondary_result
+
+
+def _finalize(
+    report: VerifyReport,
+    *,
+    cache: VerifyCache | None,
+    cache_key: str | None,
+) -> VerifyReport:
+    """Single seam where cold-path results land in the cache.
+
+    Every cold-path return funnels through here so the three exit points
+    (sensor-unreadable short-circuit, foreign-language short-circuit,
+    full-success) cache identically. `cache_hit` is left at its dataclass
+    default of False — the *next* request that resolves to a hit will
+    flip it via `restamp_report` + assignment in the fast path.
+    """
+    if cache is not None and cache_key is not None:
+        cache.put(cache_key, report)
+    return report
 
 
 def _safe_capture_quality(image_bytes: bytes) -> CaptureQualityReport:

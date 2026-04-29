@@ -23,6 +23,7 @@ from app.services.anthropic_client import ExtractorUnavailable
 from app.services.vision import (
     SYSTEM_PROMPT,
     VisionExtraction,
+    _build_user_text,
     _parse_vision_response,
 )
 
@@ -38,8 +39,13 @@ DEFAULT_QWEN_TIMEOUT_S = 30.0
 # Qwen / OpenAI-compatible servers don't honour Anthropic's structured-output
 # binding, so spell the JSON contract out in the prompt instead. The base
 # SYSTEM_PROMPT already says "ONLY a JSON object", which is enough for
-# Qwen3-VL-Instruct in our local tests.
-SCAN_INSTRUCTION = "Extract the TTB-relevant fields from this label."
+# Qwen3-VL-Instruct in our local tests. Trailing reminder ensures the
+# model emits the new top-level fields too.
+JSON_OUTPUT_REMINDER = (
+    "Return ONLY a JSON object with the seven label fields plus the top-level "
+    "image_quality, image_quality_notes, and beverage_type_observed fields. "
+    "No Markdown fences, no prose."
+)
 
 
 class QwenVLExtractor:
@@ -66,9 +72,28 @@ class QwenVLExtractor:
             )
 
     def extract(
-        self, image_bytes: bytes, media_type: str = "image/png"
+        self,
+        image_bytes: bytes,
+        media_type: str = "image/png",
+        *,
+        capture_quality: Any | None = None,
+        producer_record: dict[str, Any] | None = None,
+        beverage_type: str | None = None,
+        container_size_ml: int | None = None,
+        is_imported: bool = False,
     ) -> VisionExtraction:
         b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+        user_text = _build_user_text(
+            capture_quality=capture_quality,
+            producer_record=producer_record,
+            beverage_type=beverage_type,
+            container_size_ml=container_size_ml,
+            is_imported=is_imported,
+        )
+        # OpenAI-compatible endpoints don't bind structured output, so
+        # remind the model what JSON shape we want at the very end of the
+        # user message.
+        user_text = f"{user_text}\n\n{JSON_OUTPUT_REMINDER}"
         payload: dict[str, Any] = {
             "model": self._model,
             "max_tokens": self._max_tokens,
@@ -84,7 +109,7 @@ class QwenVLExtractor:
                                 "url": f"data:{media_type};base64,{b64}",
                             },
                         },
-                        {"type": "text", "text": SCAN_INSTRUCTION},
+                        {"type": "text", "text": user_text},
                     ],
                 },
             ],

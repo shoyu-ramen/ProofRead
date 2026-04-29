@@ -104,6 +104,21 @@ class ReportResponse(BaseModel):
     fields_summary: dict
 
 
+class HistoryItem(BaseModel):
+    scan_id: str
+    label: str
+    overall: str
+    scanned_at: datetime
+
+
+class HistoryResponse(BaseModel):
+    items: list[HistoryItem]
+
+
+class FlagRuleResultRequest(BaseModel):
+    comment: str
+
+
 def get_ocr_provider() -> OCRProvider:
     return get_default_provider()
 
@@ -154,6 +169,45 @@ def get_vision_extractor() -> VisionExtractor | None:
     from app.services.vision_chain import ChainedScanExtractor
 
     return ChainedScanExtractor(extractors)
+
+
+@router.get("", response_model=HistoryResponse)
+async def get_history(
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> HistoryResponse:
+    """GET /v1/scans (paginated history).
+
+    Returns all scans for the current user, joined with their latest report
+    overall status and brand name (if extracted).
+    """
+    # Join Scan with Report (latest) and optionally the brand_name field.
+    # For a prototype we keep it simple: just the scans for this user.
+    query = (
+        select(Scan, Report.overall, ExtractedFieldRow.value)
+        .outerjoin(Report, Report.scan_id == Scan.id)
+        .outerjoin(
+            ExtractedFieldRow,
+            (ExtractedFieldRow.scan_id == Scan.id)
+            & (ExtractedFieldRow.field_id == "brand_name"),
+        )
+        .where(Scan.user_id == user.id)
+        .order_by(Scan.created_at.desc())
+        .limit(50)
+    )
+
+    rows = (await session.execute(query)).all()
+    items = []
+    for scan, overall, brand_name in rows:
+        items.append(
+            HistoryItem(
+                scan_id=str(scan.id),
+                label=brand_name or f"{scan.beverage_type.title()} Label",
+                overall=overall or "pending",
+                scanned_at=scan.created_at,
+            )
+        )
+    return HistoryResponse(items=items)
 
 
 @router.post("", response_model=CreateScanResponse, status_code=status.HTTP_201_CREATED)
@@ -423,6 +477,31 @@ async def get_report(
         rule_results=rule_results,
         fields_summary=fields_summary,
     )
+
+
+@router.post("/{scan_id}/rule-results/{rule_id}/flag", status_code=status.HTTP_204_NO_CONTENT)
+async def flag_rule_result(
+    scan_id: str,
+    rule_id: str,
+    req: FlagRuleResultRequest,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    scan = await _load_scan(session, scan_id)
+    report = await session.scalar(select(Report).where(Report.scan_id == scan.id))
+    if report is None:
+        raise HTTPException(404, "Report not found")
+
+    rule_result = await session.scalar(
+        select(RuleResultRow).where(
+            RuleResultRow.report_id == report.id, RuleResultRow.rule_id == rule_id
+        )
+    )
+    if rule_result is None:
+        raise HTTPException(404, "Rule result not found")
+
+    rule_result.is_flagged = True
+    rule_result.flag_comment = req.comment
+    await session.commit()
 
 
 # --- helpers ---------------------------------------------------------------

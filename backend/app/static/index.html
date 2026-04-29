@@ -194,90 +194,152 @@
   .progress-card {
     background: white;
     border: 1px solid var(--line);
-    border-radius: 16px;
-    padding: 32px 28px;
+    border-radius: 20px;
+    padding: 40px 32px;
     text-align: center;
+    box-shadow: 0 12px 40px rgba(14, 42, 74, 0.08);
   }
   .progress-thumb-wrap {
-    margin: 0 auto 22px;
-    width: 220px;
+    margin: 0 auto 28px;
+    width: 240px;
     max-width: 100%;
     aspect-ratio: 1 / 1;
-    border-radius: 14px;
+    border-radius: 18px;
     overflow: hidden;
-    background: var(--paper);
-    border: 1px solid var(--line);
+    background: var(--navy);
+    border: 1px solid var(--navy);
     position: relative;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
   }
   .progress-thumb-wrap img {
     width: 100%; height: 100%; object-fit: cover; display: block;
+    opacity: 0.85;
+    filter: saturate(0.8) contrast(1.1);
+  }
+  .progress-hud {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border: 20px solid transparent;
+  }
+  .progress-hud::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 1px solid rgba(188, 139, 67, 0.3);
+    border-radius: 4px;
   }
   .progress-scanline {
     position: absolute;
     left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, transparent, var(--amber), transparent);
-    box-shadow: 0 0 12px var(--amber);
-    animation: scan 1.4s ease-in-out infinite;
+    height: 40px;
+    background: linear-gradient(to bottom, 
+      transparent, 
+      rgba(188, 139, 67, 0.2), 
+      rgba(188, 139, 67, 0.5), 
+      rgba(188, 139, 67, 0.2), 
+      transparent);
+    border-bottom: 2px solid var(--amber);
+    box-shadow: 0 4px 12px rgba(188, 139, 67, 0.3);
+    animation: scan 2s ease-in-out infinite;
+    z-index: 2;
   }
   @keyframes scan {
-    0%   { top: 6%;  opacity: 0; }
-    10%  { opacity: 1; }
-    90%  { opacity: 1; }
-    100% { top: 94%; opacity: 0; }
+    0%   { transform: translateY(-40px); opacity: 0; }
+    15%  { opacity: 1; }
+    85%  { opacity: 1; }
+    100% { transform: translateY(240px); opacity: 0; }
   }
+  
   .progress-title {
-    font-size: 18px;
+    font-size: 22px;
     color: var(--navy);
     font-weight: 700;
-    margin-bottom: 6px;
+    margin-bottom: 8px;
+    letter-spacing: -0.3px;
   }
   .progress-sub {
     color: var(--ink-2);
-    font-size: 13px;
-    margin-bottom: 22px;
+    font-size: 14px;
+    margin-bottom: 28px;
+    max-width: 400px;
+    margin-left: auto;
+    margin-right: auto;
   }
+  
+  .progress-log {
+    background: #f8f9fa;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    margin: 0 auto 24px;
+    max-width: 360px;
+    height: 64px;
+    overflow: hidden;
+    text-align: left;
+    font-family: ui-monospace, SF Mono, Menlo, monospace;
+    font-size: 11px;
+    color: var(--ink-2);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .log-line {
+    opacity: 0;
+    transform: translateY(4px);
+    animation: logFadeIn 0.3s forwards;
+  }
+  .log-line.active { color: var(--amber); font-weight: 600; }
+  .log-line.done { color: var(--pass); }
+  @keyframes logFadeIn {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
   .progress-steps {
     list-style: none;
     padding: 0;
     margin: 0;
     display: flex;
     justify-content: center;
-    gap: 6px;
+    gap: 8px;
     flex-wrap: wrap;
   }
   .progress-steps li {
-    font-size: 12px;
-    letter-spacing: 1px;
+    font-size: 11px;
+    letter-spacing: 1.2px;
     text-transform: uppercase;
     color: var(--na);
-    padding: 6px 12px;
+    padding: 8px 16px;
     border-radius: 999px;
     background: var(--paper);
     border: 1px solid var(--line);
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    font-weight: 600;
+    gap: 8px;
+    font-weight: 700;
+    transition: all 0.2s ease;
   }
   .progress-steps li .pdot {
-    width: 7px; height: 7px;
+    width: 6px; height: 6px;
     border-radius: 50%;
     background: var(--line);
+    transition: all 0.2s ease;
   }
   .progress-steps li.active {
     color: var(--navy);
     background: white;
     border-color: var(--amber);
+    box-shadow: 0 4px 12px rgba(170, 120, 50, 0.1);
+    transform: translateY(-1px);
   }
   .progress-steps li.active .pdot {
     background: var(--amber);
-    box-shadow: 0 0 0 3px rgba(170, 120, 50, 0.18);
+    box-shadow: 0 0 0 4px rgba(170, 120, 50, 0.15);
   }
   .progress-steps li.done {
     color: var(--pass);
     background: var(--pass-bg);
-    border-color: var(--pass-bg);
+    border-color: transparent;
   }
   .progress-steps li.done .pdot {
     background: var(--pass);
@@ -287,16 +349,24 @@
   .verdict-card {
     background: white;
     border: 1px solid var(--line);
-    border-radius: 16px;
-    padding: 28px 28px 24px;
+    border-radius: 20px;
+    padding: 40px 32px 32px;
     text-align: center;
+    box-shadow: 0 12px 40px rgba(14, 42, 74, 0.06);
+    position: relative;
+    overflow: hidden;
   }
-  .verdict-card.pass       { border-top: 6px solid var(--pass); }
-  .verdict-card.warn       { border-top: 6px solid var(--warn); }
-  .verdict-card.fail       { border-top: 6px solid var(--fail); }
-  .verdict-card.advisory   { border-top: 6px solid var(--advisory); }
-  .verdict-card.unreadable { border-top: 6px solid var(--warn); }
-  .verdict-card.na         { border-top: 6px solid var(--na); }
+  .verdict-card::after {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 6px;
+  }
+  .verdict-card.pass::after       { background: var(--pass); }
+  .verdict-card.warn::after       { background: var(--warn); }
+  .verdict-card.fail::after       { background: var(--fail); }
+  .verdict-card.advisory::after   { background: var(--advisory); }
+  .verdict-card.unreadable::after { background: var(--warn); }
+  .verdict-card.na::after         { background: var(--na); }
 
   .verdict-glyph {
     width: 72px; height: 72px;
@@ -385,19 +455,42 @@
     text-transform: uppercase;
     color: var(--ink-2);
     align-self: center;
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
+  .field-icon { font-size: 14px; opacity: 0.8; }
   .result-info dd {
     margin: 0;
     color: var(--ink);
-    font-weight: 500;
+    font-weight: 600;
     word-break: break-word;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
   }
   .result-info dd.unreadable { color: var(--warn); font-style: italic; font-weight: 400; }
   .result-info dd .conf {
-    margin-left: 8px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 11px;
     color: var(--na);
-    font-weight: 400;
+    font-weight: 700;
+  }
+  .conf-bar {
+    width: 40px;
+    height: 4px;
+    background: var(--line);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .conf-fill {
+    display: block;
+    height: 100%;
+    background: var(--pass);
   }
 
   details.findings {
@@ -687,10 +780,16 @@
     <div class="progress-card">
       <div class="progress-thumb-wrap">
         <img id="progressThumb" alt="captured label" />
+        <div class="progress-hud"></div>
         <div class="progress-scanline"></div>
       </div>
       <div class="progress-title" id="progressTitle">Reading the label…</div>
       <div class="progress-sub" id="progressSub">Identifying brand, class, ABV, net contents, and the Government Warning.</div>
+      
+      <div class="progress-log" id="progressLog">
+        <div class="log-line">Initializing vision engine...</div>
+      </div>
+
       <ol class="progress-steps" id="progressSteps">
         <li data-step="capture"><span class="pdot"></span>Captured</li>
         <li data-step="identify"><span class="pdot"></span>Identifying</li>
@@ -1064,25 +1163,56 @@ $("camShutter").addEventListener("click", capturePhoto);
 
 async function capturePhoto() {
   const v = $("camVideo");
-  const w = v.videoWidth;
-  const h = v.videoHeight;
-  if (!w || !h) return;
+  if (!v.videoWidth || !v.videoHeight) return;
   $("camShutter").disabled = true;
-  const maxEdge = 2048;
-  const scale = Math.min(1, maxEdge / Math.max(w, h));
-  const dw = Math.round(w * scale);
-  const dh = Math.round(h * scale);
-  const canvas = document.createElement("canvas");
-  canvas.width = dw;
-  canvas.height = dh;
-  const ctx = canvas.getContext("2d");
-  if (camFacing === "user") {
-    ctx.translate(dw, 0);
-    ctx.scale(-1, 1);
+
+  // Prefer ImageCapture.takePhoto() — it pulls a full-resolution still from
+  // the camera (often 12 MP+) instead of a video frame (typically 720p–1080p).
+  // The compliance pre-check rejects low-resolution frames as "fine print may
+  // not be readable", so the difference between a video-frame screenshot and
+  // a real photo decides whether we ever get past the sensor gate.
+  let blob = null;
+  if (typeof ImageCapture === "function" && camTrack) {
+    try {
+      const cap = new ImageCapture(camTrack);
+      blob = await cap.takePhoto();
+    } catch (err) {
+      // Fall through to the canvas path below — some browsers (notably
+      // older iOS Safari) ship the constructor but throw on takePhoto.
+      console.info("takePhoto unavailable, falling back to canvas:", err);
+    }
   }
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(v, 0, 0, dw, dh);
-  const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.92));
+
+  // Front-camera flip — the live preview is already mirrored via CSS
+  // (`transform: scaleX(-1)`), so a takePhoto() blob comes out un-mirrored
+  // and matches what the user saw. The canvas fallback below mirrors
+  // explicitly when needed.
+  if (blob == null) {
+    const w = v.videoWidth;
+    const h = v.videoHeight;
+    const maxEdge = 2048;
+    const scale = Math.min(1, maxEdge / Math.max(w, h));
+    const dw = Math.round(w * scale);
+    const dh = Math.round(h * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = dw;
+    canvas.height = dh;
+    const ctx = canvas.getContext("2d");
+    if (camFacing === "user") {
+      ctx.translate(dw, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(v, 0, 0, dw, dh);
+    blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.92));
+  } else {
+    // Downscale the takePhoto blob if it's huge — the verify endpoint and
+    // sensor pre-check both work fine on 2048px-edge images, and a 12 MP
+    // upload makes the round-trip noticeably slower.
+    const norm = await normalizeImage(blob).catch(() => null);
+    if (norm) blob = norm.blob;
+  }
+
   if (!blob) {
     $("camShutter").disabled = false;
     showCamError(new Error("Failed to capture frame."));
@@ -1143,6 +1273,22 @@ function setProgressLabel(title, sub) {
   $("progressSub").textContent = sub;
 }
 
+function logProgress(msg, status = "") {
+  const log = $("progressLog");
+  const line = document.createElement("div");
+  line.className = "log-line " + status;
+  line.textContent = `> ${msg}`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+  if (log.children.length > 3) {
+    log.children[0].style.opacity = "0.4";
+  }
+}
+
+function clearLog() {
+  $("progressLog").innerHTML = "";
+}
+
 async function runVerification() {
   if (!state.imageBlob) {
     showScanError("Pick an image first, or tap a sample.");
@@ -1153,6 +1299,8 @@ async function runVerification() {
   $("progressThumb").src = state.imageUrl;
   $("resultThumb").src = state.imageUrl;
   showView("progress");
+  clearLog();
+  
   setStepState("capture", "done");
   setStepState("identify", "active");
   setStepState("verify", "");
@@ -1162,9 +1310,24 @@ async function runVerification() {
     "Identifying brand, class, ABV, net contents, and the Government Warning."
   );
 
+  logProgress("Initializing vision engine...");
+  
   // The backend does identify+verify in one shot. We stage the UI so
   // the user sees progress: flip to "Verifying" partway through.
   let stagedToVerify = false;
+  
+  const stageSteps = [
+    { ms: 400, log: "Detecting label boundaries...", status: "done" },
+    { ms: 900, log: "Extracting brand and class info...", status: "active" },
+    { ms: 1400, log: "Verifying government health warning...", status: "active" },
+  ];
+
+  stageSteps.forEach(s => {
+    setTimeout(() => {
+      if (!stagedToVerify) logProgress(s.log, s.status);
+    }, s.ms);
+  });
+
   const stageTimer = setTimeout(() => {
     stagedToVerify = true;
     setStepState("identify", "done");
@@ -1173,7 +1336,8 @@ async function runVerification() {
       "Checking TTB rules…",
       "Comparing each required element against 27 CFR."
     );
-  }, 1100);
+    logProgress("Running compliance rule engine...", "active");
+  }, 1800);
 
   // Build the form payload. With no real filing, we send an empty
   // producer_record — rules check label structure (presence, format,
@@ -1200,7 +1364,10 @@ async function runVerification() {
       setStepState("identify", "done");
       setStepState("verify", "active");
       setProgressLabel("Checking TTB rules…", "Comparing each required element against 27 CFR.");
+      logProgress("Finalizing report...", "done");
       await sleep(450);
+    } else {
+      logProgress("Verification complete.", "done");
     }
     setStepState("verify", "done");
     setStepState("result", "active");
@@ -1245,43 +1412,62 @@ function renderResult(data, clientMs) {
   const warned = data.rule_results.filter(r => r.status === "warn").length;
   const advisories = data.rule_results.filter(r => r.status === "advisory").length;
 
+  // Latency display: a cache hit is an honest sub-50 ms turnaround, so
+  // call it that. The client-side timer captures network + server cost
+  // together, which is what the user actually felt; the server's
+  // elapsed_ms is shown alongside on a hit because it's the load-bearing
+  // performance number for the iterative-design workflow.
+  let latencyText;
+  if (data.cache_hit) {
+    const serverMs = typeof data.elapsed_ms === "number" ? data.elapsed_ms : 0;
+    latencyText = `verified instantly · ${serverMs} ms server`;
+  } else if (clientMs < 1000) {
+    latencyText = `verified in ${Math.round(clientMs)} ms`;
+  } else {
+    latencyText = `verified in ${(clientMs / 1000).toFixed(1)} s`;
+  }
   const metaBits = [
     `${ruleCount} rule${ruleCount === 1 ? "" : "s"} checked`,
     failed ? `${failed} failed` : null,
     warned ? `${warned} warning${warned === 1 ? "" : "s"}` : null,
     advisories ? `${advisories} advisory` : null,
-    `verified in ${(clientMs / 1000).toFixed(1)}s`,
+    latencyText,
   ].filter(Boolean);
   $("verdictMeta").innerHTML = metaBits.join('<span class="dotsep">•</span>');
 
   // Identified fields
   const fieldsEl = $("resultFields");
   fieldsEl.innerHTML = "";
-  const FIELD_LABELS = {
-    brand_name: "Brand",
-    class_type: "Class / type",
-    alcohol_content: "ABV",
-    net_contents: "Net contents",
-    name_address: "Name & address",
-    country_of_origin: "Country of origin",
-    health_warning: "Health warning",
+  const FIELD_DEFS = {
+    brand_name: { label: "Brand", icon: "🏷️" },
+    class_type: { label: "Class / type", icon: "🍺" },
+    alcohol_content: { label: "ABV", icon: "🍷" },
+    net_contents: { label: "Net contents", icon: "🥫" },
+    name_address: { label: "Name & address", icon: "🏠" },
+    country_of_origin: { label: "Country", icon: "🌎" },
+    health_warning: { label: "Health warning", icon: "⚠️" },
   };
-  const order = Object.keys(FIELD_LABELS);
+  const order = Object.keys(FIELD_DEFS);
   for (const key of order) {
     const f = data.extracted[key];
     if (!f) continue;
+    const def = FIELD_DEFS[key];
+    
     const dt = document.createElement("dt");
-    dt.textContent = FIELD_LABELS[key];
+    dt.innerHTML = `<span class="field-icon">${def.icon}</span> ${def.label}`;
+    
     const dd = document.createElement("dd");
     if (f.unreadable || f.value == null || f.value === "") {
       dd.classList.add("unreadable");
       dd.textContent = "(unreadable)";
     } else {
-      dd.textContent = key === "health_warning" ? truncate(f.value, 80) : f.value;
+      let val = key === "health_warning" ? truncate(f.value, 80) : f.value;
+      dd.textContent = val;
       if (typeof f.confidence === "number" && f.confidence > 0) {
+        const confPercent = Math.round(f.confidence * 100);
         const span = document.createElement("span");
         span.className = "conf";
-        span.textContent = `${Math.round(f.confidence * 100)}%`;
+        span.innerHTML = `<span class="conf-bar"><span class="conf-fill" style="width: ${confPercent}%"></span></span> ${confPercent}%`;
         dd.appendChild(span);
       }
     }
