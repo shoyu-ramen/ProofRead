@@ -89,6 +89,7 @@ class _Snapshot:
     health_warning_cross_check: dict[str, Any] | None
     elapsed_ms: int
     cache_hit: bool
+    reverse_lookup_hit: bool
 
 
 def _snapshot(report: VerifyReport) -> _Snapshot:
@@ -118,6 +119,7 @@ def _snapshot(report: VerifyReport) -> _Snapshot:
         ),
         elapsed_ms=report.elapsed_ms,
         cache_hit=report.cache_hit,
+        reverse_lookup_hit=report.reverse_lookup_hit,
     )
 
 
@@ -149,6 +151,7 @@ def _materialize(snap: _Snapshot) -> VerifyReport:
         ),
         elapsed_ms=snap.elapsed_ms,
         cache_hit=snap.cache_hit,
+        reverse_lookup_hit=snap.reverse_lookup_hit,
     )
 
 

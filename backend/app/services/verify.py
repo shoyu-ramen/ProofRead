@@ -67,6 +67,7 @@ from app.services.vision import VisionExtractor
 if TYPE_CHECKING:
     # Type-only — avoids the same circular concern that pushed VerifyReport
     # out of `verify_cache`'s runtime imports.
+    from app.services.reverse_lookup import ReverseLookupCache
     from app.services.verify_cache import VerifyCache
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,15 @@ class VerifyReport:
     # cold/warm latency separately. False on the cold path so a
     # degraded run is never silently labelled as cached.
     cache_hit: bool = False
+    # Set when the reverse-image-lookup cache served the vision
+    # extraction (the VLM call was skipped, but the rule engine ran
+    # fresh). Mutually exclusive with `cache_hit` — the byte-exact
+    # cache short-circuits before the reverse-lookup gate. Tracked as
+    # a separate signal because (a) the latency profile is different
+    # (rule engine + sensor pre-check still ran, so it's a few
+    # milliseconds rather than sub-millisecond) and (b) operators
+    # tuning the hamming threshold need the hit-rate broken out.
+    reverse_lookup_hit: bool = False
 
 
 def _aggregate_overall(
@@ -210,6 +220,7 @@ def verify(
     health_warning_reader: HealthWarningExtractor | None = None,
     skip_capture_quality: bool = False,
     cache: VerifyCache | None = None,
+    reverse_cache: ReverseLookupCache | None = None,
 ) -> VerifyReport:
     """Run a single image end-to-end: sensor pre-check → vision → rules.
 
@@ -230,6 +241,16 @@ def verify(
     identical request. The cached verdict is the very same one the
     cold path produced — the cache only ever returns what was once a
     fresh, fail-honestly run.
+
+    `reverse_cache`, when supplied, sits *underneath* the byte-exact
+    cache: on a miss to `cache` but a perceptual-fingerprint hit, the
+    prior cold-path's vision extraction is reused (skipping the VLM
+    and second-pass calls) and the rule engine runs fresh against the
+    current request's container size, imported flag, claim, and rule
+    fingerprint. SPEC §0.5 fail-honestly is preserved by re-running
+    the obstruction-backstop downgrade on the *new* request's sensor
+    verdict — a re-photograph that introduced glare over the warning
+    still lands in ADVISORY.
     """
     from app.telemetry import current_trace_id, traced_span
 
@@ -334,34 +355,85 @@ def verify(
         for i, p in enumerate(panels)
     ]
 
-    # Per-panel primary extraction + redundant Government-Warning second-
-    # pass, all concurrent in one thread pool. With N panels and second-
-    # pass enabled, this dispatches up to 2N blocking HTTP calls so wall-
-    # clock is bounded by the slowest individual call rather than the
-    # serial sum. The second pass becomes effectively free in latency
-    # terms (the smaller model finishes well before the primary) while
-    # still giving us the independent read SPEC §0.5 mandates.
-    with traced_span("verify.extractors", panel_count=len(panels)):
-        per_panel_primary, per_panel_secondary = _run_extractors_concurrently(
-            extractor=extractor,
-            health_warning_reader=health_warning_reader,
-            panels=normalized_panels,
-            capture=capture,
-            producer_record=producer_record,
-            beverage_type=inp.beverage_type,
-            container_size_ml=inp.container_size_ml,
-            is_imported=inp.is_imported,
+    # Reverse-lookup gate. The byte-exact cache (`cache`) above didn't
+    # know this upload, but the same physical label may have been
+    # verified before under different upload bytes (different JPEG
+    # quality, PNG-of-the-master vs JPEG-of-the-master, slightly
+    # different photo of the same bottle). When that's true, the prior
+    # cold path's vision extraction is reusable here — the label
+    # contents haven't changed even if the upload has. We skip the
+    # VLM call (and the second-pass reader, since the cross-check on
+    # the cold path already validated the warning text we're reusing)
+    # and proceed straight to the rule engine.
+    panel_phashes: tuple[int | None, ...] = tuple(
+        n.phash for n in normalized_panels
+    )
+    reverse_signature: tuple[int, ...] | None = None
+    reverse_hit = None
+    if reverse_cache is not None and all(p is not None for p in panel_phashes):
+        # mypy: every entry is now non-None; build a concrete int tuple.
+        reverse_signature = tuple(int(p) for p in panel_phashes if p is not None)
+        with traced_span("verify.reverse_lookup", panel_count=len(panels)):
+            reverse_hit = reverse_cache.get(
+                signature=reverse_signature, beverage_type=inp.beverage_type
+            )
+
+    if reverse_hit is not None:
+        # Cold-skip path. We already have the merged extraction from a
+        # prior cold run; the rest of the pipeline (cross-check,
+        # confidence cap, rule engine, finalize) consumes the same
+        # data shape it always does. Second-pass is intentionally not
+        # re-run — the obstruction-backstop downgrade still fires on
+        # the new request's sensor verdict, which is the load-bearing
+        # SPEC §0.5 guarantee.
+        extraction = reverse_hit.extraction
+        per_panel_secondary: list[Any] = [None] * len(panels)
+        logger.info(
+            "verify reverse-lookup hit min_distance=%d panel_count=%d trace_id=%s",
+            reverse_hit.min_distance,
+            len(panels),
+            current_trace_id() or "-",
         )
+    else:
+        if reverse_signature is not None:
+            # We had a chance and missed — track it so the dashboard
+            # can compute hit-rate. Misses caused by failed dhash
+            # (one or more None entries) aren't counted; they're a
+            # different failure mode (image undecodable) and would
+            # otherwise inflate the miss denominator without
+            # representing real reverse-lookup work.
+            from app.services import verify_stats
 
-    # Merge per-panel reads field-by-field, highest-confidence-wins, and
-    # tag each merged field's `source_image_id` with the panel it came
-    # from so the UI can render "Brand — front" / "Warning — back".
-    extraction = _merge_panel_extractions(per_panel_primary)
+            verify_stats.record_reverse_lookup_miss()
 
-    # Translate bboxes back to each panel's original-upload coordinates
-    # using that panel's crop offset. The merged extraction's
-    # source_image_id ("panel_N") tells us which panel's offset to apply.
-    _translate_merged_bboxes(extraction, normalized_panels)
+        # Per-panel primary extraction + redundant Government-Warning second-
+        # pass, all concurrent in one thread pool. With N panels and second-
+        # pass enabled, this dispatches up to 2N blocking HTTP calls so wall-
+        # clock is bounded by the slowest individual call rather than the
+        # serial sum. The second pass becomes effectively free in latency
+        # terms (the smaller model finishes well before the primary) while
+        # still giving us the independent read SPEC §0.5 mandates.
+        with traced_span("verify.extractors", panel_count=len(panels)):
+            per_panel_primary, per_panel_secondary = _run_extractors_concurrently(
+                extractor=extractor,
+                health_warning_reader=health_warning_reader,
+                panels=normalized_panels,
+                capture=capture,
+                producer_record=producer_record,
+                beverage_type=inp.beverage_type,
+                container_size_ml=inp.container_size_ml,
+                is_imported=inp.is_imported,
+            )
+
+        # Merge per-panel reads field-by-field, highest-confidence-wins, and
+        # tag each merged field's `source_image_id` with the panel it came
+        # from so the UI can render "Brand — front" / "Warning — back".
+        extraction = _merge_panel_extractions(per_panel_primary)
+
+        # Translate bboxes back to each panel's original-upload coordinates
+        # using that panel's crop offset. The merged extraction's
+        # source_image_id ("panel_N") tells us which panel's offset to apply.
+        _translate_merged_bboxes(extraction, normalized_panels)
 
     # Cap field confidence at the source panel's surface confidence. The
     # model can only be as confident in a reading as the frame it came
@@ -432,6 +504,12 @@ def verify(
                     existing_notes=_summarize_capture_issues(capture),
                 ),
                 elapsed_ms=elapsed_ms,
+                # Preserve the reverse-hit flag for the rare case
+                # where a cached extraction's text triggers the
+                # foreign-language guard — we still skipped the VLM
+                # call, so the latency profile is reverse-hit, not
+                # cold.
+                reverse_lookup_hit=reverse_hit is not None,
             ),
             cache=cache,
             cache_key=cache_key,
@@ -545,6 +623,35 @@ def verify(
             "source_image_id": None,
         }
 
+    # Promote a successful cold-path extraction into the reverse-lookup
+    # cache so the next perceptually-equivalent upload (different JPEG
+    # quality, slight reshoot) hits this verdict instead of paying for a
+    # fresh VLM call. We DO NOT promote when:
+    #   * the extraction is empty (no fields to reuse);
+    #   * the cross-check disagreed or flagged obstruction (the warning
+    #     rule was downgraded to advisory on this run; reusing the
+    #     extraction without re-running the cross-check would silently
+    #     elide the downgrade for a future caller);
+    #   * any panel's phash failed (signature is unreliable);
+    #   * this run was itself a reverse-lookup hit (no new information).
+    if (
+        reverse_cache is not None
+        and reverse_signature is not None
+        and reverse_hit is None
+        and extraction.fields
+        and image_quality != "unreadable"
+        and (
+            cross_check_result is None
+            or cross_check_result.outcome
+            not in {"disagreement", "unverifiable_obstructed"}
+        )
+    ):
+        reverse_cache.put(
+            signature=reverse_signature,
+            beverage_type=inp.beverage_type,
+            extraction=extraction,
+        )
+
     return _finalize(
         VerifyReport(
             overall=_aggregate_overall(
@@ -557,6 +664,7 @@ def verify(
             image_quality_notes=image_quality_notes,
             health_warning_cross_check=_serialize_cross_check(cross_check_result),
             elapsed_ms=elapsed_ms,
+            reverse_lookup_hit=reverse_hit is not None,
         ),
         cache=cache,
         cache_key=cache_key,
@@ -599,12 +707,21 @@ class _NormalizedImage:
     bboxes back to original-image coordinates after extraction. `offset`
     is `(dx, dy)` to add back during that translation; `(0, 0)` for the
     no-crop path.
+
+    `phash` is the 64-bit perceptual signature used by the reverse-image
+    lookup cache (see `app/services/reverse_lookup.py`). Computed on
+    the post-crop, pre-re-encode PIL image so it reflects the canonical
+    label region the model actually sees. None when normalisation hit
+    its passthrough branch (decode failed, or no transforms paid off);
+    the orchestrator treats None as "skip reverse-lookup for this panel"
+    and falls through to the cold path.
     """
 
     bytes: bytes
     media_type: str
     cropped: bool
     offset: tuple[int, int]
+    phash: int | None
 
 
 def _normalize_for_vision(
@@ -648,7 +765,7 @@ def _normalize_for_vision(
         img.load()
     except Exception as exc:
         logger.debug("Vision normalisation skipped — decode failed: %s", exc)
-        return _passthrough(image_bytes)
+        return _passthrough(image_bytes, phash=None)
 
     crop_box, offset = _label_crop_box(capture, img.size, surface_index=surface_index)
     cropped = False
@@ -673,17 +790,31 @@ def _normalize_for_vision(
         except Exception as exc:
             logger.debug("Vision normalisation skipped resize: %s", exc)
 
+    # Compute the perceptual hash on the canonical label region: post-
+    # crop, post-resize, but pre-re-encode. Hashing here rather than on
+    # the raw upload bytes means a tight zoom and a wide-frame photo of
+    # the same physical label dhash to the same signature (cropping
+    # has aligned them onto the same region). And we deliberately
+    # compute *before* the JPEG re-encode so the dhash is invariant to
+    # the JPEG quality knob — two requests with the same source image
+    # at q=85 vs q=92 produce the same phash. None on failure: dhash
+    # never breaks the request.
+    from app.services.reverse_lookup import compute_dhash
+
+    phash = compute_dhash(img)
+
     if not cropped and not resized:
         # Nothing changed — re-encoding can only make this slower (JPEG of
         # a small artwork PNG often inflates the byte count). Send the
-        # original unchanged.
-        return _passthrough(image_bytes)
+        # original unchanged. Carry the phash we just computed forward
+        # so the reverse-lookup still works on this panel.
+        return _passthrough(image_bytes, phash=phash)
 
     if img.mode not in ("RGB", "L"):
         try:
             img = img.convert("RGB")
         except Exception:
-            return _passthrough(image_bytes)
+            return _passthrough(image_bytes, phash=phash)
 
     try:
         import io
@@ -693,29 +824,31 @@ def _normalize_for_vision(
         out = buf.getvalue()
     except Exception as exc:
         logger.debug("Vision normalisation skipped re-encode: %s", exc)
-        return _passthrough(image_bytes)
+        return _passthrough(image_bytes, phash=phash)
 
     # If our re-encode somehow ended up bigger than the original (rare on
     # cropped/resized output, but possible for tiny near-blank crops),
     # send the original. We're optimising for wire bytes; a larger upload
     # is the opposite of "speed it up".
     if len(out) >= len(image_bytes) and not cropped:
-        return _passthrough(image_bytes)
+        return _passthrough(image_bytes, phash=phash)
 
     return _NormalizedImage(
         bytes=out,
         media_type="image/jpeg",
         cropped=cropped,
         offset=offset if cropped else (0, 0),
+        phash=phash,
     )
 
 
-def _passthrough(image_bytes: bytes) -> _NormalizedImage:
+def _passthrough(image_bytes: bytes, *, phash: int | None = None) -> _NormalizedImage:
     return _NormalizedImage(
         bytes=image_bytes,
         media_type=_guess_media_type(image_bytes),
         cropped=False,
         offset=(0, 0),
+        phash=phash,
     )
 
 
@@ -1155,6 +1288,14 @@ def _finalize(
     one stats bump. `cache_hit` is left at its dataclass default of False
     — the *next* request that resolves to a hit will flip it via
     `restamp_report` + assignment in the fast path.
+
+    Reverse-lookup hits route through here too (they still need rule-
+    engine + finalize). They land in the byte-exact cache same as a
+    cold path (so a later identical-bytes resubmission hits the SHA-256
+    cache rather than re-scanning perceptual entries) but bump the
+    reverse-lookup counter rather than the cold counter — they aren't
+    cold (the VLM call didn't run) and they aren't warm in the
+    SHA-256 sense (the rule engine ran fresh).
     """
     if cache is not None and cache_key is not None:
         cache.put(cache_key, report)
@@ -1166,15 +1307,21 @@ def _finalize(
     from app.services import verify_stats
     from app.telemetry import current_trace_id
 
-    verify_stats.record_cold(elapsed_ms=report.elapsed_ms, overall=report.overall)
+    if report.reverse_lookup_hit:
+        verify_stats.record_reverse_lookup_hit(elapsed_ms=report.elapsed_ms)
+    else:
+        verify_stats.record_cold(
+            elapsed_ms=report.elapsed_ms, overall=report.overall
+        )
     cross_check_outcome = (
         report.health_warning_cross_check.get("outcome")
         if isinstance(report.health_warning_cross_check, dict)
         else None
     )
     logger.info(
-        "verify cold path=cold elapsed_ms=%d overall=%s image_quality=%s "
+        "verify cold path=%s elapsed_ms=%d overall=%s image_quality=%s "
         "cross_check=%s extractor=%s n_rules=%d n_unreadable=%d trace_id=%s",
+        "reverse_hit" if report.reverse_lookup_hit else "cold",
         report.elapsed_ms,
         report.overall,
         report.image_quality,
