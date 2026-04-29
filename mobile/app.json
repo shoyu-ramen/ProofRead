@@ -57,7 +57,7 @@
       "router": {
         "origin": false
       },
-      "apiBaseUrl": "https://proofread-rk-take.fly.dev",
+      "apiBaseUrl": "https://proofread-rk-production.up.railway.app",
       "eas": {
         "projectId": ""
       }

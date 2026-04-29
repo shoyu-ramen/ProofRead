@@ -439,13 +439,25 @@ def _normalize_for_vision(
 ) -> _NormalizedImage:
     """Crop + downscale + re-encode the upload before the model sees it.
 
-    Order matters: crop first (pixels we throw away never need to be
-    resized), then resize the crop. JPEG-85 at ≤1568 px long edge is the
-    model's effective input resolution anyway, so we lose nothing by
-    matching it on the wire.
+    Three independent levers, applied only when each one nets a wire-byte
+    win on this specific image:
 
-    Any failure (decode error, no detected bbox, edge case) falls back to
-    the original bytes/media_type — never a correctness risk.
+      * Crop to the detected label region — only when it covers <70% of
+        the frame (re-encoding to save <30% of pixels is a wall-clock
+        loss). When this fires it's the biggest win.
+      * Downscale to ≤1568 px on the long edge — Anthropic auto-resizes
+        anything bigger to that size on its side, so pre-resizing is free
+        quality-wise and saves wire bytes. Skipped when the image is
+        already at or below the cap.
+      * Re-encode as JPEG-85 — only when (a) we modified the pixels above,
+        OR (b) the JPEG is actually smaller than the original encoding.
+        For small artwork PNGs (flat colors, tight palettes) the original
+        often beats JPEG, and uploading the larger output would slow the
+        request rather than speed it up.
+
+    Any failure (decode error, no bbox, edge case) returns the original
+    bytes unchanged — normalisation is a *speed* optimisation, never a
+    correctness path.
     """
     try:
         import io
@@ -456,24 +468,19 @@ def _normalize_for_vision(
         img.load()
     except Exception as exc:
         logger.debug("Vision normalisation skipped — decode failed: %s", exc)
-        return _NormalizedImage(
-            bytes=image_bytes,
-            media_type=_guess_media_type(image_bytes),
-            cropped=False,
-            offset=(0, 0),
-        )
+        return _passthrough(image_bytes)
 
     crop_box, offset = _label_crop_box(capture, img.size)
+    cropped = False
     if crop_box is not None:
         try:
             img = img.crop(crop_box)
+            cropped = True
         except Exception as exc:
             logger.debug("Vision normalisation skipped crop step: %s", exc)
-            crop_box = None
             offset = (0, 0)
 
-    # Downscale so the long edge is at most TARGET — compounds with the
-    # crop above (post-crop bbox is what the model sees).
+    resized = False
     if max(img.size) > _VISION_TARGET_LONG_EDGE:
         scale = _VISION_TARGET_LONG_EDGE / max(img.size)
         new_size = (
@@ -482,19 +489,21 @@ def _normalize_for_vision(
         )
         try:
             img = img.resize(new_size, Image.Resampling.LANCZOS)
+            resized = True
         except Exception as exc:
             logger.debug("Vision normalisation skipped resize: %s", exc)
+
+    if not cropped and not resized:
+        # Nothing changed — re-encoding can only make this slower (JPEG of
+        # a small artwork PNG often inflates the byte count). Send the
+        # original unchanged.
+        return _passthrough(image_bytes)
 
     if img.mode not in ("RGB", "L"):
         try:
             img = img.convert("RGB")
         except Exception:
-            return _NormalizedImage(
-                bytes=image_bytes,
-                media_type=_guess_media_type(image_bytes),
-                cropped=False,
-                offset=(0, 0),
-            )
+            return _passthrough(image_bytes)
 
     try:
         import io
@@ -504,18 +513,29 @@ def _normalize_for_vision(
         out = buf.getvalue()
     except Exception as exc:
         logger.debug("Vision normalisation skipped re-encode: %s", exc)
-        return _NormalizedImage(
-            bytes=image_bytes,
-            media_type=_guess_media_type(image_bytes),
-            cropped=False,
-            offset=(0, 0),
-        )
+        return _passthrough(image_bytes)
+
+    # If our re-encode somehow ended up bigger than the original (rare on
+    # cropped/resized output, but possible for tiny near-blank crops),
+    # send the original. We're optimising for wire bytes; a larger upload
+    # is the opposite of "speed it up".
+    if len(out) >= len(image_bytes) and not cropped:
+        return _passthrough(image_bytes)
 
     return _NormalizedImage(
         bytes=out,
         media_type="image/jpeg",
-        cropped=crop_box is not None,
-        offset=offset,
+        cropped=cropped,
+        offset=offset if cropped else (0, 0),
+    )
+
+
+def _passthrough(image_bytes: bytes) -> _NormalizedImage:
+    return _NormalizedImage(
+        bytes=image_bytes,
+        media_type=_guess_media_type(image_bytes),
+        cropped=False,
+        offset=(0, 0),
     )
 
 
