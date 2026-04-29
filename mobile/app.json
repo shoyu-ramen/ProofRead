@@ -7,6 +7,12 @@
     "scheme": "proofread",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": false,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0E2A4A"
+    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.proofread.app",
@@ -21,6 +27,10 @@
     },
     "android": {
       "package": "com.proofread.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0E2A4A"
+      },
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
@@ -28,7 +38,8 @@
     },
     "web": {
       "bundler": "metro",
-      "output": "static"
+      "output": "static",
+      "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-router",
@@ -46,7 +57,7 @@
       "router": {
         "origin": false
       },
-      "apiBaseUrl": "http://192.168.1.208:8000",
+      "apiBaseUrl": "https://proofread-rk-take.fly.dev",
       "eas": {
         "projectId": ""
       }
