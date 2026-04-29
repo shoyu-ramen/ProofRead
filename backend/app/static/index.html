@@ -713,6 +713,49 @@
     top: 50%; left: 50%;
     transform: translate(-50%, -50%);
   }
+
+  /* Auto-detection state on the framing rectangle. The ::before owns
+     the outline and the surrounding dim mask; the corners draw the
+     bracket overlay. Both transition together so the user gets an
+     at-a-glance read on whether the system has found a label yet. */
+  .cam-frame .corner { transition: border-color 0.18s ease; }
+  .cam-frame::before { transition: border-color 0.18s ease, box-shadow 0.18s ease; }
+
+  .cam-frame.searching .corner { border-color: rgba(255, 255, 255, 0.55); }
+  .cam-frame.searching::before { border-color: rgba(255, 255, 255, 0.22); }
+
+  /* framing keeps the existing amber corner color (default) */
+  .cam-frame.framing::before { border-color: rgba(188, 139, 67, 0.55); }
+
+  .cam-frame.ready .corner { border-color: #4ade8a; }
+  .cam-frame.ready::before {
+    border-color: rgba(74, 222, 138, 0.85);
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.25), 0 0 24px rgba(74, 222, 138, 0.45) inset;
+  }
+  .cam-frame.ready { animation: readyPulse 0.32s ease-out; }
+  @keyframes readyPulse {
+    0%   { transform: scale(1.000); }
+    55%  { transform: scale(1.012); }
+    100% { transform: scale(1.000); }
+  }
+
+  /* Brief shutter flash so the user gets a "captured" signal before
+     the modal fades away. Driven by .capturing on .cam-stage. */
+  .cam-flash {
+    position: absolute;
+    inset: 0;
+    background: white;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 3;
+  }
+  .cam-stage.capturing .cam-flash { animation: camFlash 0.22s ease-out; }
+  @keyframes camFlash {
+    0%   { opacity: 0; }
+    20%  { opacity: 0.85; }
+    100% { opacity: 0; }
+  }
+
   body.cam-open { overflow: hidden; }
 </style>
 </head>
@@ -841,14 +884,15 @@
 
 <!-- ── Camera modal ────────────────────────────────────────────── -->
 <div class="cam-modal" id="camModal" hidden aria-modal="true" role="dialog" aria-label="Camera">
-  <div class="cam-stage">
+  <div class="cam-stage" id="camStage">
     <video id="camVideo" autoplay playsinline muted></video>
-    <div class="cam-frame" id="camGuide" hidden>
+    <div class="cam-frame searching" id="camGuide" hidden>
       <span class="corner tl"></span>
       <span class="corner tr"></span>
       <span class="corner bl"></span>
       <span class="corner br"></span>
     </div>
+    <div class="cam-flash" aria-hidden="true"></div>
     <div class="cam-spinner" id="camSpinner">Starting camera…</div>
     <div class="cam-bar cam-bar-top">
       <button type="button" class="cam-icon-btn" id="camCancel" aria-label="Close camera">✕</button>
@@ -856,7 +900,7 @@
       <button type="button" class="cam-icon-btn" id="camFlip" aria-label="Switch camera" hidden>⤺</button>
     </div>
     <div class="cam-bar cam-bar-bottom" id="camBottomBar" hidden>
-      <span class="cam-hint">Center the label inside the frame</span>
+      <span class="cam-hint" id="camHint" aria-live="polite">Searching for label…</span>
       <button type="button" class="cam-shutter" id="camShutter" aria-label="Capture photo"></button>
     </div>
     <div class="cam-error" id="camError" hidden>
@@ -1041,6 +1085,202 @@ let camStream = null;
 let camFacing = "environment";
 let camTrack = null;
 
+// ─── Live label detection ──────────────────────────────────────
+// Continuously samples the video feed and fires the shutter the
+// moment a steady, label-like frame is in view — no manual press.
+// All analysis happens in the browser; nothing hits the network
+// until we commit to a real capture.
+//
+// Per-frame heuristics (all computed inside the visible framing
+// rectangle so the surrounding dim mask doesn't drag metrics):
+//   - luminance variance     →  rejects blank walls / sky
+//   - cheap horizontal edges →  rejects unfocused / glare-blown frames
+//   - mean luminance window  →  rejects covered camera / overexposure
+//   - frame-to-frame motion  →  rejects an unstable hand
+//
+// State machine: searching → framing → ready, with a small streak
+// requirement so a single noisy frame can't trigger the shutter.
+// A short post-stream-ready grace window prevents capture before
+// autofocus has had a chance to settle.
+
+const DETECT_W = 200;
+const DETECT_H = 112;
+const DETECT_MIN_INTERVAL_MS = 50;        // ~20 Hz
+const DETECT_VARIANCE_THRESHOLD = 320;
+const DETECT_EDGE_THRESHOLD = 5;
+const DETECT_LUM_MIN = 30;
+const DETECT_LUM_MAX = 235;
+const DETECT_MOTION_THRESHOLD = 4.5;
+const DETECT_READY_FRAMES = 3;            // ~150 ms steady at 20 Hz
+const DETECT_AUTOFOCUS_GRACE_MS = 350;
+
+let detectionRAF = null;
+let detectionState = "searching"; // "searching" | "framing" | "ready"
+let detectionStreak = 0;
+let detectionPrevFrame = null;
+let detectionLastTickAt = 0;
+let detectCanvas = null;
+let detectCtx = null;
+let cameraReadyAt = 0;
+let capturePending = false;
+let autoCaptureScheduled = false;
+
+const HINT_TEXT = {
+  searching: "Searching for label…",
+  framing: "Hold steady…",
+  ready: "Got it",
+};
+
+function setDetectionState(next) {
+  if (next === detectionState) return;
+  detectionState = next;
+  const guide = $("camGuide");
+  guide.classList.remove("searching", "framing", "ready");
+  guide.classList.add(next);
+  $("camHint").textContent = HINT_TEXT[next];
+}
+
+function ensureDetectCanvas() {
+  if (detectCanvas) return;
+  detectCanvas = document.createElement("canvas");
+  detectCanvas.width = DETECT_W;
+  detectCanvas.height = DETECT_H;
+  detectCtx = detectCanvas.getContext("2d", { willReadFrequently: true });
+}
+
+function startDetectionLoop() {
+  stopDetectionLoop();
+  ensureDetectCanvas();
+  cameraReadyAt = performance.now();
+  detectionStreak = 0;
+  detectionPrevFrame = null;
+  detectionLastTickAt = 0;
+  setDetectionState("searching");
+  detectionRAF = requestAnimationFrame(detectionTick);
+}
+
+function stopDetectionLoop() {
+  if (detectionRAF != null) cancelAnimationFrame(detectionRAF);
+  detectionRAF = null;
+  detectionPrevFrame = null;
+  detectionStreak = 0;
+}
+
+function detectionTick(now) {
+  // Schedule the next frame first so a thrown error in detection
+  // doesn't permanently kill the loop.
+  detectionRAF = requestAnimationFrame(detectionTick);
+  if ($("camModal").hidden || capturePending) return;
+  if (now - detectionLastTickAt < DETECT_MIN_INTERVAL_MS) return;
+  detectionLastTickAt = now;
+
+  const v = $("camVideo");
+  if (!v.videoWidth || !v.videoHeight) return;
+
+  detectCtx.drawImage(v, 0, 0, DETECT_W, DETECT_H);
+  let frame;
+  try {
+    frame = detectCtx.getImageData(0, 0, DETECT_W, DETECT_H);
+  } catch {
+    return; // same-origin streams won't trip this; bail safely if they do
+  }
+  const result = analyzeDetectionFrame(frame, detectionPrevFrame);
+  detectionPrevFrame = frame;
+  handleDetectionResult(result, now);
+}
+
+function analyzeDetectionFrame(curr, prev) {
+  const w = curr.width;
+  const h = curr.height;
+  const data = curr.data;
+
+  // ROI matches cam-frame::before (top:12% left:8% right:8% bottom:22%).
+  const x0 = (w * 0.08) | 0;
+  const x1 = (w * 0.92) | 0;
+  const y0 = (h * 0.12) | 0;
+  const y1 = (h * 0.78) | 0;
+
+  let sum = 0;
+  let sumSq = 0;
+  let edge = 0;
+  let count = 0;
+  for (let y = y0; y < y1; y += 2) {
+    for (let x = x0; x < x1; x += 2) {
+      const i = (y * w + x) * 4;
+      const lum = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+      sum += lum;
+      sumSq += lum * lum;
+      if (x + 4 < x1) {
+        const j = (y * w + (x + 4)) * 4;
+        const lum2 = data[j] * 0.299 + data[j + 1] * 0.587 + data[j + 2] * 0.114;
+        const d = lum - lum2;
+        edge += d < 0 ? -d : d;
+      }
+      count++;
+    }
+  }
+  const mean = sum / count;
+  const variance = sumSq / count - mean * mean;
+  const edgeDensity = edge / count;
+
+  let motion = Infinity;
+  if (prev && prev.width === w && prev.height === h) {
+    const p = prev.data;
+    let diff = 0;
+    let n = 0;
+    for (let y = y0; y < y1; y += 4) {
+      for (let x = x0; x < x1; x += 4) {
+        const i = (y * w + x) * 4;
+        const lum1 = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+        const lum2 = p[i] * 0.299 + p[i + 1] * 0.587 + p[i + 2] * 0.114;
+        const d = lum1 - lum2;
+        diff += d < 0 ? -d : d;
+        n++;
+      }
+    }
+    motion = diff / n;
+  }
+
+  const labelLike =
+    variance > DETECT_VARIANCE_THRESHOLD &&
+    edgeDensity > DETECT_EDGE_THRESHOLD &&
+    mean > DETECT_LUM_MIN &&
+    mean < DETECT_LUM_MAX;
+  const steady = motion < DETECT_MOTION_THRESHOLD;
+  return { labelLike, steady };
+}
+
+function handleDetectionResult({ labelLike, steady }, now) {
+  if (capturePending || autoCaptureScheduled) return;
+
+  if (!labelLike) {
+    detectionStreak = 0;
+    setDetectionState("searching");
+    return;
+  }
+  if (!steady) {
+    // Decay rather than reset — a single jittery frame in an
+    // otherwise-steady run shouldn't drop the user back to zero.
+    detectionStreak = detectionStreak > 0 ? detectionStreak - 1 : 0;
+    setDetectionState("framing");
+    return;
+  }
+
+  detectionStreak += 1;
+  if (detectionStreak < DETECT_READY_FRAMES) {
+    setDetectionState("framing");
+    return;
+  }
+
+  setDetectionState("ready");
+  if (now - cameraReadyAt < DETECT_AUTOFOCUS_GRACE_MS) return;
+
+  autoCaptureScheduled = true;
+  // Yield once so the "ready" paint lands before capturePhoto starts
+  // grabbing frames and tearing down the modal.
+  requestAnimationFrame(() => capturePhoto());
+}
+
 async function openCamera() {
   const modal = $("camModal");
   $("camError").hidden = true;
@@ -1048,6 +1288,9 @@ async function openCamera() {
   $("camGuide").hidden = true;
   $("camBottomBar").hidden = true;
   $("camShutter").disabled = true;
+  capturePending = false;
+  autoCaptureScheduled = false;
+  setDetectionState("searching");
   modal.hidden = false;
   document.body.classList.add("cam-open");
   try {
@@ -1059,6 +1302,7 @@ async function openCamera() {
     $("camShutter").disabled = false;
     await maybeShowFlip();
     setupTorchControl();
+    startDetectionLoop();
   } catch (err) {
     showCamError(err);
   }
@@ -1137,11 +1381,13 @@ $("camTorch").addEventListener("click", async () => {
 $("camFlip").addEventListener("click", async () => {
   $("camShutter").disabled = true;
   $("camSpinner").hidden = false;
+  stopDetectionLoop();
   try {
     camFacing = camFacing === "environment" ? "user" : "environment";
     await startStream(camFacing);
     await waitForVideoReady($("camVideo"));
     setupTorchControl();
+    startDetectionLoop();
   } catch (err) {
     showCamError(err);
     return;
@@ -1159,12 +1405,21 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeCamera();
 });
 
-$("camShutter").addEventListener("click", capturePhoto);
+$("camShutter").addEventListener("click", () => {
+  // Manual press — claim the auto-capture slot so the detection loop
+  // doesn't fire a parallel capture, then take the shot.
+  autoCaptureScheduled = true;
+  capturePhoto();
+});
 
 async function capturePhoto() {
+  if (capturePending) return;
   const v = $("camVideo");
   if (!v.videoWidth || !v.videoHeight) return;
+  capturePending = true;
+  stopDetectionLoop();
   $("camShutter").disabled = true;
+  $("camStage").classList.add("capturing");
 
   // Prefer ImageCapture.takePhoto() — it pulls a full-resolution still from
   // the camera (often 12 MP+) instead of a video frame (typically 720p–1080p).
@@ -1214,8 +1469,12 @@ async function capturePhoto() {
   }
 
   if (!blob) {
+    capturePending = false;
+    autoCaptureScheduled = false;
+    $("camStage").classList.remove("capturing");
     $("camShutter").disabled = false;
     showCamError(new Error("Failed to capture frame."));
+    startDetectionLoop();
     return;
   }
   const name = `capture-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
@@ -1226,6 +1485,10 @@ async function capturePhoto() {
 }
 
 function closeCamera() {
+  stopDetectionLoop();
+  capturePending = false;
+  autoCaptureScheduled = false;
+  $("camStage").classList.remove("capturing");
   stopStream();
   $("camModal").hidden = true;
   document.body.classList.remove("cam-open");
