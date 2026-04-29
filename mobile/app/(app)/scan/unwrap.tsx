@@ -236,6 +236,17 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
     () => tracker.trackerStateSv.value.coverage,
     [tracker.trackerStateSv],
   );
+  // Phase 1 embodiment derivations — feed the silhouette overlay so
+  // its scanning-glow pulse rate tracks rotation speed and its stroke
+  // width tightens with the user's grip steadiness.
+  const angularVelocitySv = useDerivedValue<number>(
+    () => tracker.trackerStateSv.value.angularVelocity,
+    [tracker.trackerStateSv],
+  );
+  const gripSteadinessSv = useDerivedValue<number>(
+    () => tracker.trackerStateSv.value.gripSteadiness,
+    [tracker.trackerStateSv],
+  );
 
   // Audit finding: the biggest source of strip-tone variation across a
   // scan is the camera's auto-exposure re-converging between
@@ -499,6 +510,8 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
         silhouetteSv={silhouetteSv}
         detectedSv={detectedSv}
         steadinessSv={steadinessSv}
+        angularVelocitySv={angularVelocitySv}
+        gripSteadinessSv={gripSteadinessSv}
         state={stateKind}
         pauseReason={pauseReason}
         viewportWidth={screen.width}

@@ -27,8 +27,10 @@ export type ScanStateKind =
  * six (`too_fast`, `too_slow`, `lost_bottle`, `blur`, `glare`,
  * `motion`); Stream 3 added `too_far` and `too_close` so the user gets
  * actionable copy when the bottle is at the wrong scan distance, even
- * before rotation starts. `ScanInstructions` (Stream 1) renders copy
- * for all eight.
+ * before rotation starts. Phase 1 of the embodied-scan refresh added
+ * `untrackable_surface` for sustained low optical-flow confidence
+ * (clean glass, blank can — surfaces our heuristic flow can't latch
+ * onto). `ScanInstructions` renders copy for all nine.
  */
 export type PauseReason =
   | 'too_fast'
@@ -38,7 +40,8 @@ export type PauseReason =
   | 'glare'
   | 'motion'
   | 'too_far'
-  | 'too_close';
+  | 'too_close'
+  | 'untrackable_surface';
 
 export type { FailReason };
 

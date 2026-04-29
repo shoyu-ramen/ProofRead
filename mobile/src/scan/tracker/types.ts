@@ -13,6 +13,21 @@ export interface BottleSilhouette {
   centerX: number;
   widthPx: number;
   steadinessScore: number;
+  /**
+   * Top COCO class among the beverage subset. `null` until Phase 2
+   * lands a real classifier; Phase 1 leaves this unpopulated.
+   */
+  class: 'bottle' | 'wine_glass' | 'cup' | null;
+  /** 0..1 probability of `class`; 0 when class is null. */
+  classConfidence: number;
+}
+
+export interface HandBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  confidence: number;
 }
 
 export interface FlowMeasurement {
@@ -46,4 +61,17 @@ export interface TrackerState {
   coverageStatus: CoverageStatus;
   capturedCheckpoints: number;
   frameTick: number;
+  /**
+   * Detected hand bbox (Phase 2 — palm detector). `null` while no
+   * palm is detected or before Phase 2 ships.
+   */
+  handBox: HandBox | null;
+  /**
+   * Composite "is the user's grip steady" signal in 0..1, blending the
+   * silhouette steadiness EMA with accelerometer motion magnitude.
+   * Drives the silhouette stroke-width tightening cue.
+   */
+  gripSteadiness: number;
+  /** EMA of FlowMeasurement.confidence, 0..1. Drives the untrackable-surface signal. */
+  flowQuality: number;
 }

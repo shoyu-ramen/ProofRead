@@ -43,6 +43,14 @@ const STALL_GRACE_MS = 600;
 // Above this we treat as "too fast" — cap from ARCH §3.
 const MAX_REV_PER_SEC = 1.2; // ~432°/sec; protects optical-flow precision
 
+// Untrackable-surface hysteresis: if the EMA of optical-flow confidence
+// stays below UNTRACKABLE_THRESHOLD for UNTRACKABLE_MS while the user
+// is mid-scan (coverage > 0), surface a pause that asks for a labeled
+// container. Threshold sits below the angle integrator's per-frame
+// MIN_CONFIDENCE (0.25) so a few transient bad frames don't trip it.
+const UNTRACKABLE_THRESHOLD = 0.18;
+const UNTRACKABLE_MS = 2500;
+
 export interface UseScanStateMachineResult {
   state: ScanState;
   /** Imperative escape hatches for the parent screen. */
@@ -71,6 +79,10 @@ export function useScanStateMachine(
   // For `too_slow`: when did we drop below MIN_REV_PER_SEC? null when
   // we're rotating fast enough.
   const stalledSinceRef = useRef<number | null>(null);
+  // For `untrackable_surface`: when did flowQuality first drop below
+  // UNTRACKABLE_THRESHOLD while the user was already mid-scan? null
+  // when flow is healthy.
+  const untrackableSinceRef = useRef<number | null>(null);
   // Wall-clock ms when `scanning` was last entered. Audit finding:
   // suppress `too_slow` for STALL_GRACE_MS after the transition so a
   // first-frame velocity dip doesn't immediately pause the scan.
@@ -89,6 +101,7 @@ export function useScanStateMachine(
       steadyNow: boolean;
       coverage: number;
       velocity: number;
+      flowQuality: number;
       pauseReason: PauseReason | null;
     }) => {
       // Read the timestamp here, after the runOnJS hop. Reading it in
@@ -127,6 +140,26 @@ export function useScanStateMachine(
         }
       } else {
         stalledSinceRef.current = null;
+      }
+
+      // Untrackable-surface integrator: only fault when the EMA stays
+      // below UNTRACKABLE_THRESHOLD for UNTRACKABLE_MS *and* the user
+      // is mid-scan (coverage > 0). Like too_slow, lower priority than
+      // any worklet-side reason — a transient blur / lost_bottle has a
+      // more specific fix and should win the copy slot.
+      if (
+        raw.coverage > 0 &&
+        raw.flowQuality < UNTRACKABLE_THRESHOLD &&
+        pauseReason === null
+      ) {
+        if (untrackableSinceRef.current === null) {
+          untrackableSinceRef.current = nowMs;
+        }
+        if (nowMs - untrackableSinceRef.current >= UNTRACKABLE_MS) {
+          pauseReason = 'untrackable_surface';
+        }
+      } else {
+        untrackableSinceRef.current = null;
       }
 
       dispatchTick({
@@ -189,6 +222,7 @@ export function useScanStateMachine(
         steadyNow,
         coverage: ts.coverage,
         velocity: v,
+        flowQuality: ts.flowQuality,
         pauseReason,
       });
     },
@@ -212,6 +246,7 @@ export function useScanStateMachine(
     dispatch({ type: 'reset' } satisfies ScanAction);
     steadySinceRef.current = null;
     stalledSinceRef.current = null;
+    untrackableSinceRef.current = null;
     scanningEnteredAtRef.current = null;
   }, []);
 
@@ -236,6 +271,7 @@ export function useScanStateMachine(
     return () => {
       steadySinceRef.current = null;
       stalledSinceRef.current = null;
+      untrackableSinceRef.current = null;
       scanningEnteredAtRef.current = null;
     };
   }, []);

@@ -38,7 +38,8 @@ export type PauseReason =
   | 'glare'
   | 'motion'
   | 'too_far'
-  | 'too_close';
+  | 'too_close'
+  | 'untrackable_surface';
 
 export type FailReason =
   | 'permission_denied'
@@ -158,6 +159,8 @@ function describe(
           return { text: 'Move closer to the bottle' };
         case 'too_close':
           return { text: 'Move the bottle back a bit' };
+        case 'untrackable_surface':
+          return { text: 'Try a labeled bottle or can' };
         default:
           return { text: 'Hold steady' };
       }

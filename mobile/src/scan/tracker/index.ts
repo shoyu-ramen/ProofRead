@@ -10,6 +10,7 @@ export type {
   BottleSilhouette,
   CoverageStatus,
   FlowMeasurement,
+  HandBox,
   PreCheckVerdict,
   TrackerState,
 } from './types';

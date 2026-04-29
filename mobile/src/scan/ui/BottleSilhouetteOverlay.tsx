@@ -15,6 +15,7 @@ import { StyleSheet, View } from 'react-native';
 import Animated, {
   Easing,
   useAnimatedProps,
+  useAnimatedReaction,
   useDerivedValue,
   useSharedValue,
   withRepeat,
@@ -47,6 +48,10 @@ export interface BottleSilhouetteOverlayProps {
   detectedSv: SharedValue<boolean>;
   /** 0..1 from the tracker — the EMA steadiness over recent frames. */
   steadinessSv: SharedValue<number>;
+  /** Signed angular velocity in rev/s. Drives the scanning-glow pulse rate. */
+  angularVelocitySv: SharedValue<number>;
+  /** 0..1 grip-steadiness EMA. Tightens the silhouette stroke as grip settles. */
+  gripSteadinessSv: SharedValue<number>;
   /** Active scan state — drives color + glow choices. */
   state: ScanStateKind;
   /** Pause reason when state is `paused`; `lost_bottle` triggers ghost. */
@@ -158,6 +163,8 @@ export function BottleSilhouetteOverlay({
   silhouetteSv,
   detectedSv,
   steadinessSv,
+  angularVelocitySv,
+  gripSteadinessSv,
   state,
   pauseReason,
   viewportWidth,
@@ -214,7 +221,11 @@ export function BottleSilhouetteOverlay({
       });
     }
 
-    // Glow pulse.
+    // Glow pulse. The 'scanning' branch only kicks off an initial
+    // 900ms baseline cycle — the velocity-driven reaction below
+    // re-launches the withRepeat with a duration that tracks the
+    // user's rotation speed, so the pulse feels "tied" to the bottle
+    // rather than running on its own clock.
     glowOpacity.value = 0;
     if (spec.pulse === 'ready') {
       glowOpacity.value = withRepeat(
@@ -263,6 +274,50 @@ export function BottleSilhouetteOverlay({
     glowOpacity,
   ]);
 
+  // Mirror the discrete state into a SharedValue so the
+  // velocity-driven reaction below can gate itself on `scanning` from
+  // the worklet thread without round-tripping through React props.
+  const stateKindSv = useSharedValue<ScanStateKind>(state);
+  useEffect(() => {
+    stateKindSv.value = state;
+  }, [state, stateKindSv]);
+
+  // Velocity-driven pulse rate (SCAN_DESIGN §4.1): re-launch the
+  // scanning glow's withRepeat whenever the rotation speed crosses a
+  // bucket boundary so the user feels the silhouette breathing in
+  // sync with their wrist. The 60ms hysteresis avoids re-launching on
+  // every micro-jitter.
+  useAnimatedReaction(
+    () => {
+      'worklet';
+      if (stateKindSv.value !== 'scanning') return null;
+      const v = Math.abs(angularVelocitySv.value);
+      const denom = v < 0.1 ? 0.1 : v;
+      const period = 900 / denom / 10;
+      return period < 700 ? 700 : period > 1400 ? 1400 : period;
+    },
+    (duration, prev) => {
+      'worklet';
+      if (duration === null) return;
+      if (prev !== null && Math.abs(duration - prev) < 60) return;
+      const half = duration / 2;
+      glowOpacity.value = withRepeat(
+        withSequence(
+          withTiming(0.85, {
+            duration: half,
+            easing: Easing.inOut(Easing.sin),
+          }),
+          withTiming(0.5, {
+            duration: half,
+            easing: Easing.inOut(Easing.sin),
+          }),
+        ),
+        -1,
+        false,
+      );
+    },
+  );
+
   // Stash last-live frame so the freeze freezes at the current value
   // and not at a stale one. Declared before `renderFrame` so the
   // worklet closure references a defined binding.
@@ -306,13 +361,18 @@ export function BottleSilhouetteOverlay({
     const f = renderFrame.value;
     const x = f.centerX - f.widthPx / 2;
     const y = f.centerY - f.heightPx / 2;
+    // Phase 1 embodiment: the outline cinches as the user's grip
+    // settles. The base strokeWidth tween still owns transition
+    // shaping; this multiplier applies live grip damping on top so
+    // the visible cinch tracks the SharedValue per frame.
+    const tightness = 0.7 + 0.3 * gripSteadinessSv.value;
     return {
       x,
       y,
       width: f.widthPx,
       height: f.heightPx,
       opacity: liveOpacity.value,
-      strokeWidth: strokeWidth.value,
+      strokeWidth: strokeWidth.value * tightness,
     } as Partial<{
       x: number;
       y: number;
@@ -327,13 +387,16 @@ export function BottleSilhouetteOverlay({
     const f = renderFrame.value;
     const x = f.centerX - f.widthPx / 2;
     const y = f.centerY - f.heightPx / 2;
+    const tightness = 0.7 + 0.3 * gripSteadinessSv.value;
     return {
       x,
       y,
       width: f.widthPx,
       height: f.heightPx,
       opacity: glowOpacity.value * (spec.glowRadius > 0 ? 1 : 0),
-      strokeWidth: scanGeometry.silhouetteStrokeWidth + spec.glowRadius * 0.6,
+      strokeWidth:
+        scanGeometry.silhouetteStrokeWidth * tightness +
+        spec.glowRadius * 0.6,
     } as Partial<{
       x: number;
       y: number;

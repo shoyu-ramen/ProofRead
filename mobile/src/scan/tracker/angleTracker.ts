@@ -37,6 +37,11 @@ const VELOCITY_ALPHA = 0.3;
 // the bottle is probably stationary or the templates couldn't agree.
 const MIN_CONFIDENCE = 0.25;
 
+// EMA factor for flow-confidence smoothing. The raw `flow.confidence`
+// jitters frame-to-frame; the EMA produces the `flowQuality` signal
+// that drives the untrackable-surface pause decision.
+const FLOW_QUALITY_ALPHA = 0.2;
+
 // Exposed input to keep this helper independent of the worklet's
 // shared-value plumbing. The frameProcessor builds it from its
 // previous TrackerState plus the current dt.
@@ -44,6 +49,8 @@ export interface AngleTrackerInputs {
   coverage: number;
   rotationDirection: TrackerState['rotationDirection'];
   angularVelocity: number;
+  /** Prior EMA of flow.confidence — needed to roll the next sample in. */
+  flowQuality: number;
   dtSec: number;
 }
 
@@ -51,6 +58,8 @@ export interface AngleTrackerOutputs {
   coverage: number;
   angularVelocity: number;
   rotationDirection: TrackerState['rotationDirection'];
+  /** EMA of flow.confidence (0..1). Drives the untrackable-surface signal. */
+  flowQuality: number;
 }
 
 /**
@@ -64,6 +73,15 @@ export function computeAngularProgress(
 ): AngleTrackerOutputs {
   'worklet';
 
+  // EMA the raw flow confidence regardless of detection / gate state.
+  // When the bottle is lost or the surface is untrackable we still
+  // want flowQuality to decay toward 0 (rather than freezing at the
+  // last good value) so the state machine can fault into
+  // untrackable_surface within the configured window.
+  const nextFlowQuality =
+    state.flowQuality * (1 - FLOW_QUALITY_ALPHA) +
+    flow.confidence * FLOW_QUALITY_ALPHA;
+
   // No silhouette or no confident flow → coverage holds steady.
   // Velocity decays toward zero so the UI gets a smooth handoff.
   if (
@@ -75,6 +93,7 @@ export function computeAngularProgress(
       coverage: state.coverage,
       angularVelocity: state.angularVelocity * (1 - VELOCITY_ALPHA),
       rotationDirection: state.rotationDirection,
+      flowQuality: nextFlowQuality,
     };
   }
 
@@ -120,6 +139,7 @@ export function computeAngularProgress(
     coverage: nextCoverage,
     angularVelocity: nextVel,
     rotationDirection: direction,
+    flowQuality: nextFlowQuality,
   };
 }
 

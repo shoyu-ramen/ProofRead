@@ -57,6 +57,8 @@ const EMPTY: BottleSilhouette = {
   centerX: 0,
   widthPx: 0,
   steadinessScore: 0,
+  class: null,
+  classConfidence: 0,
 };
 
 /**
@@ -192,6 +194,11 @@ export function detectBottle(
     centerX: (leftMedian + rightMedian) * 0.5,
     widthPx,
     steadinessScore: clamp01(tightness),
+    // Heuristic detector can't classify; Phase 2's TFLite path will
+    // populate these. Keeping the field present keeps the shape stable
+    // so the worklet's writes to trackerStateSv don't deopt.
+    class: null,
+    classConfidence: 0,
   };
 }
 

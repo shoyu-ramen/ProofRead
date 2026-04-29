@@ -36,6 +36,7 @@ import type {
   PreCheckVerdict,
   TrackerState,
 } from './types';
+import type { SharedValue } from 'react-native-reanimated';
 
 // Resize target. 160×240 is the silhouette-detection sweet spot from
 // ARCH §4.1: still hits ~10–15 Hz on iPhone 12+ with the full pipeline.
@@ -93,6 +94,8 @@ const EMPTY_SILHOUETTE: BottleSilhouette = {
   centerX: 0,
   widthPx: 0,
   steadinessScore: 0,
+  class: null,
+  classConfidence: 0,
 };
 
 const EMPTY_FLOW: FlowMeasurement = {
@@ -111,6 +114,9 @@ const INITIAL_TRACKER_STATE: TrackerState = {
   coverageStatus: null,
   capturedCheckpoints: 0,
   frameTick: 0,
+  handBox: null,
+  gripSteadiness: 0,
+  flowQuality: 0,
 };
 
 export interface TrackerFrameProcessor {
@@ -161,9 +167,12 @@ export function useTrackerFrameProcessor(): TrackerFrameProcessor {
 
   // JS-side accelerometer verdict feeds back into the worklet via a
   // shared value so the worklet writes a complete preCheck without
-  // needing JS round-trips.
+  // needing JS round-trips. `motionMagnitudeSv` carries the same
+  // signal as a normalized 0..1 magnitude (variance / threshold,
+  // clamped) so the worklet can blend it into `gripSteadiness` rather
+  // than getting a binary shaking/not-shaking verdict.
   const motionDetectedSv = useSharedValue<boolean>(false);
-  const motionDetected = useMotionVerdict();
+  const { shaking: motionDetected, motionMagnitudeSv } = useMotionVerdict();
   useEffect(() => {
     motionDetectedSv.value = motionDetected;
   }, [motionDetected, motionDetectedSv]);
@@ -289,11 +298,23 @@ export function useTrackerFrameProcessor(): TrackerFrameProcessor {
           coverage: prior.coverage,
           rotationDirection: prior.rotationDirection,
           angularVelocity: prior.angularVelocity,
+          flowQuality: prior.flowQuality,
           dtSec,
         },
         flow,
         silhouette,
       );
+
+      // Embodiment signals (Phase 1). gripSteadiness blends the
+      // silhouette's per-frame edge tightness with the accelerometer
+      // motion magnitude — a steady hand on a steady silhouette reads
+      // 1.0; either source dragging the score down pulls it toward 0.
+      // Drives the silhouette stroke-width tightening cue in the
+      // overlay. Phase 2 will populate `handBox` from the palm
+      // detector; for now it stays null.
+      const motionMag = motionMagnitudeSv.value;
+      const motionDamp = motionMag < 0 ? 0 : motionMag > 1 ? 1 : motionMag;
+      const gripSteadiness = silhouette.steadinessScore * (1 - motionDamp);
 
       // Pre-check: priority order matches the existing camera screen
       // (motion → blur → glare → coverage → ready). Motion is the
@@ -338,6 +359,9 @@ export function useTrackerFrameProcessor(): TrackerFrameProcessor {
         coverageStatus,
         capturedCheckpoints: prior.capturedCheckpoints,
         frameTick: idx,
+        handBox: prior.handBox,
+        gripSteadiness,
+        flowQuality: angle.flowQuality,
       };
 
       frameTickSv.value = idx;
@@ -405,9 +429,20 @@ export function useTrackerFrameProcessor(): TrackerFrameProcessor {
  * Accelerometer-driven motion verdict. Variance of |acceleration|
  * over a rolling window high-passes gravity, so a stationary phone
  * reads as steady regardless of orientation.
+ *
+ * Returns both the boolean shaking verdict (for the pre-check pause
+ * pathway) and a shared value carrying the variance normalized to
+ * [0,1] against MOTION_VARIANCE_THRESHOLD — the worklet uses this
+ * continuous signal to blend into `gripSteadiness`.
  */
-export function useMotionVerdict(): boolean {
+export interface MotionVerdictResult {
+  shaking: boolean;
+  motionMagnitudeSv: SharedValue<number>;
+}
+
+export function useMotionVerdict(): MotionVerdictResult {
   const [shaking, setShaking] = useState(false);
+  const motionMagnitudeSv = useSharedValue<number>(0);
   const windowRef = useRef<number[]>([]);
 
   useEffect(() => {
@@ -428,6 +463,10 @@ export function useMotionVerdict(): boolean {
         for (const v of window) acc += (v - mean) * (v - mean);
         const variance = acc / window.length;
 
+        const normalized = variance / MOTION_VARIANCE_THRESHOLD;
+        motionMagnitudeSv.value =
+          normalized < 0 ? 0 : normalized > 1 ? 1 : normalized;
+
         setShaking((prev) => {
           const next = variance > MOTION_VARIANCE_THRESHOLD;
           return prev === next ? prev : next;
@@ -444,8 +483,9 @@ export function useMotionVerdict(): boolean {
       // worklet would emit `paused/motion` for up to ACCEL_INTERVAL_MS
       // * ACCEL_WINDOW after every remount.
       setShaking(false);
+      motionMagnitudeSv.value = 0;
     };
-  }, []);
+  }, [motionMagnitudeSv]);
 
-  return shaking;
+  return { shaking, motionMagnitudeSv };
 }
