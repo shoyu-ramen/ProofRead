@@ -1,19 +1,20 @@
 /**
  * CompletionReveal — the magic-moment overlay that runs when coverage
- * reaches 1.0 (SCAN_DESIGN §8 storyboard, ~1340ms total).
+ * reaches 1.0.
  *
- * Composes the six stages described in §8: pre-reveal lock, ring →
- * green flash, sparkle pass across the panorama strip, strip lift &
- * expand, hero copy, hand-off. The strip lift itself is owned by the
- * panorama agent's PanoramaCanvas — this component provides the
- * sparkle layer, hero copy, dim scrim ramp, and the timing signal
- * (`onComplete`) that the parent screen uses to navigate.
+ * Composes the §8 storyboard stages (pre-reveal lock, sparkle pass,
+ * scrim ramp, hero copy, hand-off) on a compressed master clock so the
+ * reveal feels celebratory without being a paywall: navigation fires at
+ * 700ms regardless of whether longer animations are still resolving.
+ * Tap-anywhere short-circuits the timer entirely. The strip lift itself
+ * is owned by the panorama agent's PanoramaCanvas.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
   Dimensions,
+  Pressable,
   StyleSheet,
   Text,
   View,
@@ -30,6 +31,9 @@ import * as Haptics from 'expo-haptics';
 import { colors } from '@src/theme';
 
 const SPARKLE_TAIL_COUNT = 8;
+// Master clock — navigation fires at this point even if some animations
+// (e.g. the sparkle tail settle) are still resolving in the background.
+const REVEAL_HANDOFF_MS = 700;
 
 export interface CompletionRevealProps {
   /** True while the parent state is `complete`. Triggers the reveal. */
@@ -41,8 +45,8 @@ export interface CompletionRevealProps {
    */
   panoramaFrame: { x: number; y: number; width: number; height: number };
   /**
-   * Fired once at `t = 1340ms` to signal the parent screen it should
-   * navigate to /(app)/scan/review.
+   * Fired at `t = REVEAL_HANDOFF_MS` (or immediately on tap) to signal
+   * the parent screen it should navigate to /(app)/scan/review.
    */
   onComplete: () => void;
 }
@@ -140,13 +144,15 @@ export function CompletionReveal({
       withTiming(1, { duration: 240, easing: Easing.out(Easing.cubic) }),
     );
 
-    // Stage 5 — Hand-off at t = 1340ms.
+    // Stage 5 — Hand-off at t = REVEAL_HANDOFF_MS. Some of the
+    // animations above run longer than this; that's fine, they keep
+    // resolving as the next screen mounts.
     const tHandoff = setTimeout(() => {
       if (!completeFiredRef.current) {
         completeFiredRef.current = true;
         onComplete();
       }
-    }, 1340);
+    }, REVEAL_HANDOFF_MS);
     return () => clearTimeout(tHandoff);
   }, [
     active,
@@ -188,14 +194,21 @@ export function CompletionReveal({
     opacity: scrimOpacity.value,
   }));
 
+  const handleSkip = () => {
+    if (completeFiredRef.current) return;
+    completeFiredRef.current = true;
+    onComplete();
+  };
+
   if (!active) return null;
 
   return (
-    <View
-      pointerEvents="none"
-      style={StyleSheet.absoluteFill}
+    <Pressable
+      onPress={handleSkip}
       accessibilityRole="alert"
-      accessibilityLabel="Scan complete"
+      accessibilityLabel="Scan complete. Tap to continue."
+      accessibilityHint="Skips the reveal animation"
+      style={StyleSheet.absoluteFill}
     >
       {/* Stage 3 dim scrim — ramps the camera underneath toward black. */}
       <Animated.View
@@ -242,16 +255,16 @@ export function CompletionReveal({
         ]}
       >
         <Animated.Text style={[styles.hero, heroStyle]}>
-          Got it{' '}
+          Label captured{' '}
           <Animated.Text style={{ color: colors.scanReady, fontWeight: '700' }}>
             ✓
           </Animated.Text>
         </Animated.Text>
         <Animated.Text style={[styles.caption, captionStyle]}>
-          Reviewing your label…
+          Checking compliance…
         </Animated.Text>
       </View>
-    </View>
+    </Pressable>
   );
 }
 

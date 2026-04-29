@@ -1,88 +1,99 @@
 /**
- * Processing screen — staged progress + cancel.
+ * Processing screen — indeterminate progress while the backend processes
+ * the scan.
  *
- * SPEC §v1.6 step 7. Polls GET /v1/scans/:id with tanstack-query at
- * a short interval until status === 'complete' (or 'failed'), then
- * routes to the report.
+ * SPEC §v1.6 step 7. Polls GET /v1/scans/:id with tanstack-query at a
+ * short interval until status === 'complete' (or 'failed'), then routes
+ * to the report.
  *
- * The backend's process_scan() runs synchronously in v1, so by the
- * time the finalize call returns the scan should already be complete.
- * We still poll to handle the v2 async case and to give the UI time
- * to render the processing animation.
+ * The backend reports a single coarse `processing` status today, but the
+ * elapsed timer drives a synthesized 3-phase indicator
+ * ("Reading text" → "Extracting fields" → "Checking compliance") so the
+ * user has something to read while we wait. The phases are pure UI —
+ * the backend has no concept of them.
  *
- * The backend `status` field is coarse — just uploading | processing |
- * complete | failed. To give users a more legible sense of what's
- * happening, we synthesize sub-stages (OCR → field extraction → rule
- * engine) over the long `processing` window on a wall-clock timer.
- * These transitions are estimates, not real backend signals; the UI
- * surfaces that honestly via an "estimating" caption.
+ * On `failed`, an inline failure card replaces the spinner with three
+ * concrete actions ("Try again", "Rescan label", "Back to home"). The
+ * panorama and scan_id are preserved in the Zustand store so "Try
+ * again" can re-enter /scan/review and re-run the upload pipeline.
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 
-import { Button, Screen, SectionHeader } from '@src/components';
+import { Button, ProgressBar, Screen, SectionHeader } from '@src/components';
 import { apiClient } from '@src/api/client';
 import { queryKeys } from '@src/state/queryClient';
-import type { ScanStatus } from '@src/api/types';
 import { colors, radius, spacing, typography } from '@src/theme';
 
-// Stage identifiers for the staged checklist. Order matters — index
-// is used to compare current-vs-target stage.
-type StageId = 'uploading' | 'ocr' | 'extract' | 'rules' | 'done';
-
-interface Stage {
-  id: StageId;
+interface ProcessingPhase {
+  key: 'reading' | 'extracting' | 'compliance';
   label: string;
-  // Whether this stage maps 1:1 to a real backend status, or is
-  // synthesized on the client. Used to show the "estimating" caption.
-  synthesized: boolean;
+  // Inclusive lower bound (seconds) at which this phase becomes active.
+  startSec: number;
+  // Exclusive upper bound. `null` for the final phase (no upper bound).
+  endSec: number | null;
 }
 
-const STAGES: ReadonlyArray<Stage> = [
-  { id: 'uploading', label: 'Uploading images', synthesized: false },
-  { id: 'ocr', label: 'Reading the label', synthesized: true },
-  { id: 'extract', label: 'Extracting fields', synthesized: true },
-  { id: 'rules', label: 'Running TTB rule engine', synthesized: true },
-  { id: 'done', label: 'Done', synthesized: false },
+const PHASES: ProcessingPhase[] = [
+  { key: 'reading', label: 'Reading text', startSec: 0, endSec: 6 },
+  { key: 'extracting', label: 'Extracting fields', startSec: 6, endSec: 14 },
+  { key: 'compliance', label: 'Checking compliance', startSec: 14, endSec: null },
 ];
 
-// Rough wall-clock spacing used to step through the synthesized
-// sub-stages while the backend sits on `processing`. Real timing is
-// not on the wire today (would need per-stage status from §v2.7).
-const SUB_STAGE_INTERVAL_MS = 1_200;
+const FAILURE_DEFAULT_MESSAGE =
+  'Analysis failed. The scan may not have been clear enough.';
+
+function phaseFor(elapsedSec: number): { phase: ProcessingPhase; index: number } {
+  for (let i = 0; i < PHASES.length; i += 1) {
+    const p = PHASES[i]!;
+    if (p.endSec === null || elapsedSec < p.endSec) {
+      return { phase: p, index: i };
+    }
+  }
+  // Defensive fallback — PHASES always ends with an open-ended phase.
+  return { phase: PHASES[PHASES.length - 1]!, index: PHASES.length - 1 };
+}
+
+/**
+ * Translate the elapsed seconds into a 0..1 progress value across the
+ * full phase schedule. The final phase has no upper bound, so we stop
+ * advancing the bar at the boundary into "Checking compliance" and let
+ * the bar sit at 100% with the indeterminate spinner doing the talking
+ * after that. Backend has no real progress signal, so this is a
+ * synthesized hint, not a promise.
+ */
+function progressFor(elapsedSec: number): number {
+  const last = PHASES[PHASES.length - 1]!;
+  const total = last.startSec; // 14s in the current schedule
+  if (total <= 0) return 0;
+  return Math.max(0, Math.min(1, elapsedSec / total));
+}
 
 export default function ProcessingScreen(): React.ReactElement {
   const { id } = useLocalSearchParams<{ id: string }>();
   const scanId = typeof id === 'string' ? id : '';
 
-  const { data, error, isFetching } = useQuery({
+  const { data, error } = useQuery({
     queryKey: queryKeys.scan(scanId),
     enabled: scanId.length > 0,
     queryFn: () => apiClient.getScan(scanId),
     refetchInterval: (q) => {
       const status = q.state.data?.status;
       if (status === 'complete' || status === 'failed') return false;
-      // SPEC §v1.10: poll until complete. 1s is plenty for the v1
-      // synchronous backend; v2 will move to websockets per §v2.7.
       return 1_000;
     },
   });
 
-  // Tick a synthesized sub-stage forward while the backend is in the
-  // long `processing` state. Reset whenever processing starts so each
-  // visit to the screen plays the animation from the top.
-  const [subStageIdx, setSubStageIdx] = useState(0);
+  // Tick a wall-clock counter for the phase indicator. Real time is
+  // real information, even if the phase boundaries themselves are
+  // synthesized.
+  const [elapsedSec, setElapsedSec] = useState(0);
   useEffect(() => {
-    if (data?.status !== 'processing') {
-      setSubStageIdx(0);
-      return;
-    }
-    const t = setInterval(() => {
-      setSubStageIdx((i) => Math.min(i + 1, 2)); // 0:ocr, 1:extract, 2:rules
-    }, SUB_STAGE_INTERVAL_MS);
+    if (data?.status === 'complete' || data?.status === 'failed') return;
+    const t = setInterval(() => setElapsedSec((n) => n + 1), 1_000);
     return () => clearInterval(t);
   }, [data?.status]);
 
@@ -90,212 +101,157 @@ export default function ProcessingScreen(): React.ReactElement {
     if (data?.status === 'complete') {
       router.replace(`/(app)/scan/report/${scanId}`);
     }
-    if (data?.status === 'failed') {
-      Alert.alert('Scan failed', 'Processing failed. Please retry.', [
-        { text: 'OK', onPress: () => router.replace('/(app)/home') },
-      ]);
-    }
+    // No auto-navigation on `failed`; the inline failure card below
+    // owns the recovery flow.
   }, [data?.status, scanId]);
 
-  const currentStageIdx = useMemo(
-    () => stageIndexFor(data?.status, subStageIdx),
-    [data?.status, subStageIdx],
+  const { phase, index: phaseIndex } = useMemo(
+    () => phaseFor(elapsedSec),
+    [elapsedSec],
   );
+  const progress = useMemo(() => progressFor(elapsedSec), [elapsedSec]);
 
   const isFailed = data?.status === 'failed';
-  const currentStage = STAGES[currentStageIdx];
-  const synthesizing =
-    !isFailed && data?.status === 'processing' && currentStage?.synthesized === true;
+  // ScanStatusResponse currently has no `reason` field, but be
+  // forgiving in case the backend grows one before this code is
+  // updated again.
+  const failureMessage =
+    (isFailed &&
+      typeof (data as unknown as { reason?: unknown })?.reason === 'string' &&
+      ((data as unknown as { reason: string }).reason.trim() || null)) ||
+    FAILURE_DEFAULT_MESSAGE;
 
   return (
     <Screen>
       <SectionHeader
-        title="Analyzing"
-        subtitle="OCR, field extraction, and TTB rule checks."
+        title={isFailed ? 'Scan failed' : 'Analyzing'}
+        subtitle={
+          isFailed
+            ? "We couldn't finish processing this label."
+            : 'OCR, field extraction, and TTB rule checks.'
+        }
       />
 
-      <View style={styles.stageList}>
-        {STAGES.map((stage, idx) => (
-          <StageRow
-            key={stage.id}
-            label={stage.label}
-            state={
-              isFailed
-                ? idx < currentStageIdx
-                  ? 'done'
-                  : idx === currentStageIdx
-                  ? 'failed'
-                  : 'pending'
-                : idx < currentStageIdx
-                ? 'done'
-                : idx === currentStageIdx
-                ? 'active'
-                : 'pending'
-            }
-          />
-        ))}
-      </View>
+      {isFailed ? (
+        <View style={styles.failureCard}>
+          <Text style={styles.failureTitle}>Analysis didn't complete</Text>
+          <Text style={styles.failureMessage}>{failureMessage}</Text>
+          <View style={styles.failureActions}>
+            <Button
+              label="Try again"
+              variant="primary"
+              fullWidth
+              onPress={() => {
+                // The panorama + scan_id remain in the Zustand store;
+                // the review screen will re-run createScan + upload +
+                // finalize on mount.
+                router.replace('/(app)/scan/review');
+              }}
+            />
+            <Button
+              label="Rescan label"
+              variant="secondary"
+              fullWidth
+              onPress={() => router.replace('/(app)/scan/setup')}
+            />
+            <Button
+              label="Back to home"
+              variant="ghost"
+              fullWidth
+              onPress={() => router.replace('/(app)/home')}
+            />
+          </View>
+        </View>
+      ) : (
+        <View style={styles.progressCard}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={styles.phaseLabel}>{phase.label}</Text>
+          <ProgressBar value={progress} style={styles.progressBar} />
+          <Text style={styles.elapsedText}>
+            Step {phaseIndex + 1} of {PHASES.length} · {elapsedSec}s
+          </Text>
+        </View>
+      )}
 
-      <View style={styles.captionBlock}>
-        {error ? (
-          <Text style={styles.errorCaption}>
-            Couldn't reach the server. Retrying…
-          </Text>
-        ) : null}
-        {synthesizing ? (
-          <Text style={styles.estimateCaption}>
-            Sub-stage timing is estimated — backend reports a single
-            "processing" status today.
-          </Text>
-        ) : null}
-        <Text style={styles.scanId}>Scan {scanId.slice(0, 8)}…</Text>
-      </View>
+      {!isFailed ? (
+        <View style={styles.captionBlock}>
+          {error ? (
+            <Text style={styles.errorCaption}>
+              Couldn't reach the server. Retrying…
+            </Text>
+          ) : null}
+          <Text style={styles.scanId}>Scan {scanId.slice(0, 8)}…</Text>
+        </View>
+      ) : (
+        <View style={styles.captionBlock}>
+          <Text style={styles.scanId}>Scan {scanId.slice(0, 8)}…</Text>
+        </View>
+      )}
 
       <View style={{ flex: 1 }} />
-      <Button
-        label="Run in background"
-        variant="secondary"
-        onPress={() => {
-          // The backend has no cancel endpoint in v1 — leaving this
-          // screen abandons polling but the scan continues server-side
-          // and lands in history. Labeled "Run in background" so the
-          // affordance matches the actual behavior; renames to "Cancel"
-          // once a backend cancel endpoint lands.
-          router.replace('/(app)/home');
-        }}
-        // While submitting we don't want the user to bail mid-upload —
-        // but once we're polling, backgrounding is fine.
-        disabled={isFetching && !data}
-      />
+      {!isFailed ? (
+        <Button
+          label="Run in background"
+          variant="secondary"
+          onPress={() => {
+            // Backend has no cancel endpoint in v1; leaving abandons
+            // polling but the scan still lands in history.
+            router.replace('/(app)/home');
+          }}
+        />
+      ) : null}
     </Screen>
   );
 }
 
-type StageState = 'done' | 'active' | 'pending' | 'failed';
-
-function StageRow({
-  label,
-  state,
-}: {
-  label: string;
-  state: StageState;
-}): React.ReactElement {
-  return (
-    <View style={styles.stageRow} accessibilityRole="text">
-      <View style={[styles.indicator, indicatorStyleFor(state)]}>
-        {state === 'active' ? (
-          <ActivityIndicator size="small" color={colors.primary} />
-        ) : state === 'done' ? (
-          <Text style={styles.indicatorGlyph}>✓</Text>
-        ) : state === 'failed' ? (
-          <Text style={[styles.indicatorGlyph, { color: colors.fail }]}>!</Text>
-        ) : null}
-      </View>
-      <Text
-        style={[
-          styles.stageLabel,
-          state === 'pending' && styles.stageLabelPending,
-          state === 'active' && styles.stageLabelActive,
-          state === 'failed' && styles.stageLabelFailed,
-        ]}
-      >
-        {label}
-      </Text>
-    </View>
-  );
-}
-
-function indicatorStyleFor(state: StageState) {
-  switch (state) {
-    case 'done':
-      return {
-        backgroundColor: 'rgba(61,220,151,0.15)',
-        borderColor: colors.pass,
-      };
-    case 'active':
-      return {
-        backgroundColor: 'rgba(110,168,254,0.12)',
-        borderColor: colors.primary,
-      };
-    case 'failed':
-      return {
-        backgroundColor: 'rgba(255,107,107,0.12)',
-        borderColor: colors.fail,
-      };
-    case 'pending':
-      return {
-        backgroundColor: colors.surfaceAlt,
-        borderColor: colors.border,
-      };
-  }
-}
-
-function stageIndexFor(status: ScanStatus | undefined, subStageIdx: number): number {
-  // Maps the backend's coarse status (and the synthesized sub-stage
-  // counter while processing) to an index into STAGES.
-  // STAGES = [uploading, ocr, extract, rules, done]
-  switch (status) {
-    case undefined:
-      return 0;
-    case 'uploading':
-      return 0;
-    case 'processing':
-      // 0 → ocr (1), 1 → extract (2), 2 → rules (3)
-      return 1 + Math.max(0, Math.min(2, subStageIdx));
-    case 'complete':
-      return 4;
-    case 'failed':
-      // Park at "rules" so the failure marker lands on the latest
-      // pipeline step — we don't know which stage actually failed.
-      return 3;
-  }
-}
-
 const styles = StyleSheet.create({
-  stageList: {
+  progressCard: {
     marginTop: spacing.lg,
-    gap: spacing.md,
-  },
-  stageRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-  },
-  indicator: {
-    width: 28,
-    height: 28,
-    borderRadius: radius.lg,
+    padding: spacing.xl,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
     borderWidth: 1,
+    borderRadius: radius.md,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: spacing.md,
   },
-  indicatorGlyph: {
-    ...typography.caption,
-    color: colors.pass,
-    fontWeight: '700',
-  },
-  stageLabel: {
-    ...typography.body,
+  phaseLabel: {
+    ...typography.heading,
     color: colors.text,
-    flex: 1,
+    textAlign: 'center',
   },
-  stageLabelPending: {
+  progressBar: {
+    alignSelf: 'stretch',
+  },
+  elapsedText: {
+    ...typography.caption,
     color: colors.textMuted,
   },
-  stageLabelActive: {
-    fontWeight: '600',
+  failureCard: {
+    marginTop: spacing.lg,
+    padding: spacing.lg,
+    backgroundColor: colors.surface,
+    borderColor: colors.fail,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    gap: spacing.md,
   },
-  stageLabelFailed: {
+  failureTitle: {
+    ...typography.heading,
     color: colors.fail,
+  },
+  failureMessage: {
+    ...typography.body,
+    color: colors.text,
+  },
+  failureActions: {
+    gap: spacing.sm,
+    marginTop: spacing.xs,
   },
   captionBlock: {
     gap: spacing.xs,
     marginTop: spacing.md,
-  },
-  estimateCaption: {
-    ...typography.caption,
-    color: colors.textMuted,
-    fontStyle: 'italic',
   },
   errorCaption: {
     ...typography.caption,

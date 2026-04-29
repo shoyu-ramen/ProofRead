@@ -1,9 +1,12 @@
 /**
- * Container size picker. Per SPEC §v1.5 F1.4: defaults 355, 473, 500,
- * 650 mL plus a custom mL input.
+ * Scan setup — combined beverage-type + container-size picker.
+ *
+ * v1 only enables Beer; sensible defaults (355 mL, not imported) are
+ * pre-populated so the user can tap "Continue to capture" without
+ * touching anything else.
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Keyboard,
   Pressable,
@@ -19,13 +22,37 @@ import {
   DEFAULT_CONTAINER_SIZES,
   useScanStore,
 } from '@src/state/scanStore';
+import type { BeverageType } from '@src/api/types';
 import { colors, radius, spacing, typography } from '@src/theme';
 
-export default function ContainerSizePicker(): React.ReactElement {
+interface BeverageOption {
+  type: BeverageType;
+  label: string;
+  enabled: boolean;
+  helper?: string;
+}
+
+const BEVERAGES: BeverageOption[] = [
+  { type: 'beer', label: 'Beer', enabled: true },
+  { type: 'wine', label: 'Wine', enabled: false, helper: 'Coming soon' },
+  { type: 'spirits', label: 'Spirits', enabled: false, helper: 'Coming soon' },
+];
+
+const DEFAULT_CONTAINER_ML = 355;
+
+export default function ScanSetup(): React.ReactElement {
+  const beverageType = useScanStore((s) => s.beverageType);
+  const setBeverageType = useScanStore((s) => s.setBeverageType);
   const containerSizeMl = useScanStore((s) => s.containerSizeMl);
   const setContainerSize = useScanStore((s) => s.setContainerSize);
   const isImported = useScanStore((s) => s.isImported);
   const setIsImported = useScanStore((s) => s.setIsImported);
+
+  // Pre-select Beer + 355 mL on first mount if nothing is set yet.
+  useEffect(() => {
+    if (beverageType === null) setBeverageType('beer');
+    if (containerSizeMl === null) setContainerSize(DEFAULT_CONTAINER_ML);
+  }, [beverageType, containerSizeMl, setBeverageType, setContainerSize]);
 
   const presetSizes = useMemo(
     () => DEFAULT_CONTAINER_SIZES.map((s) => s.ml),
@@ -41,25 +68,62 @@ export default function ContainerSizePicker(): React.ReactElement {
   const applyCustom = () => {
     const n = Number.parseInt(customDraft, 10);
     if (!Number.isFinite(n) || n <= 0 || n > 10_000) {
-      // Backend caps container_size_ml at 10,000.
       return;
     }
     setContainerSize(n);
     Keyboard.dismiss();
   };
 
+  const canContinue =
+    beverageType !== null &&
+    containerSizeMl !== null &&
+    containerSizeMl > 0;
+
   const handleNext = () => {
-    if (containerSizeMl === null || containerSizeMl <= 0) return;
+    if (!canContinue) return;
     router.push('/(app)/scan/unwrap');
   };
 
   return (
     <Screen>
       <SectionHeader
-        title="Container size"
-        subtitle="Tap a preset, or type a custom volume in mL."
+        title="Scan setup"
+        subtitle="Defaults are good for a 12 oz can. Adjust if needed."
       />
 
+      <Text style={styles.sectionLabel}>Beverage</Text>
+      <View style={styles.options}>
+        {BEVERAGES.map((opt) => {
+          const selected = beverageType === opt.type;
+          return (
+            <Pressable
+              key={opt.type}
+              accessibilityRole="radio"
+              accessibilityState={{ selected, disabled: !opt.enabled }}
+              disabled={!opt.enabled}
+              onPress={() => setBeverageType(opt.type)}
+              style={({ pressed }) => [
+                styles.option,
+                selected && styles.optionSelected,
+                !opt.enabled && styles.optionDisabled,
+                pressed && opt.enabled && { opacity: 0.85 },
+              ]}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.optionLabel}>{opt.label}</Text>
+                {opt.helper ? (
+                  <Text style={styles.optionHelper}>{opt.helper}</Text>
+                ) : null}
+              </View>
+              <View style={[styles.radio, selected && styles.radioOn]}>
+                {selected ? <View style={styles.radioDot} /> : null}
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <Text style={styles.sectionLabel}>Container size</Text>
       <View style={styles.options}>
         {DEFAULT_CONTAINER_SIZES.map((preset) => {
           const selected = containerSizeMl === preset.ml;
@@ -97,10 +161,7 @@ export default function ContainerSizePicker(): React.ReactElement {
           keyboardType="number-pad"
           placeholder="e.g. 750"
           placeholderTextColor={colors.textMuted}
-          style={[
-            styles.input,
-            isCustomActive && styles.inputActive,
-          ]}
+          style={[styles.input, isCustomActive && styles.inputActive]}
           maxLength={5}
         />
       </View>
@@ -124,7 +185,7 @@ export default function ContainerSizePicker(): React.ReactElement {
         label="Continue to capture"
         size="lg"
         fullWidth
-        disabled={containerSizeMl === null || containerSizeMl <= 0}
+        disabled={!canContinue}
         onPress={handleNext}
       />
     </Screen>
@@ -132,6 +193,11 @@ export default function ContainerSizePicker(): React.ReactElement {
 }
 
 const styles = StyleSheet.create({
+  sectionLabel: {
+    ...typography.heading,
+    color: colors.text,
+    marginTop: spacing.sm,
+  },
   options: {
     gap: spacing.sm,
   },
@@ -147,6 +213,9 @@ const styles = StyleSheet.create({
   },
   optionSelected: {
     borderColor: colors.primary,
+  },
+  optionDisabled: {
+    opacity: 0.5,
   },
   optionLabel: {
     ...typography.heading,
@@ -178,7 +247,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    marginTop: spacing.sm,
   },
   customLabel: {
     ...typography.body,
@@ -204,7 +272,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    marginTop: spacing.sm,
     paddingVertical: spacing.sm,
   },
   toggleLabel: {

@@ -36,7 +36,9 @@ export type PauseReason =
   | 'lost_bottle'
   | 'blur'
   | 'glare'
-  | 'motion';
+  | 'motion'
+  | 'too_far'
+  | 'too_close';
 
 export type FailReason =
   | 'permission_denied'
@@ -49,7 +51,8 @@ export interface ScanInstructionsProps {
   state: ScanStateKind;
   /**
    * Current 0..1 coverage. Selects the substate copy when state is
-   * `scanning` (per §6 thresholds at 0.20 / 0.45 / 0.55 / 0.85).
+   * `scanning` via `selectScanningBand` (thresholds at
+   * 0.20 / 0.45 / 0.60 / 0.75 / 0.85, with a 0.005 hysteresis dead-band).
    */
   coverage?: number;
   /**
@@ -61,6 +64,13 @@ export interface ScanInstructionsProps {
   pauseReason?: PauseReason;
   /** Fail reason when state is `failed`. */
   failReason?: FailReason;
+  /**
+   * Whether the tracker currently has a confident silhouette lock.
+   * Used during `aligning` to swap copy from "Hold the bottle in the
+   * frame" to "Center, then rotate slowly" once detection lands, so
+   * the user pre-loads the rotation action.
+   */
+  bottleDetected?: boolean;
 }
 
 interface CopyDescriptor {
@@ -75,20 +85,61 @@ interface CopyDescriptor {
   accentLength?: number;
 }
 
-function describe(props: ScanInstructionsProps): CopyDescriptor | null {
-  const { state, coverage = 0, steadiness = 0, pauseReason, failReason } = props;
+/**
+ * Scanning-state copy bands. Upper bounds are the *enter* thresholds;
+ * a 0.005 hysteresis dead-band on exit (see `selectScanningBand`)
+ * prevents flicker when coverage oscillates around a boundary.
+ */
+type ScanningBand = 0 | 1 | 2 | 3 | 4 | 5;
+const SCANNING_BAND_UPPER: readonly number[] = [0.2, 0.45, 0.6, 0.75, 0.85];
+const SCANNING_BAND_TEXT: readonly string[] = [
+  'Keep rotating',
+  "You're getting it",
+  'About halfway',
+  'Two-thirds there',
+  'Almost done',
+  'Almost done',
+];
+const BAND_HYSTERESIS = 0.005;
+
+function selectScanningBand(coverage: number, prev: ScanningBand): ScanningBand {
+  // Walk the thresholds; only switch bands once coverage clears the
+  // boundary by `BAND_HYSTERESIS` in the appropriate direction.
+  let next: ScanningBand = 0;
+  for (let i = 0; i < SCANNING_BAND_UPPER.length; i += 1) {
+    if (coverage >= SCANNING_BAND_UPPER[i]) next = (i + 1) as ScanningBand;
+  }
+  if (next === prev) return prev;
+  if (next > prev) {
+    // Rising: require coverage to clear the entry threshold by the dead-band.
+    const enterThreshold = SCANNING_BAND_UPPER[prev];
+    return coverage >= enterThreshold + BAND_HYSTERESIS ? next : prev;
+  }
+  // Falling: require coverage to drop below the exit threshold by the dead-band.
+  const exitThreshold = SCANNING_BAND_UPPER[next];
+  return coverage <= exitThreshold - BAND_HYSTERESIS ? next : prev;
+}
+
+function describe(
+  props: ScanInstructionsProps,
+  scanningBand: ScanningBand,
+): CopyDescriptor | null {
+  const {
+    state,
+    steadiness = 0,
+    pauseReason,
+    failReason,
+    bottleDetected = false,
+  } = props;
   switch (state) {
     case 'aligning':
       if (steadiness >= 0.9) return { text: 'Almost there — hold steady' };
+      if (bottleDetected) return { text: 'Center, then rotate slowly' };
       return { text: 'Hold the bottle in the frame' };
     case 'ready':
       return { text: 'Ready. Rotate slowly →' };
     case 'scanning':
-      if (coverage < 0.2) return { text: 'Keep rotating' };
-      if (coverage < 0.45) return { text: "You're getting it" };
-      if (coverage < 0.55) return { text: 'Halfway there' };
-      if (coverage < 0.85) return { text: 'Keep going' };
-      return { text: 'Almost done' };
+      return { text: SCANNING_BAND_TEXT[scanningBand] };
     case 'paused':
       switch (pauseReason) {
         case 'too_fast':
@@ -103,6 +154,10 @@ function describe(props: ScanInstructionsProps): CopyDescriptor | null {
           return { text: 'Reduce glare' };
         case 'motion':
           return { text: 'Hold the phone still' };
+        case 'too_far':
+          return { text: 'Move closer to the bottle' };
+        case 'too_close':
+          return { text: 'Move the bottle back a bit' };
         default:
           return { text: 'Hold steady' };
       }
@@ -133,7 +188,19 @@ export function ScanInstructions(
   props: ScanInstructionsProps,
 ): React.ReactElement | null {
   const insets = useSafeAreaInsets();
-  const desc = describe(props);
+  // Tracks the last-displayed scanning copy band. Persisting across
+  // renders + applying a 0.005 hysteresis dead-band in selectScanningBand
+  // keeps the line steady when coverage jitters around a threshold.
+  const scanningBandRef = useRef<ScanningBand>(0);
+  if (props.state === 'scanning') {
+    scanningBandRef.current = selectScanningBand(
+      props.coverage ?? 0,
+      scanningBandRef.current,
+    );
+  } else {
+    scanningBandRef.current = 0;
+  }
+  const desc = describe(props, scanningBandRef.current);
 
   // Two layered Animated.Text — outgoing and incoming. We toggle which
   // slot owns the next copy each transition to avoid identity churn.

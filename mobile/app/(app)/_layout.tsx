@@ -25,15 +25,12 @@ export default function AuthenticatedLayout(): React.ReactElement {
       }}
     >
       <Stack.Screen name="home" options={{ title: 'ProofRead' }} />
+      <Stack.Screen name="history" options={{ title: 'Scan history' }} />
       <Stack.Screen name="settings" options={{ title: 'Settings' }} />
 
       <Stack.Screen
-        name="scan/beverage-type"
-        options={{ title: 'Beverage type' }}
-      />
-      <Stack.Screen
-        name="scan/container-size"
-        options={{ title: 'Container size' }}
+        name="scan/setup"
+        options={{ title: 'Scan setup' }}
       />
       <Stack.Screen
         name="scan/unwrap"

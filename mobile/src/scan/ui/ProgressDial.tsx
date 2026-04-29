@@ -10,7 +10,7 @@
  */
 
 import React, { useEffect, useRef } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   Easing,
@@ -18,6 +18,7 @@ import Animated, {
   useAnimatedStyle,
   useDerivedValue,
   useSharedValue,
+  withRepeat,
   withSequence,
   withSpring,
   withTiming,
@@ -139,6 +140,35 @@ export function ProgressDial({
 
   const showCheck = state === 'complete';
 
+  // Idle "spin slowly" affordance: when the dial reads 0% (no
+  // measurable rotation yet), swap the bare percentage for a curved
+  // unicode arrow + caption that telegraphs the action. Once the user
+  // starts rotating the percentage takes over.
+  const idleAffordance = !showCheck && pct === 0;
+  const arrowSpin = useSharedValue<number>(0);
+  useEffect(() => {
+    AccessibilityInfo.isReduceMotionEnabled().then((reduced) => {
+      if (reduced) {
+        arrowSpin.value = 0;
+        return;
+      }
+      if (idleAffordance) {
+        arrowSpin.value = 0;
+        arrowSpin.value = withRepeat(
+          withTiming(1, { duration: 2400, easing: Easing.linear }),
+          -1,
+          false,
+        );
+      } else {
+        arrowSpin.value = 0;
+      }
+    }).catch(() => {});
+  }, [idleAffordance, arrowSpin]);
+
+  const arrowStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${arrowSpin.value * 360}deg` }],
+  }));
+
   return (
     <View
       pointerEvents="none"
@@ -187,6 +217,16 @@ export function ProgressDial({
             >
               ✓
             </Text>
+          ) : idleAffordance ? (
+            <>
+              <Animated.Text
+                style={[styles.bigNumber, styles.arrow, arrowStyle]}
+                accessibilityElementsHidden
+              >
+                ↻
+              </Animated.Text>
+              <Text style={styles.caption}>SPIN SLOWLY</Text>
+            </>
           ) : (
             <>
               <AnimatedText style={styles.bigNumber}>{`${pct}%`}</AnimatedText>
@@ -241,6 +281,11 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
     lineHeight: 22,
     color: colors.scanInk,
+  },
+  arrow: {
+    fontSize: 22,
+    lineHeight: 24,
+    fontWeight: '600',
   },
   caption: {
     fontSize: 9,
