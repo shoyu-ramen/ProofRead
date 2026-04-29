@@ -1,0 +1,58 @@
+# Repo-root .dockerignore for the Railway build (context: repo root).
+# Keeps the image tight by stripping caches, dev artifacts, and anything the
+# backend image doesn't need (mobile app, artwork, screenshots, docs).
+
+# Python tool caches & virtualenvs
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+**/coverage.xml
+**/*.egg-info/
+**/build/
+**/dist/
+
+# Secrets — must come from Railway env, never the image
+**/.env
+**/.env.local
+
+# Local storage / scratch
+**/.storage/
+
+# VCS, editor, OS
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+.DS_Store
+
+# Tooling / non-runtime dirs
+.claude/
+.playwright-mcp/
+
+# Sibling projects not needed by the backend image
+mobile/
+artwork/
+prototype_review.py
+
+# Backend-side dev/test artifacts not needed at runtime
+backend/tests/
+backend/validation/
+backend/docker-compose.yml
+backend/fly.toml
+backend/README.md
+backend/Dockerfile
+backend/.dockerignore
+
+# Top-level docs & screenshots
+DEPLOY.md
+SPEC.md
+README.md
+*.png
