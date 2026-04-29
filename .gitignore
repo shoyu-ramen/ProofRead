@@ -19,3 +19,16 @@ __pycache__/
 .env
 .env.local
 *.pem
+
+# Local agent / tool state — never useful in version control.
+.claude/
+.playwright-mcp/
+
+# Ad-hoc debug screenshots that land at the repo root from local runs.
+/camera-live.png
+/live-capture-result.png
+/result-current.png
+/result-error.png
+/scan-after-reset.png
+/scan-view.png
+/verify-error-503.png
