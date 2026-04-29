@@ -267,34 +267,6 @@
     margin-right: auto;
   }
   
-  .progress-log {
-    background: #f8f9fa;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 12px;
-    margin: 0 auto 24px;
-    max-width: 360px;
-    height: 64px;
-    overflow: hidden;
-    text-align: left;
-    font-family: ui-monospace, SF Mono, Menlo, monospace;
-    font-size: 11px;
-    color: var(--ink-2);
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .log-line {
-    opacity: 0;
-    transform: translateY(4px);
-    animation: logFadeIn 0.3s forwards;
-  }
-  .log-line.active { color: var(--amber); font-weight: 600; }
-  .log-line.done { color: var(--pass); }
-  @keyframes logFadeIn {
-    to { opacity: 1; transform: translateY(0); }
-  }
-
   .progress-steps {
     list-style: none;
     padding: 0;
@@ -884,17 +856,12 @@
         <div class="progress-hud"></div>
         <div class="progress-scanline"></div>
       </div>
-      <div class="progress-title" id="progressTitle">Reading the label…</div>
-      <div class="progress-sub" id="progressSub">Identifying brand, class, ABV, net contents, and the Government Warning.</div>
-      
-      <div class="progress-log" id="progressLog">
-        <div class="log-line">Initializing vision engine...</div>
-      </div>
+      <div class="progress-title" id="progressTitle">Working…</div>
+      <div class="progress-sub" id="progressSub">Reading the label and checking it against TTB rules.</div>
 
       <ol class="progress-steps" id="progressSteps">
         <li data-step="capture"><span class="pdot"></span>Captured</li>
-        <li data-step="identify"><span class="pdot"></span>Identifying</li>
-        <li data-step="verify"><span class="pdot"></span>Verifying</li>
+        <li data-step="working"><span class="pdot"></span>Working</li>
         <li data-step="result"><span class="pdot"></span>Result</li>
       </ol>
     </div>
@@ -1695,22 +1662,6 @@ function setProgressLabel(title, sub) {
   $("progressSub").textContent = sub;
 }
 
-function logProgress(msg, status = "") {
-  const log = $("progressLog");
-  const line = document.createElement("div");
-  line.className = "log-line " + status;
-  line.textContent = `> ${msg}`;
-  log.appendChild(line);
-  log.scrollTop = log.scrollHeight;
-  if (log.children.length > 3) {
-    log.children[0].style.opacity = "0.4";
-  }
-}
-
-function clearLog() {
-  $("progressLog").innerHTML = "";
-}
-
 async function runVerification() {
   if (!state.panels.length) {
     showScanError("Pick an image first, or tap a sample.");
@@ -1723,45 +1674,14 @@ async function runVerification() {
   $("progressThumb").src = state.panels[0].url;
   $("resultThumb").src = state.panels[0].url;
   showView("progress");
-  clearLog();
-  
+
   setStepState("capture", "done");
-  setStepState("identify", "active");
-  setStepState("verify", "");
+  setStepState("working", "active");
   setStepState("result", "");
   setProgressLabel(
-    "Reading the label…",
-    "Identifying brand, class, ABV, net contents, and the Government Warning."
+    "Working…",
+    "Reading the label and checking it against TTB rules."
   );
-
-  logProgress("Initializing vision engine...");
-  
-  // The backend does identify+verify in one shot. We stage the UI so
-  // the user sees progress: flip to "Verifying" partway through.
-  let stagedToVerify = false;
-  
-  const stageSteps = [
-    { ms: 400, log: "Detecting label boundaries...", status: "done" },
-    { ms: 900, log: "Extracting brand and class info...", status: "active" },
-    { ms: 1400, log: "Verifying government health warning...", status: "active" },
-  ];
-
-  stageSteps.forEach(s => {
-    setTimeout(() => {
-      if (!stagedToVerify) logProgress(s.log, s.status);
-    }, s.ms);
-  });
-
-  const stageTimer = setTimeout(() => {
-    stagedToVerify = true;
-    setStepState("identify", "done");
-    setStepState("verify", "active");
-    setProgressLabel(
-      "Checking TTB rules…",
-      "Comparing each required element against 27 CFR."
-    );
-    logProgress("Running compliance rule engine...", "active");
-  }, 1800);
 
   // Build the form payload. Always use the multi-panel `images=` field;
   // the backend accepts it for any panel count (1+) and merges per-field
@@ -1785,33 +1705,17 @@ async function runVerification() {
       throw await buildVerifyError(res);
     }
     const data = await res.json();
-    clearTimeout(stageTimer);
 
-    if (!stagedToVerify) {
-      // The response beat our staging timer — give the user a beat to
-      // see "Identifying" finish before showing the result.
-      setStepState("identify", "done");
-      setStepState("verify", "active");
-      setProgressLabel("Checking TTB rules…", "Comparing each required element against 27 CFR.");
-      logProgress("Finalizing report...", "done");
-      await sleep(450);
-    } else {
-      logProgress("Verification complete.", "done");
-    }
-    setStepState("verify", "done");
+    setStepState("working", "done");
     setStepState("result", "active");
-    await sleep(220);
 
     renderResult(data, performance.now() - t0);
     showView("result");
   } catch (err) {
-    clearTimeout(stageTimer);
     renderError(err);
     showView("result");
   }
 }
-
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 // ─── Result rendering ──────────────────────────────────────────
 const VERDICT_DISPLAY = {
