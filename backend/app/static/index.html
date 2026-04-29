@@ -746,12 +746,11 @@
   }
 
   /* Per-panel hint banner. Sits above the framing rect, below the top
-     icon bar. Soft pill, navy text, fades in from y=-6px so changing
-     between "Step 1 of 2 · Front" and "Step 2 of 2 · Now flip to the
-     back" feels like a discrete instruction rather than a static
-     label. The `.flip` modifier rotates the banner 360° once when
-     the second-panel prompt appears — cheap delight signal that
-     also reinforces "rotate the bottle". */
+     icon bar. Soft pill, navy text, fades in from y=-6px so each
+     "Step N of 4 · …" prompt feels like a discrete instruction rather
+     than a static label. The `.flip` modifier rotates the banner 360°
+     once whenever the prompt advances past panel 0 — cheap delight
+     signal that also reinforces "rotate the bottle". */
   .cam-panel-hint {
     position: absolute;
     top: 64px;
@@ -917,11 +916,11 @@
       <span class="corner bl"></span>
       <span class="corner br"></span>
     </div>
-    <!-- Per-panel hint banner. Driven by `setPanelHint(panelIndex)`:
-         "Step 1 of 2 · Front" before the first capture, "Step 2 of 2 ·
-         Now flip to the back" after panel 0 is in the bag. The `.flip`
-         modifier animates a brief rotation so the prompt feels active
-         rather than a passive label. -->
+    <!-- Per-panel hint banner. Driven by `setPanelHint(panelIndex)`,
+         which walks through the ROTATION_HINTS copy ("Step N of 4 ·
+         …") for the camera flow's four ¼-turns. The `.flip` modifier
+         animates a brief rotation each time the prompt advances so
+         the cue feels active rather than passive. -->
     <div class="cam-panel-hint" id="camPanelHint" aria-live="polite">
       Hold steady on the label
     </div>
@@ -972,15 +971,16 @@ const SAMPLES = {
 // captured/uploaded label faces. The legacy `imageBlob`/`imageUrl`
 // handles mirror panels[0] so thumbnail/preview code that already
 // reads them keeps working unchanged. The camera flow grows panels
-// to length 2 (front + back) before running verification; sample
-// loads and file uploads stay length 1.
+// to ROTATION_PANEL_COUNT during capture, then stitches them into a
+// single unrolled panorama and replaces the array with that one
+// blob; sample loads and file uploads stay length 1.
 const state = {
   imageBlob: null,
   imageType: "image/png",
   imageName: null,
   imageUrl: null,        // object URL for preview (revoked on reset)
   panels: [],            // [{blob, type, name, url}] in submission order
-  panelTarget: 1,        // 2 during the camera dual-panel flow, 1 otherwise
+  panelTarget: 1,        // ROTATION_PANEL_COUNT during the camera flow, 1 otherwise
   beverageType: "beer",  // default for live captures
   containerMl: 355,      // 12 oz US can
   isImported: false,
@@ -1129,6 +1129,71 @@ async function normalizeImage(source, { maxEdge = 2048, quality = 0.92 } = {}) {
   const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
   if (!blob) throw new Error("Encoder failed");
   return { blob, width: w, height: h };
+}
+
+// Stitch the rotation panels into a single unrolled-label image.
+//
+// For each capture we keep the central STITCH_STRIP_FRAC of the frame
+// width — the part of the bottle facing the camera, where foreshortening
+// is minimal — then concat horizontally at a shared height. Four 90°
+// captures with ~65% strips overlap slightly, which is friendlier to the
+// vision model than gaps. The result is a single JPEG the backend will
+// auto-tag as `surface="panorama"`.
+const STITCH_STRIP_FRAC = 0.65;
+const STITCH_TARGET_H = 1024;
+const STITCH_MAX_W = 4096;
+const STITCH_QUALITY = 0.88;
+
+async function stitchPanorama(panels) {
+  if (!panels.length) throw new Error("No panels to stitch");
+  const bitmaps = await Promise.all(
+    panels.map((p) => createImageBitmap(p.blob, { imageOrientation: "from-image" }))
+  );
+  try {
+    // Pick a working height: each strip will be drawn at this height,
+    // bottle vertical extent stays roughly comparable across panels.
+    const targetH = Math.min(
+      STITCH_TARGET_H,
+      Math.max(...bitmaps.map((b) => b.height))
+    );
+
+    const strips = bitmaps.map((b) => {
+      const sw = Math.round(b.width * STITCH_STRIP_FRAC);
+      const sx = Math.round((b.width - sw) / 2);
+      const scale = targetH / b.height;
+      const dw = Math.max(1, Math.round(sw * scale));
+      return { bitmap: b, sx, sw, dw };
+    });
+
+    let totalW = strips.reduce((acc, s) => acc + s.dw, 0);
+    // Cap total width so the upload stays comfortably under
+    // settings.max_image_bytes (15 MB) even at high JPEG quality.
+    if (totalW > STITCH_MAX_W) {
+      const k = STITCH_MAX_W / totalW;
+      for (const s of strips) s.dw = Math.max(1, Math.round(s.dw * k));
+      totalW = strips.reduce((acc, s) => acc + s.dw, 0);
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = totalW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingQuality = "high";
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, totalW, targetH);
+
+    let x = 0;
+    for (const s of strips) {
+      ctx.drawImage(s.bitmap, s.sx, 0, s.sw, s.bitmap.height, x, 0, s.dw, targetH);
+      x += s.dw;
+    }
+
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", STITCH_QUALITY));
+    if (!blob) throw new Error("Panorama encode failed");
+    return { blob, width: totalW, height: targetH };
+  } finally {
+    for (const b of bitmaps) b.close();
+  }
 }
 
 function showScanError(msg) {
@@ -1368,12 +1433,13 @@ async function openCamera() {
   $("camShutter").disabled = true;
   capturePending = false;
   autoCaptureScheduled = false;
-  // Camera flow always collects two panels (front + back). The user
-  // never taps a shutter in this flow — auto-capture fires on the
-  // first steady frame, then a "flip to back" overlay nudges them
-  // through the second capture.
+  // Camera flow walks the user through four ¼-turns of the bottle
+  // (front → right → back → left), auto-capturing each steady frame.
+  // The four captures are stitched client-side into a single
+  // unrolled-label panorama before the verify call, so the backend
+  // sees one image with `surface="panorama"`.
   revokePanelUrls();
-  state.panelTarget = 2;
+  state.panelTarget = ROTATION_PANEL_COUNT;
   setDetectionState("searching");
   setPanelHint(0);
   modal.hidden = false;
@@ -1393,23 +1459,35 @@ async function openCamera() {
   }
 }
 
+// Number of ¼-turn captures the camera flow collects before stitching.
+// Four matches the pragmatic web-panorama plan: 4 × 90° ≈ full label
+// circumference with one capture per "face".
+const ROTATION_PANEL_COUNT = 4;
+
+// Per-panel hint copy. Index 0 is the starting face; subsequent indices
+// are quarter-turns clockwise. Stitching depends on roughly even 90°
+// rotations, so the copy nudges the user toward that without demanding
+// surveying-grade precision.
+const ROTATION_HINTS = [
+  "Step 1 of 4 · Front of the bottle",
+  "Step 2 of 4 · Turn ¼ — show the right side",
+  "Step 3 of 4 · Turn ¼ — back of the bottle",
+  "Step 4 of 4 · Turn ¼ — left side",
+];
+
 function setPanelHint(panelIndex) {
-  // Per-panel guidance shown over the viewfinder. panelIndex 0 = front,
-  // 1 = back. The hint element is positioned by the camera CSS; this
-  // function only swaps its text + active-class so the existing
-  // ready/searching/framing transitions continue to drive the corner
-  // colors independently.
+  // Swap viewfinder copy + active-class. The ready/searching/framing
+  // transitions continue to drive the corner colors independently.
   const hint = $("camPanelHint");
   if (!hint) return;
-  if (panelIndex === 0) {
-    hint.textContent = state.panelTarget > 1
-      ? "Step 1 of 2 · Front of the bottle"
-      : "Hold steady on the label";
+  if (state.panelTarget <= 1) {
+    hint.textContent = "Hold steady on the label";
     hint.classList.remove("flip");
-  } else {
-    hint.textContent = "Step 2 of 2 · Now flip to the back";
-    hint.classList.add("flip");
+    return;
   }
+  hint.textContent = ROTATION_HINTS[panelIndex] || `Step ${panelIndex + 1} of ${state.panelTarget}`;
+  if (panelIndex === 0) hint.classList.remove("flip");
+  else hint.classList.add("flip");
 }
 
 async function startStream(facing) {
@@ -1586,10 +1664,10 @@ async function capturePhoto() {
   pushCapturedPanel(blob, name, "image/jpeg");
 
   if (state.panels.length < state.panelTarget) {
-    // Mid-flow: brief "captured · flip to back" affordance, then
-    // re-arm the detection loop for the second panel. The shutter
+    // Mid-flow: brief "captured · turn the bottle" affordance, then
+    // re-arm the detection loop for the next ¼-turn. The shutter
     // flash already played in CSS via `.capturing`; we re-enable
-    // the live preview and let the user rotate the bottle.
+    // the live preview and let the user rotate.
     setPanelHint(state.panels.length);
     capturePending = false;
     autoCaptureScheduled = false;
@@ -1604,9 +1682,38 @@ async function capturePhoto() {
     return;
   }
 
-  // All panels collected — close the camera and run verification with
-  // the merged set.
+  // All panels collected — close the camera, stitch the four ¼-turn
+  // captures into a single unrolled-label panorama, then run
+  // verification on that one image. The backend auto-tags single-image
+  // submissions as `surface="panorama"`.
   closeCamera();
+  await stitchAndVerify();
+}
+
+async function stitchAndVerify() {
+  if (state.panels.length < 2) {
+    runVerification();
+    return;
+  }
+  showView("progress");
+  setStepState("capture", "done");
+  setStepState("working", "active");
+  setProgressLabel("Stitching the label…", "Reconstructing the full wraparound from your captures.");
+  let stitched;
+  try {
+    stitched = await stitchPanorama(state.panels);
+  } catch (err) {
+    console.warn("Panorama stitch failed; falling back to multi-panel submit:", err);
+    runVerification();
+    return;
+  }
+  // Replace the raw rotation panels with the single stitched panorama.
+  // pushCapturedPanel mirrors panels[0] back into the legacy imageBlob
+  // / imageUrl fields so existing thumbnail wiring keeps working.
+  revokePanelUrls();
+  const name = `panorama-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
+  pushCapturedPanel(stitched.blob, name, "image/jpeg");
+  state.panelTarget = 1;
   runVerification();
 }
 
@@ -1666,9 +1773,9 @@ async function runVerification() {
     return;
   }
 
-  // Move to progress view, prime the thumbnail with panel 0 (the front
-  // face — captured first in the dual-panel flow, the only face in the
-  // single-panel path).
+  // Move to progress view, prime the thumbnail with panel 0. After
+  // the camera flow this is the stitched panorama; for sample/upload
+  // it's the single uploaded image.
   $("progressThumb").src = state.panels[0].url;
   $("resultThumb").src = state.panels[0].url;
   showView("progress");
@@ -1802,9 +1909,9 @@ function renderResult(data, clientMs) {
         span.innerHTML = `<span class="conf-bar"><span class="conf-fill" style="width: ${confPercent}%"></span></span> ${confPercent}%`;
         dd.appendChild(span);
       }
-      // Multi-panel: tell the user which face this value was read from.
-      // panel_0 → "front", panel_1 → "back", panel_2+ → "panel N".
-      // Hidden in single-panel responses to keep the legacy UI quiet.
+      // Multi-panel responses (legacy agent path): tell the user which
+      // face this value was read from. Hidden for the single-image
+      // panorama path since every field reads "from label" — no signal.
       if (showSourceTag && f.source_image_id) {
         const tag = document.createElement("span");
         tag.className = "source-tag";
@@ -1928,11 +2035,12 @@ function renderError(err) {
 }
 
 function panelLabel(sourceId) {
-  // Map backend `panel_N` ids to human-friendly faces. The web demo
-  // captures front-then-back, so panel_0/panel_1 are "front"/"back".
-  // Beyond that we fall back to the raw ordinal — the dual-panel flow
-  // never produces those, but the API allows up to 4 panels and a
-  // future neck-band/base capture would surface here.
+  // Map backend source ids to human-friendly captions. Single-image
+  // submissions (the current camera flow stitches its 4 ¼-turns into
+  // one panorama, and file/sample uploads start as one image) come
+  // back as `panorama`. The legacy `panel_N` ids are still produced
+  // by multi-image agent calls.
+  if (sourceId === "panorama") return "from label";
   if (sourceId === "panel_0") return "from front";
   if (sourceId === "panel_1") return "from back";
   if (sourceId && sourceId.startsWith("panel_")) {
@@ -1966,10 +2074,10 @@ function escapeHtml(s) {
 
 // ─── Reset / scan again ────────────────────────────────────────
 $("scanAgainBtn").addEventListener("click", () => {
-  // `revokePanelUrls` handles both the legacy single-image fields
-  // (panels[0] mirrors them) and any second panel from the dual-shot
-  // camera flow. Without this, switching from a 2-panel scan back to
-  // the scan view leaks the back-panel object URL.
+  // `revokePanelUrls` handles the legacy single-image fields (panels[0]
+  // mirrors them) and any leftover rotation captures the camera flow
+  // didn't get to stitch. Without this, switching back to the scan view
+  // leaks any panel object URLs that are still live.
   revokePanelUrls();
   state.panelTarget = 1;
   $("file").value = "";
