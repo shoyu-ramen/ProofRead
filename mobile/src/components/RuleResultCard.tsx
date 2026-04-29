@@ -19,6 +19,14 @@ export function RuleResultCard({ result, onPress }: RuleResultCardProps) {
     typeof result.fix_suggestion === 'string' &&
     result.fix_suggestion.trim().length > 0;
 
+  // AI-generated explanation: only surface for fail/advisory rules and
+  // only when the backend produced one. Pass rules don't need extra
+  // context, and the field is optional/nullable in the DTO.
+  const showExplanation =
+    (result.status === 'fail' || result.status === 'advisory') &&
+    typeof result.explanation === 'string' &&
+    result.explanation.trim().length > 0;
+
   const inner = (
     <>
       {isAdvisory ? <AdvisoryBanner /> : null}
@@ -41,6 +49,12 @@ export function RuleResultCard({ result, onPress }: RuleResultCardProps) {
         {result.finding ? (
           <Text style={styles.finding} numberOfLines={2}>
             {result.finding}
+          </Text>
+        ) : null}
+        {showExplanation ? (
+          <Text style={styles.explanation} numberOfLines={4}>
+            <Text style={styles.explanationLabel}>WHY · </Text>
+            {result.explanation}
           </Text>
         ) : null}
       </View>
@@ -174,5 +188,24 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontStyle: 'normal',
     color: colors.text,
+  },
+  // AI-generated "Why · …" supplementary context. Indented with a left
+  // border accent so it reads as commentary rather than a primary
+  // finding, italicised to mark the soft, narrative tone.
+  explanation: {
+    ...typography.caption,
+    color: colors.textMuted,
+    fontStyle: 'italic',
+    marginLeft: spacing.sm,
+    paddingLeft: spacing.sm,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.border,
+  },
+  explanationLabel: {
+    ...typography.caption,
+    color: colors.textMuted,
+    fontStyle: 'normal',
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
 });

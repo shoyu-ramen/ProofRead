@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     # out of `verify_cache`'s runtime imports.
     from app.services.reverse_lookup import ReverseLookupCache
     from app.services.verify_cache import VerifyCache
+    from app.services.vision import VisionExtraction
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,33 @@ class VerifyReport:
     # milliseconds rather than sub-millisecond) and (b) operators
     # tuning the hamming threshold need the hit-rate broken out.
     reverse_lookup_hit: bool = False
+
+    # External-source match (e.g. TTB COLA Online). Populated by the
+    # API layer post-verify() when the adapter found a confident match
+    # for this label's brand. Persisted in L3 cache so subsequent
+    # perceptually-equivalent requests reuse the lookup.
+    external_match: dict[str, Any] | None = None
+    # rule_id -> one-sentence AI explanation for failed/advisory rules.
+    # Populated by the API layer post-verify(); persisted in L3 cache
+    # so the same dhash never pays for re-generation.
+    explanations: dict[str, str] | None = None
+    # The per-panel dhash signature `verify()` computed for the L2
+    # reverse-lookup gate. Surfaced here so the API layer can key the
+    # L3 perceptual cache with the *same* hashes — keying L3 on raw
+    # bytes (which differ from the post-normalize phash verify uses for
+    # L2) caused enrichment cache misses every time a label was cropped
+    # before extraction (i.e. essentially always in production). None on
+    # the sensor-unreadable / foreign-language exits where we never got
+    # far enough to compute a phash.
+    panel_signature: tuple[int, ...] | None = field(default=None, compare=False)
+    # Private hand-off used by the API layer to upsert the L3 perceptual
+    # cache without re-running extraction. NOT serialized to the response
+    # and NOT cached at L1 (cache hits already correspond to a row in L3).
+    # Set on the cold-path full-success exit only; left None on cache hits,
+    # reverse-lookup hits, sensor-unreadable, and foreign-language exits.
+    raw_extraction: VisionExtraction | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 def _aggregate_overall(
@@ -673,6 +701,16 @@ def verify(
             health_warning_cross_check=_serialize_cross_check(cross_check_result),
             elapsed_ms=elapsed_ms,
             reverse_lookup_hit=reverse_hit is not None,
+            # Hand the merged extraction back to the API layer so it can
+            # upsert the L3 perceptual cache (durable across restarts) and
+            # populate downstream enrichment (TTB COLA, per-rule
+            # explanations) without redoing the VLM call.
+            raw_extraction=extraction,
+            # The same per-panel phash tuple the L2 reverse-lookup gate
+            # used. Surfacing it on VerifyReport lets the API layer key
+            # the L3 perceptual cache with the same hashes — keying L3
+            # off raw upload bytes silently misses every cropped image.
+            panel_signature=reverse_signature,
         ),
         cache=cache,
         cache_key=cache_key,
@@ -1172,8 +1210,9 @@ def _merge_panel_extractions(
         else `unknown`. Disagreement is recorded in image_quality_notes
         upstream by the model itself.
     """
-    from app.services.vision import VisionExtraction
     from dataclasses import replace as dc_replace
+
+    from app.services.vision import VisionExtraction
 
     if not per_panel:
         return VisionExtraction(
@@ -1304,6 +1343,11 @@ def _finalize(
     reverse-lookup counter rather than the cold counter — they aren't
     cold (the VLM call didn't run) and they aren't warm in the
     SHA-256 sense (the rule engine ran fresh).
+
+    The API layer additionally re-puts an *enriched* copy of this
+    report (TTB COLA match + AI per-rule explanations) under the same
+    key after this finalize lands. The two writes overwrite the same
+    LRU slot — the second is what subsequent byte-exact hits return.
     """
     if cache is not None and cache_key is not None:
         cache.put(cache_key, report)

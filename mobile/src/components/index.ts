@@ -10,6 +10,9 @@ export type { CaptureQualityPillProps } from './CaptureQualityPill';
 export { ConfidenceBar } from './ConfidenceBar';
 export type { ConfidenceBarProps } from './ConfidenceBar';
 
+export { ExternalMatchCard } from './ExternalMatchCard';
+export type { ExternalMatchCardProps } from './ExternalMatchCard';
+
 export { ProgressBar } from './ProgressBar';
 export type { ProgressBarProps } from './ProgressBar';
 

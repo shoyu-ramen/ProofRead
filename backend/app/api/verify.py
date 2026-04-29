@@ -21,13 +21,15 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.services.anthropic_client import ExtractorUnavailable
+from app.services.enrichment import enrich_verdict
 from app.services.health_warning_second_pass import (
     ClaudeHealthWarningExtractor,
     HealthWarningExtractor,
 )
+from app.services.persisted_cache import PersistedLabelCache
 from app.services.reverse_lookup import ReverseLookupCache
 from app.services.verify import Panel, VerifyInput, verify
-from app.services.verify_cache import VerifyCache
+from app.services.verify_cache import VerifyCache, make_cache_key
 from app.services.vision import VisionExtractor, get_default_extractor
 
 router = APIRouter(prefix="/verify", tags=["verify"])
@@ -77,6 +79,12 @@ class RuleResultDTO(BaseModel):
     # the field had no source_image_id. Mobile uses this to know which
     # captured image to highlight when the user taps a result.
     surface: str | None = None
+    # AI-generated one-sentence plain-language explanation of why this
+    # rule landed where it did, contextualised to THIS scan's extracted
+    # values + image quality. Populated for `fail`/`advisory` results on
+    # the cold path (and reused from L1/L3 cache on warm hits). `None`
+    # when generation was disabled, timed out, or the rule passed.
+    explanation: str | None = None
 
 
 class FieldExtractionDTO(BaseModel):
@@ -120,6 +128,14 @@ class VerifyResponse(BaseModel):
     # into why a warning rule was downgraded to advisory; dashboards key off
     # `outcome` to track inter-pass agreement rate over time.
     health_warning_cross_check: dict | None = None
+    # External-source match (e.g. TTB COLA Online approval). When the
+    # adapter found a confident match for this label's brand + class,
+    # this surfaces the source/source_id/approval_date/etc. so the UI
+    # can render "matches approved COLA #X (date)" alongside the
+    # verdict. `None` when the adapter is disabled, no match, or
+    # confidence below threshold. See `app/services/external/types.py`
+    # for the dict shape.
+    external_match: dict | None = None
 
 
 # Module-level extractor cache so we don't recreate the Anthropic client per
@@ -277,6 +293,46 @@ def _reset_reverse_lookup_cache() -> None:
         _reverse_lookup_cache = None
 
 
+# Process-wide L3 perceptual cache backed by Postgres. Same lazy + lock
+# pattern as the in-process caches above. The instance itself is a
+# thin client — the cost lives in the DB queries it issues — so
+# constructing eagerly would still be fine, but lazy keeps tests that
+# never touch the verify path from hitting `Settings()` import
+# side-effects.
+_persisted_label_cache: PersistedLabelCache | None = None
+_persisted_label_cache_lock = threading.Lock()
+
+
+def get_persisted_label_cache() -> PersistedLabelCache | None:
+    """Lazily build the per-process L3 perceptual cache client.
+
+    Returns None when `persisted_label_cache_enabled` is False — that's
+    the operator's gate before the schema migration has landed. When
+    None, the verify path still hits the in-process L1 + L2 caches and
+    runs the cold path identically; the durable tier is just skipped.
+    """
+    global _persisted_label_cache
+    if not settings.persisted_label_cache_enabled:
+        return None
+    if _persisted_label_cache is not None:
+        return _persisted_label_cache
+    with _persisted_label_cache_lock:
+        if _persisted_label_cache is None:
+            _persisted_label_cache = PersistedLabelCache(
+                hamming_threshold=(
+                    settings.persisted_label_cache_hamming_threshold
+                ),
+            )
+    return _persisted_label_cache
+
+
+def _reset_persisted_label_cache() -> None:
+    """Test hook: drop the process-wide L3 cache client."""
+    global _persisted_label_cache
+    with _persisted_label_cache_lock:
+        _persisted_label_cache = None
+
+
 @router.post("", response_model=VerifyResponse)
 async def verify_label(
     image: UploadFile | None = File(None),
@@ -409,6 +465,18 @@ async def verify_label(
         extra_panels=panels[1:],
     )
 
+    # L3 perceptual cache (durable across restarts) is consulted *after*
+    # `verify()` returns, keyed off the same per-panel phash that L2 used
+    # — `report.panel_signature`. Earlier iterations probed L3 before
+    # verify() with a raw-bytes dhash so an L3 hit could seed L2 and
+    # short-circuit the VLM call. That key is incompatible with verify's
+    # post-normalize phash (cropping changes the dhash significantly), so
+    # the L2 seed silently never hit. L3 is now used purely to reuse
+    # enrichment (TTB COLA + AI explanations) across restarts; a fresh
+    # process still pays the VLM cold path on the first request, which
+    # is acceptable for v1.
+    persisted_cache = get_persisted_label_cache()
+
     # `verify()` is a synchronous orchestrator that issues blocking HTTP
     # calls (Anthropic SDK + the second-pass reader). Run it off the event
     # loop so a single in-flight verification doesn't park every other
@@ -417,6 +485,7 @@ async def verify_label(
     # primary extractor and the second-pass reader run concurrently on
     # their own thread pool.
     second_pass = get_health_warning_extractor()
+    l1_cache = get_verify_cache()
     try:
         # `asyncio.wait_for` enforces a wall-clock cap on the whole verify
         # call so a flaky upstream cannot chain SDK retries together (each
@@ -429,12 +498,12 @@ async def verify_label(
                 inp,
                 extractor=extractor,
                 health_warning_reader=second_pass,
-                cache=get_verify_cache(),
+                cache=l1_cache,
                 reverse_cache=get_reverse_lookup_cache(),
             ),
             timeout=settings.verify_request_timeout_s,
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         # 504 (Gateway Timeout) so the client distinguishes "vision backend
         # was slow" from "vision backend was missing" (503). Same envelope
         # shape so a single error handler covers both.
@@ -468,6 +537,80 @@ async def verify_label(
     except Exception as exc:  # pragma: no cover — defensive fallback
         raise HTTPException(500, f"verification failed: {exc}") from exc
 
+    # Post-verify enrichment. On an L1 byte-exact hit (`cache_hit=True`)
+    # the cached snapshot SHOULD already carry `external_match` +
+    # `explanations`, but two cases produce a stale-L1 hit that lacks
+    # them:
+    #   1. Concurrent cold-path race: request A finishes verify() and
+    #      writes the unenriched snapshot to L1 via `_finalize`, before
+    #      it has a chance to overwrite with the enriched copy.
+    #      Request B reads L1 in that window and sees no enrichment.
+    #   2. L1 entries cached BEFORE this feature shipped (process
+    #      restart not yet performed in the deploy).
+    # Detect both via "failed rules but no explanations dict" and fall
+    # through to enrichment so the response is consistent — at the cost
+    # of duplicate enrichment work in the rare race window. The L3
+    # cache makes this duplicate work cheap (cached generation reuses).
+    external_match = report.external_match
+    explanations = report.explanations
+    has_failed_rules = any(
+        r.status.value in ("fail", "advisory") for r in report.rule_results
+    )
+    stale_l1_hit = (
+        report.cache_hit
+        and settings.explanation_enabled
+        and report.explanations is None
+        and has_failed_rules
+    )
+    needs_enrichment = (not report.cache_hit) or stale_l1_hit
+    if needs_enrichment:
+        persisted_hit = None
+        if persisted_cache is not None and report.panel_signature is not None:
+            try:
+                persisted_hit = await persisted_cache.lookup(
+                    signature=report.panel_signature,
+                    beverage_type=beverage_type,
+                )
+            except Exception:
+                persisted_hit = None
+        enrichment = await enrich_verdict(
+            report=report,
+            beverage_type=beverage_type,
+            container_size_ml=container_size_ml,
+            is_imported=is_imported,
+            persisted_cache=persisted_cache,
+            persisted_hit=persisted_hit,
+            signature=report.panel_signature,
+        )
+        external_match = enrichment.external_match
+        explanations = enrichment.explanations
+        report.external_match = external_match
+        report.explanations = explanations
+        # Re-cache under the same byte-exact key with enrichment baked in.
+        # `verify()` already wrote an unenriched copy through `_finalize`;
+        # this overwrites the same slot. Two writes on a cold path is a
+        # rounding error against the cold-path latency, and the alternative
+        # (lifting all L1 writes to this layer) breaks the existing
+        # `verify()` test contract that expects self-caching.
+        if l1_cache is not None:
+            try:
+                rules_for_key = _safe_load_rules(beverage_type)
+                if rules_for_key is not None:
+                    cache_key = make_cache_key(
+                        panels=[(p.image_bytes, p.media_type) for p in panels],
+                        beverage_type=beverage_type,
+                        container_size_ml=container_size_ml,
+                        is_imported=is_imported,
+                        application=application_obj,
+                        rules=rules_for_key,
+                    )
+                    l1_cache.put(cache_key, report)
+            except Exception:
+                # L1 re-write is best-effort — a failure here means the
+                # next byte-exact request will skip the L1 hit and fall
+                # through to L2 / L3 / cold, which is correct behavior.
+                pass
+
     return VerifyResponse(
         overall=report.overall,
         rule_results=[
@@ -481,6 +624,7 @@ async def verify_label(
                 fix_suggestion=r.fix_suggestion,
                 bbox=r.bbox,
                 surface=r.surface,
+                explanation=(explanations or {}).get(r.rule_id),
             )
             for r in report.rule_results
         ],
@@ -500,7 +644,22 @@ async def verify_label(
         elapsed_ms=report.elapsed_ms,
         cache_hit=report.cache_hit,
         health_warning_cross_check=report.health_warning_cross_check,
+        external_match=external_match,
     )
+
+
+def _safe_load_rules(beverage_type: str):
+    """Load rules for cache-key construction, swallowing any I/O errors.
+
+    Used only for the post-enrichment L1 re-write — a failure here just
+    means we skip the re-write, not that the request fails.
+    """
+    try:
+        from app.rules.loader import load_rules
+
+        return load_rules(beverage_type=beverage_type)
+    except Exception:
+        return None
 
 
 class VerifyStatsResponse(BaseModel):

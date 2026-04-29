@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -137,6 +138,12 @@ class Report(Base):
     image_quality: Mapped[str] = mapped_column(String(16), default="good")
     image_quality_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     extractor: Mapped[str] = mapped_column(String(32), default="ocr")
+    # External-source match (TTB COLA approval, etc.) populated by the
+    # finalize hook from `services/enrichment.py`. Nullable because
+    # the lookup is gated and best-effort. Shape is the dict form of
+    # `app.services.external.types.ExternalMatch` (`source`,
+    # `source_id`, `brand`, `approval_date`, `source_url`, etc.).
+    external_match_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -167,3 +174,48 @@ class RuleResultRow(Base):
     # mobile report screen can highlight the captured image when the
     # user taps a result.
     surface: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # AI-generated one-sentence plain-language explanation for fail /
+    # advisory rules, contextualised to THIS scan's extracted values.
+    # Populated by the finalize hook from `services/enrichment.py`.
+    # Nullable because (a) passing rules don't carry an explanation,
+    # (b) the explanation service is gated by `explanation_enabled` and
+    # may be off, and (c) generation is best-effort and can fail open.
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class LabelCacheEntry(Base):
+    """L3 perceptual cache row — survives process restart.
+
+    Sits underneath the in-process L2 ``ReverseLookupCache``: a verify
+    request that misses L1 (byte-exact) and L2 (in-process dhash) probes
+    this table before paying for the cold VLM path. The candidate set is
+    pre-filtered by ``(beverage_type, panel_count)``; per-panel Hamming
+    distance is computed in Python on the candidate rows. Storing the
+    enrichment payloads (TTB COLA match, AI rule explanations) on the
+    same row keeps the persisted entry as the single source of truth
+    when a sibling workstream produces them post-extraction.
+    """
+
+    __tablename__ = "label_cache"
+    __table_args__ = (
+        Index("ix_label_cache_bev_panels", "beverage_type", "panel_count"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    beverage_type: Mapped[str] = mapped_column(String(16), index=True)
+    panel_count: Mapped[int] = mapped_column(Integer, index=True)
+    # Comma-separated hex of 64-bit dhash ints, one per panel, in panel
+    # order. Decoded back to a tuple by ``signature_from_hex`` at lookup
+    # time so per-panel Hamming distance can be computed in Python.
+    signature_hex: Mapped[str] = mapped_column(String(128))
+    extraction_json: Mapped[dict] = mapped_column(JSON)
+    external_match_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    explanations_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

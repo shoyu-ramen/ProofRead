@@ -72,6 +72,13 @@ class ScanReport:
     ocr_results: dict[str, OCRResult] = field(default_factory=dict)
     fields_summary: dict[str, Any] = field(default_factory=dict)
     capture_quality: CaptureQualityReport | None = None
+    # Hand-off used by the API layer to upsert the L3 perceptual cache.
+    # Built from the rule engine's `ExtractionContext` so the L3 row
+    # carries the same shape as a `/v1/verify` row — same VisionExtraction
+    # dataclass, same field-by-field round-tripping helpers. NOT
+    # serialized into the API response. None when extraction was empty
+    # or the pipeline never reached the rule engine (sensor unreadable).
+    raw_extraction: Any = field(default=None, repr=False, compare=False)
 
 
 def overall_status(results: list[RuleResult], *, image_quality: str = "good") -> str:
@@ -179,6 +186,22 @@ def process_scan(
     image_quality = ctx.application.get("image_quality", "good")
     image_quality_notes = ctx.application.get("image_quality_notes")
 
+    # Synthesize a `VisionExtraction`-shaped object from the rule engine's
+    # `ExtractionContext` so the L3 perceptual cache stores the same
+    # round-trippable payload as the verify-path's cold path. The
+    # `raw_response` field is empty here because the scan path doesn't
+    # preserve the model's raw response through OCR fallback — L3 reuse
+    # only consumes `fields` + `unreadable`, so the empty raw is fine.
+    from app.services.vision import VisionExtraction as _VisionExtraction
+
+    raw_extraction = _VisionExtraction(
+        fields=dict(ctx.fields),
+        unreadable=list(ctx.unreadable_fields),
+        raw_response="",
+        image_quality=image_quality,
+        image_quality_notes=image_quality_notes,
+    )
+
     return ScanReport(
         overall=overall_status(rule_results, image_quality=image_quality),
         rule_results=rule_results,
@@ -197,6 +220,7 @@ def process_scan(
             for name, f in ctx.fields.items()
         },
         capture_quality=capture,
+        raw_extraction=raw_extraction,
     )
 
 

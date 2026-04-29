@@ -90,6 +90,20 @@ class _Snapshot:
     elapsed_ms: int
     cache_hit: bool
     reverse_lookup_hit: bool
+    # Enrichment fields populated by the API layer post-verify(): a TTB
+    # COLA match dict (or None) and a `{rule_id: explanation}` map (or
+    # None). Cached here so a byte-exact hit returns the enriched verdict
+    # without paying for the external lookup or AI explanation generation
+    # a second time. These are dict-shaped, not RuleResult-shaped, so the
+    # shallow-snapshot pattern (copy on freeze, copy on materialize) is
+    # sufficient.
+    external_match: dict[str, Any] | None
+    explanations: dict[str, str] | None
+    # The L2 reverse-lookup phash signature, captured so a byte-exact
+    # warm hit can re-key the L3 perceptual cache without recomputing
+    # phashes (cache_hit=True paths skip the verify path's normalize
+    # step entirely, so the signature has to come back via the cache).
+    panel_signature: tuple[int, ...] | None
 
 
 def _snapshot(report: VerifyReport) -> _Snapshot:
@@ -120,6 +134,17 @@ def _snapshot(report: VerifyReport) -> _Snapshot:
         elapsed_ms=report.elapsed_ms,
         cache_hit=report.cache_hit,
         reverse_lookup_hit=report.reverse_lookup_hit,
+        external_match=(
+            dict(report.external_match)
+            if isinstance(report.external_match, dict)
+            else None
+        ),
+        explanations=(
+            dict(report.explanations)
+            if isinstance(report.explanations, dict)
+            else None
+        ),
+        panel_signature=report.panel_signature,
     )
 
 
@@ -152,6 +177,20 @@ def _materialize(snap: _Snapshot) -> VerifyReport:
         elapsed_ms=snap.elapsed_ms,
         cache_hit=snap.cache_hit,
         reverse_lookup_hit=snap.reverse_lookup_hit,
+        external_match=(
+            dict(snap.external_match)
+            if isinstance(snap.external_match, dict)
+            else None
+        ),
+        explanations=(
+            dict(snap.explanations)
+            if isinstance(snap.explanations, dict)
+            else None
+        ),
+        panel_signature=snap.panel_signature,
+        # `raw_extraction` deliberately stays None here — cached entries
+        # already correspond to a row in L3, so the API layer doesn't
+        # need to re-upsert on a byte-exact hit.
     )
 
 

@@ -112,6 +112,58 @@ class Settings(BaseSettings):
     # constant.
     qwen_vl_timeout_s: float = 30.0
 
+    # AI-generated rule explanations. Run on the cold path post-verdict
+    # to add a one-sentence plain-language gloss to each failed rule,
+    # contextualised to THIS scan's extracted values and image quality.
+    # The explanation is purely additive — generation failures never
+    # block the verdict; the response simply omits the field. Keep on
+    # by default since the upside (clearer fix-it UX) is unconditional
+    # and the downside is bounded by the per-call timeout.
+    explanation_enabled: bool = True
+    # Empty string means "use anthropic_model" (Haiku 4.5 by default —
+    # right size for one-sentence per-rule explanations). Override only
+    # to A/B against Sonnet for tuning explanation quality.
+    explanation_model: str = ""
+    # Six-second cap is a balance: Haiku 4.5 typically returns the JSON
+    # batch in 1.5–3 s, but a P99 spike under contention could hit 5 s+.
+    # The verify response is already on the cold path here, so we can
+    # afford the wait; what we cannot afford is a stuck call eating a
+    # uvicorn worker. asyncio.wait_for trips at this value and we silently
+    # drop the explanations rather than re-raising.
+    explanation_timeout_s: float = 6.0
+    # Cap how many failed rules we batch into one prompt. Six is enough
+    # to cover the long-tail "label fails on 4–5 things" case while
+    # keeping the prompt + response token count predictable.
+    explanation_max_rules: int = 6
+
+    # External-source tier — TTB COLA public search adapter. Default
+    # OFF: the parser is keyed off the live HTML form, and operators
+    # should validate it against their own TTB load before trusting
+    # results in /v1/verify hits. The user-agent string identifies
+    # ProofRead so the TTB can block us cleanly if our query rate ever
+    # becomes a problem; the timeout caps a single HTTP round-trip,
+    # not the rate-limit-aware queue around it.
+    ttb_cola_lookup_enabled: bool = False
+    ttb_cola_timeout_s: float = 4.0
+    ttb_cola_user_agent: str = (
+        "ProofRead/1.0 (+https://github.com/shoyu-ramen/ProofRead)"
+    )
+
+    # L3 perceptual cache backed by the `label_cache` Postgres table.
+    # Survives process restart and accumulates a corpus of verified
+    # labels across deploys. Default OFF until the operator has run the
+    # schema migration (`Base.metadata.create_all`-equivalent for the
+    # new `LabelCacheEntry` model). When OFF, the in-process L1+L2
+    # caches still serve their normal hit rates; only the durable tier
+    # is skipped.
+    persisted_label_cache_enabled: bool = False
+    # Hamming threshold for the L3 lookup. Mirrors the in-process L2
+    # default (6 bit-flips out of 64 keeps the false-positive rate well
+    # under 1 % per imagehash benchmarks). Tunable independently of L2
+    # because the L3 corpus tends to grow much larger and operators may
+    # want to tighten the threshold to compensate.
+    persisted_label_cache_hamming_threshold: int = 6
+
     # Telemetry. All three are optional — missing values mean the
     # corresponding init is a no-op and local dev / CI never sees a
     # remote callout. `environment` and `release` tag every event so

@@ -21,6 +21,12 @@ dependencies = [
     "jinja2>=3.1",
     "numpy>=1.26",
     "scipy>=1.11",
+    # External-sources tier (TTB COLA Registry adapter): the public
+    # search returns HTML, not JSON, and BeautifulSoup is the
+    # path-of-least-resistance parser that ships everywhere we deploy.
+    # Selectolax is faster but adds a Cython compile step, which is
+    # not worth it given the per-call HTML is sub-100 KB.
+    "beautifulsoup4>=4.12",
 ]
 
 [project.optional-dependencies]

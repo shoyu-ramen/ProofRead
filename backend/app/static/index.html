@@ -557,6 +557,96 @@
     font-weight: 600;
     margin-right: 4px;
   }
+  /* AI-generated plain-language rationale rendered under a failing or
+     advisory rule. Sits a step deeper than the .rule-fix block so it
+     reads as supporting context rather than another field. The italic
+     + muted-color treatment matches the existing "secondary copy"
+     idiom used by .result-info dd.unreadable. */
+  .rule-explanation {
+    margin-top: 6px;
+    margin-left: 14px;
+    padding-left: 10px;
+    border-left: 2px dotted var(--line);
+    font-size: 12.5px;
+    font-style: italic;
+    color: var(--na);
+    line-height: 1.5;
+  }
+  .rule-explanation-label {
+    font-style: normal;
+    font-weight: 700;
+    color: var(--ink-2);
+    margin-right: 6px;
+    letter-spacing: 0.3px;
+  }
+
+  /* TTB COLA approval card — rendered above the field grid when the
+     verify response carries an external_match. Mirrors the .verdict-card
+     visual idiom (white surface, soft shadow, accent rule along the top
+     edge) but uses the existing --pass palette so "approved" reads at a
+     glance without introducing a new color token. */
+  .external-match {
+    margin-top: 18px;
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 18px 22px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 6px 20px rgba(14, 42, 74, 0.04);
+  }
+  .external-match::after {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 4px;
+    background: var(--pass);
+  }
+  .external-match-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .external-match-title {
+    font-size: 11px;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--pass);
+  }
+  .external-match-confidence {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--ink-2);
+    font-weight: 600;
+  }
+  .external-match-body {
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .external-match-brand {
+    font-weight: 700;
+    color: var(--navy);
+  }
+  .external-match-meta {
+    margin-top: 4px;
+    color: var(--ink-2);
+    font-size: 13px;
+  }
+  .external-match-footer {
+    margin-top: 10px;
+    font-size: 12px;
+  }
+  .external-match-footer a {
+    color: var(--pass);
+    text-decoration: none;
+    font-weight: 600;
+    border-bottom: 1px solid var(--pass-bg);
+  }
+  .external-match-footer a:hover {
+    border-bottom-color: var(--pass);
+  }
 
   .result-actions {
     margin-top: 22px;
@@ -874,6 +964,12 @@
       <p class="verdict-headline" id="verdictHeadline"></p>
       <div class="verdict-meta" id="verdictMeta"></div>
     </div>
+
+    <!-- TTB COLA approval card. Populated by renderResult() when the
+         verify response carries `external_match`; otherwise stays
+         hidden (and emptied on every render so a stale match from a
+         previous scan can't bleed through). -->
+    <div class="external-match" id="externalMatch" hidden></div>
 
     <div class="result-grid" id="resultGrid">
       <div class="result-thumb-wrap">
@@ -1754,6 +1850,13 @@ function renderResult(data, clientMs) {
   $("verdictWord").textContent = disp.word;
   $("verdictHeadline").textContent = disp.headline;
 
+  // External (TTB COLA) match — sits between the verdict and the field
+  // grid so it's the first reinforcing signal a user sees after the
+  // headline verdict. Always reset, then populate only when the
+  // response actually carries a match; this keeps a stale card from a
+  // previous scan from leaking through on the next render.
+  renderExternalMatch(data.external_match);
+
   const ruleCount = data.rule_results.length;
   const failed = data.rule_results.filter(r => r.status === "fail").length;
   const warned = data.rule_results.filter(r => r.status === "warn").length;
@@ -1857,6 +1960,14 @@ function renderResult(data, clientMs) {
     const li = document.createElement("li");
     li.className = "rule";
     const status = (rr.status || "na").toLowerCase();
+    // The AI-generated explanation only renders for fail/advisory rules
+    // — the cases where a non-expert reader actually needs the "why".
+    // A pass rule with an explanation would just be noise, and a
+    // warning is already self-explanatory through the existing fields.
+    const showExplanation =
+      typeof rr.explanation === "string"
+      && rr.explanation.trim() !== ""
+      && (status === "fail" || status === "advisory");
     li.innerHTML = `
       <div class="rule-head">
         <span class="pill ${status}">${status}</span>
@@ -1866,6 +1977,7 @@ function renderResult(data, clientMs) {
       ${rr.finding   ? `<div class="rule-finding"><strong>Finding:</strong>${escapeHtml(rr.finding)}</div>` : ""}
       ${rr.expected  ? `<div class="rule-expected"><strong>Expected:</strong>${escapeHtml(rr.expected)}</div>` : ""}
       ${rr.fix_suggestion && status !== "pass" ? `<div class="rule-fix"><strong>Fix:</strong>${escapeHtml(rr.fix_suggestion)}</div>` : ""}
+      ${showExplanation ? `<div class="rule-explanation"><span class="rule-explanation-label">Why</span>${escapeHtml(rr.explanation)}</div>` : ""}
     `;
     ul.appendChild(li);
   }
@@ -1947,6 +2059,13 @@ function renderError(err) {
   $("resultFields").innerHTML = "";
   $("resultGrid").hidden = true;
   $("findings").hidden = true;
+  // Reset the optional approval card too, so a previous-scan match
+  // doesn't survive an error rendering.
+  const externalEl = $("externalMatch");
+  if (externalEl) {
+    externalEl.hidden = true;
+    externalEl.innerHTML = "";
+  }
 }
 
 function panelLabel(sourceId) {
@@ -1984,6 +2103,78 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => (
     {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]
   ));
+}
+
+// Populate (or hide) the TTB COLA approval card. All fields are
+// optional on the response, so each line is rendered conditionally;
+// strings that came from the upstream service (brand, fanciful_name,
+// class_type, source_url) are passed through escapeHtml() before
+// landing in innerHTML — same idiom used by the rule-finding /
+// rule-expected / rule-fix blocks above.
+function renderExternalMatch(match) {
+  const el = $("externalMatch");
+  if (!el) return;
+  if (!match || typeof match !== "object") {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  const brand = typeof match.brand === "string" ? match.brand.trim() : "";
+  const fanciful = typeof match.fanciful_name === "string" ? match.fanciful_name.trim() : "";
+  const classType = typeof match.class_type === "string" ? match.class_type.trim() : "";
+  const approvalDate = typeof match.approval_date === "string" ? match.approval_date.trim() : "";
+  const sourceUrl = typeof match.source_url === "string" ? match.source_url.trim() : "";
+  const confidence = typeof match.confidence === "number" ? match.confidence : null;
+
+  // Compose the brand line: "Brand — Fanciful Name". Falls back to
+  // either piece on its own when only one is present.
+  const brandPieces = [];
+  if (brand) brandPieces.push(escapeHtml(brand));
+  if (fanciful && fanciful.toLowerCase() !== brand.toLowerCase()) {
+    brandPieces.push(escapeHtml(fanciful));
+  }
+  const brandLine = brandPieces.length ? brandPieces.join(" — ") : "";
+
+  // Secondary line stitches together class/type and approval date as
+  // available — anything missing is silently dropped.
+  const metaPieces = [];
+  if (classType) metaPieces.push(escapeHtml(classType));
+  if (approvalDate) metaPieces.push(`Approved ${escapeHtml(approvalDate)}`);
+  const metaLine = metaPieces.join(" · ");
+
+  // Confidence pill on the head row, only when the upstream service
+  // returns a number we can render as a percent.
+  const confChip = confidence !== null && confidence > 0
+    ? `<span class="external-match-confidence">${Math.round(confidence * 100)}% match</span>`
+    : "";
+
+  // Source link: open in a new tab with rel="noopener noreferrer" to
+  // keep the parent window safe from a hijacked external page. URL is
+  // escaped so any embedded quotes can't break out of the attribute.
+  const footer = sourceUrl
+    ? `<div class="external-match-footer"><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">View on TTB</a></div>`
+    : "";
+
+  // Nothing material to render? Keep the card hidden — an empty card
+  // is worse than no card.
+  if (!brandLine && !metaLine && !footer) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="external-match-head">
+      <span class="external-match-title">TTB approval found</span>
+      ${confChip}
+    </div>
+    <div class="external-match-body">
+      ${brandLine ? `<div class="external-match-brand">${brandLine}</div>` : ""}
+      ${metaLine  ? `<div class="external-match-meta">${metaLine}</div>` : ""}
+    </div>
+    ${footer}
+  `;
 }
 
 // ─── Reset / scan again ────────────────────────────────────────

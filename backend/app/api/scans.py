@@ -41,12 +41,15 @@ from app.models import (
     Scan,
     ScanImage,
 )
+from app.services.enrichment import enrich_verdict
 from app.services.extractors.claude_vision import (
     ClaudeVisionExtractor,
 )
 from app.services.ocr import OCRProvider, OCRResult, get_default_provider
 from app.services.pipeline import ScanInput, VisionExtractor, process_scan
+from app.services.reverse_lookup import compute_dhash_bytes
 from app.services.storage import StorageBackend, get_default_storage, scan_image_key
+from app.services.verify import VerifyReport
 
 router = APIRouter(prefix="/scans", tags=["scans"])
 
@@ -106,6 +109,12 @@ class RuleResultDTO(BaseModel):
     # captured image when the user taps a result. `None` when the rule
     # isn't tied to a specific extracted field.
     surface: str | None = None
+    # AI-generated one-sentence plain-language explanation for fail /
+    # advisory rules. Mirrors the `/v1/verify` field; populated by the
+    # finalize hook and persisted to `RuleResultRow.explanation`. Null
+    # for passing rules and when the explanation service is disabled
+    # or fails open.
+    explanation: str | None = None
 
 
 class ReportResponse(BaseModel):
@@ -116,6 +125,11 @@ class ReportResponse(BaseModel):
     extractor: str
     rule_results: list[RuleResultDTO]
     fields_summary: dict
+    # External-source match (TTB COLA approval, etc.). Mirrors the
+    # `/v1/verify` field; persisted to `Report.external_match_json`.
+    # Null when the lookup is disabled, no match, or below confidence
+    # threshold. Shape is the dict form of `ExternalMatch`.
+    external_match: dict | None = None
 
 
 class HistoryItem(BaseModel):
@@ -139,6 +153,20 @@ def get_ocr_provider() -> OCRProvider:
 
 def get_storage() -> StorageBackend:
     return get_default_storage()
+
+
+def get_persisted_label_cache_for_scans():
+    """Singleton bridge to the L3 cache used by both API surfaces.
+
+    Both /v1/verify and /v1/scans share the same `label_cache` table
+    and the same `PersistedLabelCache` settings; routing both API
+    layers through the lazy factory in `api.verify` keeps the
+    gating + lock invariants centralised. Returns None when the
+    operator hasn't enabled the durable tier.
+    """
+    from app.api.verify import get_persisted_label_cache
+
+    return get_persisted_label_cache()
 
 
 def get_vision_extractor() -> VisionExtractor | None:
@@ -410,6 +438,13 @@ async def finalize_scan(
     rule_versions = sorted({str(r.rule_version) for r in report.rule_results})
     rule_version_str = ",".join(rule_versions) if rule_versions else "1"
 
+    # Persist the bare report + rule rows FIRST. SPEC §0.5 forbids
+    # gating the verdict on enrichment, and a slow Anthropic call (up
+    # to `explanation_timeout_s` = 6 s) or a TTB COLA outage cannot
+    # leave the scan stuck in "processing" or block the user from
+    # seeing their pass/fail. Enrichment writes are issued as UPDATEs
+    # below; if those fail, the report still goes out cleanly with
+    # `explanation=None` / `external_match=None`.
     report_row = Report(
         id=uuid.uuid4(),
         scan_id=scan.id,
@@ -422,27 +457,96 @@ async def finalize_scan(
     session.add(report_row)
     await session.flush()
 
+    rule_rows: list[RuleResultRow] = []
     for r in report.rule_results:
-        session.add(
-            RuleResultRow(
-                id=uuid.uuid4(),
-                report_id=report_row.id,
-                rule_id=r.rule_id,
-                rule_version=r.rule_version,
-                status=r.status.value,
-                finding=r.finding,
-                expected=r.expected,
-                citation=r.citation,
-                fix_suggestion=r.fix_suggestion,
-                bbox=list(r.bbox) if r.bbox is not None else None,
-                image_id=None,
-                surface=r.surface,
-            )
+        row = RuleResultRow(
+            id=uuid.uuid4(),
+            report_id=report_row.id,
+            rule_id=r.rule_id,
+            rule_version=r.rule_version,
+            status=r.status.value,
+            finding=r.finding,
+            expected=r.expected,
+            citation=r.citation,
+            fix_suggestion=r.fix_suggestion,
+            bbox=list(r.bbox) if r.bbox is not None else None,
+            image_id=None,
+            surface=r.surface,
         )
+        session.add(row)
+        rule_rows.append(row)
 
     scan.status = "complete"
     scan.completed_at = datetime.now(UTC).replace(tzinfo=None)
     await session.commit()
+
+    # Enrichment runs after the response-shape data is durable. Pure-
+    # additive: any failure here logs and drops the corresponding field.
+    # The L3 perceptual cache is consulted (and updated) using a
+    # signature derived from raw upload bytes. This is a different key
+    # space from the verify-path's normalized phash, so an L3 entry
+    # written by /v1/verify won't be found by /v1/scans (and vice
+    # versa). That's acceptable for v1: the two paths each accumulate
+    # their own corpus, and a future iteration can unify the keying by
+    # lifting normalization out of verify.
+    try:
+        signatures = []
+        for _surface, raw_bytes in image_bytes.items():
+            try:
+                signatures.append(compute_dhash_bytes(raw_bytes))
+            except Exception:
+                signatures.append(None)
+        scan_signature: tuple[int, ...] | None = (
+            tuple(int(s) for s in signatures if s is not None)
+            if signatures and all(s is not None for s in signatures)
+            else None
+        )
+
+        persisted_cache = get_persisted_label_cache_for_scans()
+        persisted_hit = None
+        if persisted_cache is not None and scan_signature is not None:
+            try:
+                persisted_hit = await persisted_cache.lookup(
+                    signature=scan_signature,
+                    beverage_type=scan.beverage_type,
+                )
+            except Exception:
+                persisted_hit = None
+
+        adapter_report = VerifyReport(
+            overall=report.overall,
+            rule_results=list(report.rule_results),
+            extracted=dict(report.fields_summary),
+            unreadable_fields=[],
+            image_quality=report.image_quality,
+            image_quality_notes=report.image_quality_notes,
+            elapsed_ms=0,
+            raw_extraction=report.raw_extraction,
+        )
+        enrichment = await enrich_verdict(
+            report=adapter_report,
+            beverage_type=scan.beverage_type,
+            container_size_ml=scan.container_size_ml,
+            is_imported=scan.is_imported,
+            persisted_cache=persisted_cache,
+            persisted_hit=persisted_hit,
+            signature=scan_signature,
+        )
+        if enrichment.external_match is not None:
+            report_row.external_match_json = enrichment.external_match
+        if enrichment.explanations:
+            by_id = {r.rule_id: r for r in rule_rows}
+            for rule_id, text in enrichment.explanations.items():
+                row = by_id.get(rule_id)
+                if row is not None:
+                    row.explanation = text
+        await session.commit()
+    except Exception:
+        # Best-effort. Roll back the enrichment-only state but leave
+        # the verdict commit alone (already durable). The next
+        # /v1/scans/{id}/report read returns the un-enriched shape,
+        # which the UI tolerates.
+        await session.rollback()
 
     return ScanStatusResponse(
         scan_id=str(scan.id),
@@ -501,6 +605,7 @@ async def get_report(
             fix_suggestion=r.fix_suggestion,
             bbox=tuple(r.bbox) if r.bbox is not None else None,
             surface=r.surface,
+            explanation=r.explanation,
         )
         for r in rule_rows
     ]
@@ -526,6 +631,7 @@ async def get_report(
         extractor=report.extractor,
         rule_results=rule_results,
         fields_summary=fields_summary,
+        external_match=report.external_match_json,
     )
 
 

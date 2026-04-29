@@ -43,6 +43,7 @@ import {
   Button,
   CaptureQualityPill,
   ConfidenceBar,
+  ExternalMatchCard,
   RuleResultCard,
   SectionHeader,
   StatusBadge,
@@ -137,6 +138,10 @@ export default function ReportScreen(): React.ReactElement {
           />
         }
       >
+        {/* TTB COLA reverse-image-lookup match — only renders when the
+            backend supplies one. Sits above the verdict header so the
+            user sees the regulatory anchor before the rule breakdown. */}
+        {data.external_match ? <ExternalMatchCard match={data.external_match} /> : null}
         <HeaderCard data={data} grouped={grouped} />
 
         {/* Single panorama thumbnail — captures the entire label in one

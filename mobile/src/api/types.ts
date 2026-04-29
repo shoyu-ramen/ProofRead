@@ -73,6 +73,11 @@ export interface RuleResultDTO {
   // it always uploads a single panorama. `null` when the rule isn't
   // tied to a specific extracted field.
   surface?: string | null;
+  // AI-generated one-sentence plain-language explanation tailored to
+  // this scan's extracted values. Populated by the backend for failed
+  // and advisory rules. Optional + nullable because the /v1/scans
+  // endpoint may not emit it yet — the UI must tolerate absence.
+  explanation?: string | null;
 }
 
 export interface FieldSummary {
@@ -84,6 +89,21 @@ export interface FieldSummary {
 // Capture-quality verdict from the report row. Ordered worst→best so
 // downstream code can compare with `<` semantics if needed.
 export type ImageQuality = 'poor' | 'fair' | 'good';
+
+// Reverse-lookup match against an external regulatory source (currently
+// just TTB COLA Online — `source: "ttb_cola"`). Populated by the
+// backend when the perceptual-hash lookup finds a confident match.
+export interface ExternalMatchDTO {
+  source: string; // 'ttb_cola'
+  source_id: string;
+  brand: string | null;
+  fanciful_name: string | null;
+  class_type: string | null;
+  approval_date: string | null; // ISO-8601 date
+  label_image_url: string | null;
+  confidence: number;
+  source_url: string | null;
+}
 
 export interface ReportResponse {
   scan_id: string;
@@ -103,6 +123,10 @@ export interface ReportResponse {
   // Backend returns dict with arbitrary keys per extracted field.
   // Values are FieldSummary-shaped but we type loose to match the dict.
   fields_summary: Record<string, FieldSummary | unknown>;
+  // Reverse-image-lookup match (TTB COLA today). Optional + nullable
+  // because the /v1/scans path doesn't emit it yet — the UI conditions
+  // on truthiness so absence is a no-op.
+  external_match?: ExternalMatchDTO | null;
 }
 
 // History list item — one row in GET /v1/scans (SPEC §v1.9). The
