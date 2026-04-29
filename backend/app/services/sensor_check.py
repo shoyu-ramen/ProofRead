@@ -612,13 +612,19 @@ def _compute_metrics(
 
 
 def _detect_label_region(gray: np.ndarray) -> Bbox | None:
-    """Locate the densest gradient region of the frame.
+    """Locate the most label-shaped high-gradient region of the frame.
 
     Heuristic: compute a local-gradient magnitude (Sobel-ish), downsample
-    to a coarse grid, threshold at the 75th percentile, take the largest
-    connected component, and return its bounding box. Real-world frames
-    put the label/bottle in a contiguous high-detail region; the rest of
-    the frame is usually low-frequency background (sky, table, wall).
+    to a coarse grid, threshold at the 75th percentile, then score every
+    connected component by `area * fill_ratio` and return the bbox of the
+    best-scoring one.
+
+    `fill_ratio` (component pixels / bbox pixels) is the difference between
+    a label and a person: a label's text fills its bbox tightly even after
+    dilation, while a person's face+clothing blob sprawls with gaps for
+    skin, leaving a loose bbox. Without this term the largest blob wins
+    even when it's clearly the user's body holding up a small can — and
+    cropping to that blob loses the actual label.
 
     Returns None when there is no meaningful structure (flat frame).
     """
@@ -659,25 +665,50 @@ def _detect_label_region(gray: np.ndarray) -> Bbox | None:
     labels, n = ndimage.label(mask)
     if n == 0:
         return None
-    sizes = ndimage.sum(mask, labels, index=range(1, n + 1))
-    biggest = int(np.argmax(sizes)) + 1
-    ys, xs = np.where(labels == biggest)
-    if ys.size == 0:
-        return None
 
-    cy_lo, cy_hi = ys.min(), ys.max() + 1
-    cx_lo, cx_hi = xs.min(), xs.max() + 1
-    bbox = Bbox(
-        x=int(cx_lo * cell_w),
-        y=int(cy_lo * cell_h),
-        w=int((cx_hi - cx_lo) * cell_w),
-        h=int((cy_hi - cy_lo) * cell_h),
-    )
-    # Reject tiny bboxes — a "label" smaller than 10 % of the frame area is
-    # almost certainly a thumb / lens speck, not the label.
-    if bbox.area < 0.10 * (h * w):
+    # Frame-area floor: 4 % of pixels. Lower than the previous 10 % so a
+    # genuinely small label in a wide-angle capture (held-up bottle) is
+    # not rejected outright; the fill-ratio check below filters out
+    # speck-sized noise without leaning on a hard area floor.
+    grid_area = mask.size
+    min_component_cells = max(2, int(0.04 * grid_area))
+
+    best_score = 0.0
+    best_bbox: Bbox | None = None
+    for idx in range(1, n + 1):
+        component = labels == idx
+        component_cells = int(component.sum())
+        if component_cells < min_component_cells:
+            continue
+        ys, xs = np.where(component)
+        cy_lo, cy_hi = ys.min(), ys.max() + 1
+        cx_lo, cx_hi = xs.min(), xs.max() + 1
+        bbox_cells = (cy_hi - cy_lo) * (cx_hi - cx_lo)
+        if bbox_cells <= 0:
+            continue
+        fill_ratio = component_cells / bbox_cells
+        # Prefer regions that are both large AND densely packed inside
+        # their bbox. A person+clothing blob is large but loose
+        # (fill ~0.3); label text after dilation is dense (fill ~0.7+).
+        score = component_cells * (fill_ratio**2)
+        if score <= best_score:
+            continue
+        best_score = score
+        best_bbox = Bbox(
+            x=int(cx_lo * cell_w),
+            y=int(cy_lo * cell_h),
+            w=int((cx_hi - cx_lo) * cell_w),
+            h=int((cy_hi - cy_lo) * cell_h),
+        )
+
+    if best_bbox is None:
         return None
-    return bbox
+    # Frame-pixel floor mirrors the cell-area floor above. A "label"
+    # smaller than 4 % of the frame is almost certainly a thumb or lens
+    # speck even if it survived the cell-count gate on a coarse grid.
+    if best_bbox.area < 0.04 * (h * w):
+        return None
+    return best_bbox
 
 
 def _localize_glare_blobs(

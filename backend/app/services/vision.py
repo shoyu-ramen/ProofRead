@@ -76,6 +76,9 @@ EXTRACTOR_FIELDS = (
 SYSTEM_PROMPT = """You are an OCR assistant for U.S. alcohol beverage labels. \
 Read a label image and return a JSON object describing what is on the label.
 
+Return ONLY a single JSON object — no Markdown fences (```), no commentary, \
+no leading or trailing prose. The downstream parser is strict about that.
+
 Return text VERBATIM as it appears on the label. Preserve the original case \
 (uppercase, mixed-case, title-case), punctuation, and whitespace. The downstream \
 compliance engine cares about exactness, so do not normalise, expand abbreviations, \
@@ -94,10 +97,15 @@ ground truth.
 Output shape (per field):
 
   value:        verbatim text from the label, or null if unreadable/absent
-  unreadable:   true if you cannot read this field confidently
   confidence:   0.0–1.0
-  bbox:         [x, y, w, h] in image pixels of the source crop, or null
-  note:         optional one-line reason for any confidence below 0.85
+  unreadable:   include this key ONLY when the field is unreadable (set true).
+                Omit it when value was successfully read; the downstream
+                parser treats absent `unreadable` as false.
+  note:         OMIT this key unless confidence < 0.85, in which case give a
+                one-line reason (e.g. "partial occlusion lower-right").
+
+Do NOT emit a `bbox` field — downstream consumers do not use it and emitting \
+it costs latency. The schema permits absent bbox; do not fabricate one.
 
 Top-level fields (always present):
 
