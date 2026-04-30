@@ -48,14 +48,35 @@ const MIN_EDGE_DOMINANCE = 1.5;
 // 10-row band before we reject.
 const MAX_AMBIGUOUS_ROW_FRAC = 0.3;
 
+// How many rows beyond the band we may walk before giving up on
+// finding the body's top/bottom. Bounds the tail scan even when the
+// bottle truly extends edge-to-edge (the loop also stops at the frame
+// border in that case).
+const VERT_SCAN_MAX_ROWS = 200;
+
+// How many consecutive missed rows we tolerate before declaring the
+// edge has ended. A small slack handles cap glints, label seams, and
+// background clutter that briefly knock out the per-row Sobel hit.
+const VERT_SCAN_MISS_TOL = 2;
+
+// Per-row column tolerance for the top/bottom scan, expressed as a
+// fraction of body width. Bottles taper near the cap; widen the
+// search a touch so the cap shoulder stays inside the window. Floored
+// so tiny silhouettes don't collapse the search to a single column.
+const VERT_SCAN_TOL_FRAC = 0.15;
+const VERT_SCAN_TOL_FLOOR_PX = 12;
+
 // Empty silhouette returned when detection fails. Stable shape so the
 // shared value's writes stay JIT-friendly.
 const EMPTY: BottleSilhouette = {
   detected: false,
   edgeLeftX: 0,
   edgeRightX: 0,
+  edgeTopY: 0,
+  edgeBottomY: 0,
   centerX: 0,
   widthPx: 0,
+  heightPx: 0,
   steadinessScore: 0,
   class: null,
   classConfidence: 0,
@@ -187,12 +208,27 @@ export function detectBottle(
   const tightness =
     1 - (leftStd + rightStd) / (2 * MAX_EDGE_STDDEV_PX);
 
+  // Vertical extent. Walk up from the band's top row and down from its
+  // bottom, looking for the rows where strong vertical edges still
+  // sit near both medians. Caller scales these into photo-pixel space
+  // for cropping and into screen-px for the silhouette overlay.
+  const colTol = Math.max(
+    VERT_SCAN_TOL_FLOOR_PX,
+    Math.round(widthPx * VERT_SCAN_TOL_FRAC),
+  );
+  const edgeTopY = scanForTopEdge(luma, w, h, yTop, leftMedian, rightMedian, colTol);
+  const edgeBottomY = scanForBottomEdge(luma, w, h, yBot, leftMedian, rightMedian, colTol);
+  const heightPx = edgeBottomY > edgeTopY ? edgeBottomY - edgeTopY : 0;
+
   return {
     detected: true,
     edgeLeftX: leftMedian,
     edgeRightX: rightMedian,
+    edgeTopY,
+    edgeBottomY,
     centerX: (leftMedian + rightMedian) * 0.5,
     widthPx,
+    heightPx,
     steadinessScore: clamp01(tightness),
     // Heuristic detector can't classify; Phase 2's TFLite path will
     // populate these. Keeping the field present keeps the shape stable
@@ -200,6 +236,98 @@ export function detectBottle(
     class: null,
     classConfidence: 0,
   };
+}
+
+/**
+ * Walk up from `yTop` until vertical edges no longer hit near the
+ * left/right medians. Returns the highest row where both edges still
+ * register; falls back to `yTop` if no extension is found.
+ */
+function scanForTopEdge(
+  luma: Uint8Array,
+  w: number,
+  h: number,
+  yTop: number,
+  leftMedian: number,
+  rightMedian: number,
+  colTol: number,
+): number {
+  'worklet';
+  let edge = yTop;
+  let misses = 0;
+  const yMin = Math.max(0, yTop - VERT_SCAN_MAX_ROWS);
+  for (let y = yTop - 1; y >= yMin; y--) {
+    if (
+      rowHasEdgeNear(luma, w, y, leftMedian, colTol) &&
+      rowHasEdgeNear(luma, w, y, rightMedian, colTol)
+    ) {
+      edge = y;
+      misses = 0;
+    } else {
+      misses++;
+      if (misses > VERT_SCAN_MISS_TOL) break;
+    }
+  }
+  // h is unused but kept in the signature so symmetry with the
+  // bottom-edge scan is obvious; suppress the unused-arg warning.
+  void h;
+  return edge;
+}
+
+/**
+ * Mirror of `scanForTopEdge`, walking downward from `yBot`.
+ */
+function scanForBottomEdge(
+  luma: Uint8Array,
+  w: number,
+  h: number,
+  yBot: number,
+  leftMedian: number,
+  rightMedian: number,
+  colTol: number,
+): number {
+  'worklet';
+  let edge = yBot - 1;
+  let misses = 0;
+  const yMax = Math.min(h - 1, yBot + VERT_SCAN_MAX_ROWS - 1);
+  for (let y = yBot; y <= yMax; y++) {
+    if (
+      rowHasEdgeNear(luma, w, y, leftMedian, colTol) &&
+      rowHasEdgeNear(luma, w, y, rightMedian, colTol)
+    ) {
+      edge = y;
+      misses = 0;
+    } else {
+      misses++;
+      if (misses > VERT_SCAN_MISS_TOL) break;
+    }
+  }
+  return edge;
+}
+
+/**
+ * True if any column within ±`tol` of `targetX` has a vertical-edge
+ * Sobel response ≥ SOBEL_MIN in row `y`. Worklet-safe; bounded by
+ * 2·tol pixels per call.
+ */
+function rowHasEdgeNear(
+  luma: Uint8Array,
+  w: number,
+  y: number,
+  targetX: number,
+  tol: number,
+): boolean {
+  'worklet';
+  const xMin = Math.max(1, targetX - tol);
+  const xMax = Math.min(w - 2, targetX + tol);
+  const row = y * w;
+  for (let x = xMin; x <= xMax; x++) {
+    const left = luma[row + x - 1];
+    const right = luma[row + x + 1];
+    const mag = right > left ? right - left : left - right;
+    if (mag >= SOBEL_MIN) return true;
+  }
+  return false;
 }
 
 function median(xs: number[]): number {

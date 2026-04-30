@@ -10,8 +10,23 @@ export interface BottleSilhouette {
   detected: boolean;
   edgeLeftX: number;
   edgeRightX: number;
+  /**
+   * Top of the detected vertical extent in tracker-frame px. When the
+   * detector can't resolve the top — bottle runs off-frame, or the
+   * cap-area edges fall outside the column-tolerance window — this
+   * stays 0 and consumers should fall back to a height heuristic.
+   */
+  edgeTopY: number;
+  /** Bottom of the detected vertical extent; 0 when unresolved. */
+  edgeBottomY: number;
   centerX: number;
   widthPx: number;
+  /**
+   * `edgeBottomY - edgeTopY`. Stays 0 when the detector couldn't
+   * resolve a top/bottom — see `edgeTopY` doc — so consumers can
+   * branch on `heightPx > 0` rather than checking both edges.
+   */
+  heightPx: number;
   steadinessScore: number;
   /**
    * Top COCO class among the beverage subset. `null` until Phase 2

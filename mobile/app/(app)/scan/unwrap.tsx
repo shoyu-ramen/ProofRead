@@ -74,10 +74,11 @@ import { useScanStateMachine } from '@src/scan/hooks/useScanStateMachine';
 import { useScanStore } from '@src/state/scanStore';
 import { colors, scanGeometry, spacing, typography } from '@src/theme';
 
-// Tracker frame width — must match
-// `mobile/src/scan/tracker/frameProcessor.ts`. We only need the
-// width to translate silhouette x-coords into screen space.
+// Tracker frame dims — must match `RESIZE_W`/`RESIZE_H` in
+// `mobile/src/scan/tracker/frameProcessor.ts`. Used to translate
+// silhouette coords from tracker-frame px into screen-px.
 const TRACKER_FRAME_W = 160;
+const TRACKER_FRAME_H = 240;
 
 // Quiet window after coverage hits 1.0 before we encode the JPEG.
 // `useRotationCapture` runs takePhoto+extractStrip asynchronously
@@ -194,13 +195,15 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
   }, [clearScanCaptures]);
 
   // Live silhouette frame in screen-px — translates the tracker's
-  // 160×240 buffer coords to the camera viewport. The tracker only
-  // surfaces left/right edges, so we derive the height by assuming a
-  // bottle aspect of ~0.55 (matches the old camera screen's dashed
-  // frame) and center on the viewport vertically.
+  // 160×240 buffer coords to the camera viewport. When the detector
+  // surfaces a real vertical extent we use it; when it can't (cap
+  // narrowing escapes the column-tolerance window), we fall back to
+  // the bottle-aspect heuristic so the overlay still has a stable
+  // shape.
   const silhouetteSv = useDerivedValue<SilhouetteFrame>(() => {
     const s = tracker.trackerStateSv.value.silhouette;
     const sx = screen.width / TRACKER_FRAME_W;
+    const sy = screen.height / TRACKER_FRAME_H;
     if (!s.detected) {
       // Default-centered guide while we wait for the detector. The
       // overlay's opacity is 0 in this state so these numbers never
@@ -216,11 +219,14 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
       };
     }
     const widthScreen = s.widthPx * sx;
+    const hasMeasuredHeight = s.heightPx > 0;
     return {
       centerX: s.centerX * sx,
-      centerY: screen.height / 2,
+      centerY: hasMeasuredHeight
+        ? ((s.edgeTopY + s.edgeBottomY) * 0.5) * sy
+        : screen.height / 2,
       widthPx: widthScreen,
-      heightPx: widthScreen / 0.55,
+      heightPx: hasMeasuredHeight ? s.heightPx * sy : widthScreen / 0.55,
     };
   }, [tracker.trackerStateSv]);
 
