@@ -152,11 +152,24 @@ function computeCropRect(input: CropInput): CropRect {
   let cropX = Math.round(centerX - cropW * 0.5);
   cropX = clamp(cropX, 0, photoW - cropW);
 
-  // Vertical extent: the tracker doesn't surface top/bottom, so use the
-  // full photo height — the label height heuristic in ARCH §5.1 step 3
-  // is deferred until the design pass dials in cap/base detection.
-  const yTop = Math.max(0, Math.round(silhouette.edgeLeftX * 0)); // 0 in v1
-  const yHeight = Math.max(1, photoH - yTop);
+  // Vertical extent (ARCH §5.1 step 3). When the tracker surfaces a
+  // measured top/bottom we crop to it; otherwise we fall back to the
+  // full photo height. Falling back rather than throwing keeps a
+  // borderline silhouette (cap shape escapes the column-tolerance
+  // window) from dropping the photo — the strip is just slightly
+  // looser than ideal.
+  let yTop = 0;
+  let yHeight = photoH;
+  if (silhouette.heightPx > 0) {
+    const measuredTop = clamp(Math.round(silhouette.edgeTopY * sy), 0, photoH - 1);
+    const measuredBot = clamp(
+      Math.round(silhouette.edgeBottomY * sy),
+      measuredTop + 1,
+      photoH,
+    );
+    yTop = measuredTop;
+    yHeight = measuredBot - measuredTop;
+  }
   return { x: cropX, y: yTop, width: cropW, height: yHeight };
 }
 
