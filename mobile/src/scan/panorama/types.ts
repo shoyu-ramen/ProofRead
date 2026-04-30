@@ -69,12 +69,13 @@ export const DEFAULT_PANORAMA_HEIGHT = 1024;
 export const STRIP_WIDTH = DEFAULT_PANORAMA_WIDTH / N_CHECKPOINTS; // 80
 
 /**
- * Cross-strip cylindrical correction (ARCH §5.1 step 4). Disabled in v1
- * because the residual foreshortening within an 8%-of-diameter strip is
- * subtle relative to the unmodelled per-frame jitter; flip this to true
- * once the panorama-quality pass dials in the math.
+ * Cross-strip cylindrical correction (ARCH §5.1 step 4). Enabled: each
+ * strip is drawn as 8 sub-bands with a sin/cos source-x mapping so the
+ * unrolled panorama samples the bottle uniformly in angle rather than
+ * over-sampling the center and under-sampling the tangents. The math is
+ * in `drawCylindricallyCorrected` in `stripExtractor.ts`.
  */
-export const APPLY_CYLINDRICAL_CORRECTION = false;
+export const APPLY_CYLINDRICAL_CORRECTION = true;
 
 /** Build an empty PanoramaState with default dims. */
 export function createEmptyPanoramaState(

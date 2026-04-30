@@ -97,6 +97,7 @@ export async function extractStrip(
       crop,
       stripWidth,
       stripHeight,
+      diameterFrac,
     );
 
     return {
@@ -163,12 +164,17 @@ function computeCropRect(input: CropInput): CropRect {
 /**
  * Render `crop` of `sourceImage` into an offscreen surface sized
  * stripWidth × stripHeight, then read back RGB-uint8 pixels.
+ *
+ * `diameterFraction` is the crop's width as a fraction of bottle
+ * diameter (i.e. sin(θ_max) for the crop's angular extent); it's only
+ * read when APPLY_CYLINDRICAL_CORRECTION is on.
  */
 function drawStripPixels(
   sourceImage: SkImage,
   crop: CropRect,
   stripWidth: number,
   stripHeight: number,
+  diameterFraction: number,
 ): Uint8Array {
   const surface = Skia.Surface.MakeOffscreen(stripWidth, stripHeight);
   if (!surface) {
@@ -178,13 +184,17 @@ function drawStripPixels(
     const canvas = surface.getCanvas();
     canvas.clear(Skia.Color('transparent'));
 
-    const src = Skia.XYWHRect(crop.x, crop.y, crop.width, crop.height);
-
     if (APPLY_CYLINDRICAL_CORRECTION) {
-      // TODO(panorama): apply cos(θ) x-axis correction in N sub-strips.
-      // Disabled in v1 — see types.ts APPLY_CYLINDRICAL_CORRECTION.
-      drawWholeStrip(canvas, sourceImage, src, stripWidth, stripHeight);
+      drawCylindricallyCorrected(
+        canvas,
+        sourceImage,
+        crop,
+        stripWidth,
+        stripHeight,
+        diameterFraction,
+      );
     } else {
+      const src = Skia.XYWHRect(crop.x, crop.y, crop.width, crop.height);
       drawWholeStrip(canvas, sourceImage, src, stripWidth, stripHeight);
     }
 
@@ -218,6 +228,74 @@ function drawWholeStrip(
   // We use drawImageRect with a Paint for max compat across 1.5–1.12;
   // Skia falls back to its default linear sampler.
   canvas.drawImageRect(image, src, dst, paint);
+}
+
+/**
+ * N-sub-strip cylindrical correction (ARCH §5.1 step 4).
+ *
+ * The source crop sits on the part of the bottle facing the camera most
+ * directly, but it's still a slice of a curved surface — pixels at the
+ * crop's center (θ ≈ 0) cover a denser angular sweep per source pixel
+ * than pixels at its edges (|θ| ≈ θ_max). Without correction, the
+ * unrolled panorama over-samples the bottle's center and under-samples
+ * its tangents, subtly stretching label artwork at the seams between
+ * strips.
+ *
+ * Geometry: the crop spans angles [-θ_max, +θ_max] with sin(θ_max) =
+ * diameterFraction (since cropWidth = 2R · diameterFraction by the way
+ * computeCropRect builds the crop). For each output sub-strip
+ * i ∈ [0, N_SUB), we map a uniform-in-angle slice [θ_i, θ_{i+1}] back
+ * to source-x range [centerX + R sin(θ_i), centerX + R sin(θ_{i+1})].
+ * The local source-to-dest scale falls off as cos(θ) at the edges,
+ * which is the "scale x-axis by cos(θ)" the architecture spec asks for.
+ *
+ * N_SUB = 8 keeps the per-strip draw cost low (8 drawImageRect calls vs
+ * 1 in the linear path) while stepping the sin curve finely enough that
+ * within-sub-strip linear sampling stays sub-pixel-accurate.
+ */
+function drawCylindricallyCorrected(
+  canvas: SkCanvas,
+  image: SkImage,
+  crop: CropRect,
+  stripWidth: number,
+  stripHeight: number,
+  diameterFraction: number,
+): void {
+  const N_SUB = 8;
+  // sin(θ_max) = diameterFraction by construction. Clamp into a
+  // numerically-safe range so degenerate inputs (zero-width crop, or
+  // a fallback heuristic with diameterFraction outside (0, 1)) don't
+  // blow up the asin / division.
+  const sinThetaMax = Math.max(0.001, Math.min(0.99, diameterFraction));
+  const thetaMax = Math.asin(sinThetaMax);
+  const R = crop.width / (2 * sinThetaMax);
+  const cropCenterX = crop.x + crop.width / 2;
+  const cropLeft = crop.x;
+  const cropRight = crop.x + crop.width;
+
+  const paint = Skia.Paint();
+  paint.setAntiAlias(true);
+
+  for (let i = 0; i < N_SUB; i++) {
+    const thetaStart = -thetaMax + (i / N_SUB) * 2 * thetaMax;
+    const thetaEnd = -thetaMax + ((i + 1) / N_SUB) * 2 * thetaMax;
+    let sxStart = cropCenterX + R * Math.sin(thetaStart);
+    let sxEnd = cropCenterX + R * Math.sin(thetaEnd);
+    // Defensive: FP drift at the band ends can push sxStart/sxEnd a
+    // hair past the crop bounds. Clamp before constructing the rect so
+    // we never sample outside the silhouette-centred crop.
+    if (sxStart < cropLeft) sxStart = cropLeft;
+    if (sxEnd > cropRight) sxEnd = cropRight;
+    const srcW = sxEnd - sxStart;
+    if (srcW <= 0) continue;
+
+    const dxStart = (i / N_SUB) * stripWidth;
+    const dstW = stripWidth / N_SUB;
+
+    const src = Skia.XYWHRect(sxStart, crop.y, srcW, crop.height);
+    const dst = Skia.XYWHRect(dxStart, 0, dstW, stripHeight);
+    canvas.drawImageRect(image, src, dst, paint);
+  }
 }
 
 /**
