@@ -57,6 +57,7 @@ async def enrich_verdict(
     persisted_cache: PersistedLabelCache | None,
     persisted_hit: PersistedHit | None,
     signature: tuple[int, ...] | None,
+    first_frame_signature_hex: str | None = None,
 ) -> EnrichmentResult:
     """Run TTB COLA lookup + explanation generation concurrently, persist
     to L3, return the enriched payload.
@@ -184,6 +185,22 @@ async def enrich_verdict(
                 durable_set.update(fresh_explanations)
                 await persisted_cache.update_explanations(
                     persisted_entry_id, durable_set
+                )
+            # Idempotent post-upsert stamps for the known-label feature.
+            # Both writes are guarded by `IS NULL` inside the cache
+            # methods so a second scan never overwrites a value already
+            # there. Brand stamp is also a no-op when ``upsert`` already
+            # filled it from the same extraction; we issue it
+            # unconditionally for the case where the row pre-existed
+            # this column (rows from an older deploy).
+            brand = _extract_brand(report)
+            if brand is not None:
+                await persisted_cache.stamp_brand_name_normalized(
+                    persisted_entry_id, brand
+                )
+            if first_frame_signature_hex:
+                await persisted_cache.stamp_first_frame_signature(
+                    persisted_entry_id, first_frame_signature_hex
                 )
         except Exception as exc:
             logger.warning("L3 persistence skipped: %s", exc)

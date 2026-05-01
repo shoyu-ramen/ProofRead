@@ -129,6 +129,132 @@ export interface ReportResponse {
   external_match?: ExternalMatchDTO | null;
 }
 
+// ----- Known-label recognition (Decision 4 in KNOWN_LABEL_DESIGN.md) -----
+
+/**
+ * `verdict_summary.overall` from the backend's `overall_status(...)` —
+ * wider than `OverallStatus` because the recognition pipeline can
+ * surface every state the rule engine knows about:
+ *
+ *   - `pass` / `fail` / `advisory` — the standard verdicts.
+ *   - `warn` — rule engine raised a non-blocking concern.
+ *   - `unreadable` — cached extraction's image_quality was too poor to
+ *     render a confident verdict.
+ *   - `na` — zero rules applied (rare; possible at edge cases when no
+ *     rule definition matched the cached fields).
+ *
+ * The recognition sheet's `<StatusBadge>` only renders the three
+ * `OverallStatus` values cleanly; the wider cases are mapped by
+ * `coerceKnownLabelOverall` before display.
+ */
+export type KnownLabelOverall =
+  | 'pass'
+  | 'fail'
+  | 'advisory'
+  | 'warn'
+  | 'unreadable'
+  | 'na';
+
+/**
+ * Lightweight rule result echoed inside `KnownLabelVerdictSummary`.
+ * Distinct from `RuleResultDTO` (which is the report-level shape with
+ * `rule_version`, `bbox`, `surface`, etc.) — the recognition payload
+ * only carries the fields the inline overlay or downstream report could
+ * surface.
+ */
+export interface KnownLabelRuleResult {
+  rule_id: string;
+  status: RuleStatus;
+  citation: string;
+  finding: string | null;
+  explanation: string | null;
+  fix_suggestion: string | null;
+  // Echoed by the backend for parity with `RuleResultDTO`. The
+  // recognition sheet doesn't render either today, but a future
+  // expanded recognition detail view (or a pass-through into report
+  // composition) will want the rule version + expected value. Optional
+  // so existing fixtures in tests don't have to enumerate them.
+  rule_version?: number;
+  expected?: string | null;
+}
+
+/**
+ * Pre-computed verdict for a recognized label. The backend re-runs the
+ * rule engine against the cached extraction with the user's actual
+ * `container_size_ml` + `is_imported` (Decision 4 §"Verdict summary
+ * construction"), so the `overall` reflects the live inputs, not a
+ * frozen verdict.
+ */
+export interface KnownLabelVerdictSummary {
+  overall: KnownLabelOverall;
+  rule_results: KnownLabelRuleResult[];
+  /** field_id → { value, confidence }. Loose-typed because the field set varies per beverage_type. */
+  extracted: Record<string, { value: unknown; confidence: number }>;
+  image_quality: ImageQuality;
+}
+
+/**
+ * Map a `KnownLabelOverall` onto the narrower `OverallStatus` the
+ * existing `<StatusBadge>` palette supports.
+ *
+ *   - `warn` → `advisory` (same severity tier: amber palette).
+ *   - `unreadable` → `fail` (user can't act on it without a reshoot).
+ *   - `na` → `advisory` (informational, not blocking — same tier as
+ *     warn since "no rules applied" is something the user should see
+ *     but can't otherwise act on).
+ */
+export function coerceKnownLabelOverall(
+  overall: KnownLabelOverall,
+): OverallStatus {
+  switch (overall) {
+    case 'pass':
+    case 'fail':
+    case 'advisory':
+      return overall;
+    case 'warn':
+    case 'na':
+      return 'advisory';
+    case 'unreadable':
+      return 'fail';
+  }
+}
+
+/**
+ * `DetectContainerResponse.known_label` — populated when the backend
+ * matches the captured frame to a previously-scanned label by brand
+ * name or first-frame perceptual hash. Present only when the recognition
+ * lookup succeeds; `null` on miss.
+ */
+export interface KnownLabelPayload {
+  /** UUID of the matching `LabelCacheEntry` row — passed back to /v1/scans/from-cache. */
+  entry_id: string;
+  beverage_type: BeverageType;
+  /** Derived from `net_contents` (or fallback to extraction value). */
+  container_size_ml: number;
+  is_imported: boolean;
+  brand_name: string | null;
+  fanciful_name: string | null;
+  verdict_summary: KnownLabelVerdictSummary;
+  /** Which side of the recognition lookup matched. */
+  source: 'brand' | 'first_frame' | 'both';
+}
+
+// ----- /v1/scans/from-cache (Decision 5) -----
+
+export interface FromCacheRequest {
+  entry_id: string;
+  beverage_type: BeverageType;
+  container_size_ml: number;
+  is_imported: boolean;
+}
+
+export interface FromCacheResponse {
+  scan_id: string;
+  status: ScanStatus;
+  overall: OverallStatus;
+  image_quality: ImageQuality;
+}
+
 // History list item — one row in GET /v1/scans (SPEC §v1.9). The
 // backend route isn't implemented yet; this shape is what the mobile
 // client expects when the endpoint lands. Marked TODO at the call site.

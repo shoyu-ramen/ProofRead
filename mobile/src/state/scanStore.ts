@@ -14,7 +14,7 @@
  */
 
 import { create } from 'zustand';
-import type { BeverageType } from '@src/api/types';
+import type { BeverageType, KnownLabelPayload } from '@src/api/types';
 
 /**
  * One raw frame captured during the rotation. Stored for diagnostics
@@ -81,6 +81,16 @@ export interface ScanDraft {
   // scan_id from POST /v1/scans, set after we hit the backend at the
   // start of upload.
   scanId: string | null;
+  // dhash hex of the first detect-container frame, as returned by the
+  // backend in DetectContainerResponse.image_dhash. Threaded into the
+  // finalize call so enrichment can stamp it on the L3 cache row for
+  // future first-frame recognition lookups.
+  firstFrameSignatureHex: string | null;
+  // Recognition payload from DetectContainerResponse.known_label when
+  // the backend matches the captured frame to a previously-scanned
+  // label. The unwrap screen renders the recognition sheet inside the
+  // confirming{detected} sub-phase when this is non-null.
+  knownLabel: KnownLabelPayload | null;
 }
 
 interface ScanStoreState extends ScanDraft {
@@ -98,6 +108,8 @@ interface ScanStoreState extends ScanDraft {
   appendFrame: (f: ScanFrame) => void;
   clearScanCaptures: () => void;
   setScanId: (id: string | null) => void;
+  setFirstFrameSignatureHex: (hex: string | null) => void;
+  setKnownLabel: (payload: KnownLabelPayload | null) => void;
   /**
    * Insert a freshly-captured panorama into the per-scan-id cache.
    * Idempotent: re-recording the same scan_id (e.g. user re-tries the
@@ -114,6 +126,8 @@ const EMPTY: ScanDraft = {
   panorama: null,
   frames: [],
   scanId: null,
+  firstFrameSignatureHex: null,
+  knownLabel: null,
 };
 
 export const useScanStore = create<ScanStoreState>((set) => ({
@@ -159,6 +173,8 @@ export const useScanStore = create<ScanStoreState>((set) => ({
         },
       },
     })),
+  setFirstFrameSignatureHex: (hex) => set({ firstFrameSignatureHex: hex }),
+  setKnownLabel: (payload) => set({ knownLabel: payload }),
   // NB: leaves `recentPanoramas` intact on purpose — completed scans
   // need to remain visible in the home rail across the Done button.
   reset: () => set({ ...EMPTY, frames: [] }),

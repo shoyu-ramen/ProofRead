@@ -405,3 +405,290 @@ def test_route_returns_413_on_oversize_upload(monkeypatch):
     )
     assert res.status_code == 413, res.text
     assert res.json()["detail"]["code"] == "image_too_large"
+
+
+# ---------------------------------------------------------------------------
+# Known-label recognition response shape
+# ---------------------------------------------------------------------------
+
+
+def test_route_returns_image_dhash_on_detected_true(monkeypatch):
+    """Every detect-container response should carry the upload's dhash
+    as a 16-char lowercase hex string. The mobile UI forwards this to
+    /v1/scans/{id}/finalize so enrich_verdict can stamp it onto the L3
+    row."""
+    scripted = ContainerDetection(
+        detected=True,
+        container_type="bottle",
+        bbox=(0.1, 0.1, 0.9, 0.9),
+        confidence=0.9,
+    )
+    _override_service(ContainerCheckService(client=_FakeClient(scripted)))
+
+    client = TestClient(app)
+    res = client.post(
+        "/v1/detect-container",
+        files={"image": _png_file()},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["image_dhash"] is not None
+    assert isinstance(body["image_dhash"], str)
+    # 16-char lowercase hex format from signature_to_hex.
+    assert len(body["image_dhash"]) <= 16
+    assert body["image_dhash"] == body["image_dhash"].lower()
+
+
+def test_route_returns_known_label_null_on_miss(monkeypatch):
+    """No L3 cache configured → known_label is null. Detect-container
+    must always return the field; null on a miss, populated on a hit."""
+    scripted = ContainerDetection(
+        detected=True,
+        container_type="bottle",
+        bbox=(0.1, 0.1, 0.9, 0.9),
+        confidence=0.9,
+        brand_name="Unknown Brand",
+        net_contents="12 FL OZ",
+    )
+    _override_service(ContainerCheckService(client=_FakeClient(scripted)))
+
+    client = TestClient(app)
+    res = client.post(
+        "/v1/detect-container",
+        files={"image": _png_file()},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["known_label"] is None
+    assert body["brand_name"] == "Unknown Brand"
+    assert body["net_contents"] == "12 FL OZ"
+
+
+def test_route_returns_known_label_null_on_undetected(monkeypatch):
+    """detected=False → known_label is null even if the rest of the
+    response is well-formed (no bbox, no brand_name). The recognition
+    block short-circuits before any L3 work."""
+    scripted = ContainerDetection(
+        detected=False, reason="appears to be a selfie"
+    )
+    _override_service(ContainerCheckService(client=_FakeClient(scripted)))
+
+    client = TestClient(app)
+    res = client.post(
+        "/v1/detect-container",
+        files={"image": _png_file()},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["known_label"] is None
+    assert body["brand_name"] is None
+    assert body["net_contents"] is None
+
+
+def test_route_returns_known_label_on_brand_hit(
+    monkeypatch, db_setup, tmp_path
+):
+    """Seed the L3 cache with a brand match, then assert the
+    detect-container response carries the assembled known_label payload
+    with `source: "brand"` and a freshly-evaluated verdict_summary."""
+    from app.api import verify as verify_api
+    from app.config import settings
+    from app.rules.types import ExtractedField
+    from app.services.persisted_cache import PersistedLabelCache
+    from app.services.vision import VisionExtraction
+
+    # Enable the L3 cache and reset its singleton so the test's
+    # SQLite-backed instance is the one detect-container queries.
+    monkeypatch.setattr(settings, "persisted_label_cache_enabled", True)
+    verify_api._reset_persisted_label_cache()
+
+    async def _seed():
+        cache = PersistedLabelCache(hamming_threshold=6)
+        extraction = VisionExtraction(
+            fields={
+                "brand_name": ExtractedField(
+                    value="Sierra Nevada",
+                    bbox=None,
+                    confidence=0.95,
+                ),
+                "net_contents": ExtractedField(
+                    value="12 FL OZ",
+                    bbox=None,
+                    confidence=0.95,
+                ),
+                "country_of_origin": ExtractedField(
+                    value="USA", bbox=None, confidence=0.9
+                ),
+            },
+            unreadable=[],
+            raw_response="{}",
+            image_quality="good",
+            beverage_type_observed="beer",
+        )
+        return await cache.upsert(
+            signature=(0xCAFE,),
+            beverage_type="beer",
+            extraction=extraction,
+        )
+
+    import asyncio as _asyncio
+
+    _asyncio.run(_seed())
+
+    scripted = ContainerDetection(
+        detected=True,
+        container_type="bottle",
+        bbox=(0.1, 0.1, 0.9, 0.9),
+        confidence=0.9,
+        brand_name="Sierra Nevada",
+        net_contents="12 FL OZ",
+    )
+    _override_service(ContainerCheckService(client=_FakeClient(scripted)))
+
+    client = TestClient(app)
+    res = client.post(
+        "/v1/detect-container",
+        files={"image": _png_file()},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["detected"] is True
+    assert body["known_label"] is not None
+    payload = body["known_label"]
+    assert payload["source"] == "brand"
+    assert payload["beverage_type"] == "beer"
+    assert payload["container_size_ml"] == 355  # parsed from "12 FL OZ"
+    assert payload["brand_name"] == "Sierra Nevada"
+    assert payload["is_imported"] is False  # USA in country_of_origin
+    summary = payload["verdict_summary"]
+    assert summary["overall"] in {"pass", "warn", "fail", "advisory", "unreadable"}
+    assert isinstance(summary["rule_results"], list)
+    # The rule engine ran fresh — every result has a status, not a
+    # frozen "verified" tag.
+    for rr in summary["rule_results"]:
+        assert "status" in rr
+        assert "rule_id" in rr
+
+
+# ---------------------------------------------------------------------------
+# Shadow-mode inference seam (MODEL_INTEGRATION_PLAN §3.2)
+# ---------------------------------------------------------------------------
+
+
+def test_route_fires_shadow_predict_on_detected_response(monkeypatch):
+    """The detect-container route MUST invoke `_spawn_shadow_predict`
+    AFTER the response is assembled. The shadow prediction's output is
+    log-only — never reflected in the body — so this test asserts the
+    spawn happens (with the right inputs) and that the response shape
+    is unchanged."""
+    import app.api.detect as detect_module
+
+    captured: dict = {}
+
+    def _fake_spawn(image_bytes: bytes, vlm_brand: str | None) -> None:
+        captured["image_bytes_len"] = len(image_bytes)
+        captured["vlm_brand"] = vlm_brand
+
+    monkeypatch.setattr(detect_module, "_spawn_shadow_predict", _fake_spawn)
+
+    scripted = ContainerDetection(
+        detected=True,
+        container_type="bottle",
+        bbox=(0.1, 0.1, 0.9, 0.9),
+        confidence=0.9,
+        brand_name="Anytown Ale",
+    )
+    _override_service(ContainerCheckService(client=_FakeClient(scripted)))
+
+    client = TestClient(app)
+    res = client.post(
+        "/v1/detect-container",
+        files={"image": _png_file()},
+    )
+    assert res.status_code == 200, res.text
+    # Spawn was called with the upload bytes + the VLM-extracted brand.
+    assert captured["image_bytes_len"] > 0
+    assert captured["vlm_brand"] == "Anytown Ale"
+    # Response shape unchanged — no `shadow_*` field leaked into the
+    # body, regardless of spawn outcome.
+    body = res.json()
+    assert "shadow_prediction" not in body
+    assert "shadow_predicted_brand" not in body
+
+
+def test_route_fires_shadow_predict_on_negative_response(monkeypatch):
+    """Even on `detected=False`, the shadow seam still fires (so the
+    agreement-rate metric has a denominator that reflects all traffic).
+    `vlm_brand` is None when the VLM rejected the frame."""
+    import app.api.detect as detect_module
+
+    captured: dict = {}
+
+    def _fake_spawn(image_bytes: bytes, vlm_brand: str | None) -> None:
+        captured["called"] = True
+        captured["vlm_brand"] = vlm_brand
+
+    monkeypatch.setattr(detect_module, "_spawn_shadow_predict", _fake_spawn)
+
+    scripted = ContainerDetection(
+        detected=False,
+        reason="no container in frame",
+        confidence=0.05,
+    )
+    _override_service(ContainerCheckService(client=_FakeClient(scripted)))
+
+    client = TestClient(app)
+    res = client.post(
+        "/v1/detect-container",
+        files={"image": _png_file()},
+    )
+    assert res.status_code == 200, res.text
+    assert captured.get("called") is True
+    assert captured.get("vlm_brand") is None
+
+
+def test_spawn_shadow_predict_runs_without_blocking(monkeypatch):
+    """Direct test: `_spawn_shadow_predict` must return immediately and
+    the daemon thread must run the prediction + telemetry. The caller
+    can't race-detect the thread, so we use a Lock the predict path
+    releases to confirm it ran."""
+    import threading as _threading
+
+    import app.api.detect as detect_module
+    import app.services.shadow_model as sm
+
+    ran = _threading.Event()
+
+    def _fake_predict(_b: bytes, _bev: str | None):
+        ran.set()
+        return sm.ShadowPrediction()
+
+    monkeypatch.setattr(sm, "shadow_predict", _fake_predict)
+    detect_module._spawn_shadow_predict(b"x" * 64, "ipa-co")
+    # The daemon thread should run shortly after spawn. A 2-second
+    # ceiling keeps a regression in the threading wire-up from
+    # silently passing.
+    assert ran.wait(timeout=2.0), (
+        "shadow_predict did not run inside the daemon thread"
+    )
+
+
+def test_spawn_shadow_predict_swallows_exception(monkeypatch):
+    """A future model that raises in the daemon thread must NOT
+    propagate. `_timed_shadow_predict` catches; the spawn returns
+    nothing; the route response is unchanged."""
+    import threading as _threading
+
+    import app.api.detect as detect_module
+    import app.services.shadow_model as sm
+
+    ran = _threading.Event()
+
+    def _fake_predict(_b: bytes, _bev: str | None):
+        ran.set()
+        raise RuntimeError("simulated model failure")
+
+    monkeypatch.setattr(sm, "shadow_predict", _fake_predict)
+    # Should not raise, even though `shadow_predict` itself raises.
+    detect_module._spawn_shadow_predict(b"x" * 64, "ipa-co")
+    assert ran.wait(timeout=2.0)

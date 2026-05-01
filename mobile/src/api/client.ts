@@ -16,7 +16,10 @@ import {
   CreateScanRequest,
   CreateScanResponse,
   FlagRuleResultRequest,
+  FromCacheRequest,
+  FromCacheResponse,
   HistoryResponse,
+  KnownLabelPayload,
   ProblemDetails,
   ReportResponse,
   ScanStatusResponse,
@@ -131,9 +134,45 @@ export class ApiClient {
   }
 
   // POST /v1/scans/:id/finalize
-  finalizeScan(scanId: string): Promise<ScanStatusResponse> {
+  //
+  // `firstFrameSignatureHex` (when present) is forwarded as a multipart
+  // form field so enrichment can stamp it on the cache entry — feeds
+  // future first-frame recognition lookups (KNOWN_LABEL_DESIGN.md
+  // Decision 6).
+  finalizeScan(
+    scanId: string,
+    opts: { firstFrameSignatureHex?: string | null } = {},
+  ): Promise<ScanStatusResponse> {
+    const hex = opts.firstFrameSignatureHex;
+    if (hex) {
+      const form = new FormData();
+      form.append('first_frame_signature_hex', hex);
+      return this.request<ScanStatusResponse>(`/v1/scans/${scanId}/finalize`, {
+        method: 'POST',
+        // Do NOT set Content-Type: the runtime fills the multipart
+        // boundary. Same pattern as detectContainer().
+        body: form as unknown as BodyInit,
+      });
+    }
     return this.request<ScanStatusResponse>(`/v1/scans/${scanId}/finalize`, {
       method: 'POST',
+    });
+  }
+
+  /**
+   * POST /v1/scans/from-cache (KNOWN_LABEL_DESIGN.md Decision 5).
+   *
+   * Called when the user accepts a known-label recognition from the
+   * confirming{detected} sheet. The backend re-runs the rule engine
+   * against the cached extraction with the user's actual
+   * container_size_ml + is_imported and returns a fully-formed scan_id
+   * the user can navigate straight to /report on.
+   */
+  createScanFromCache(req: FromCacheRequest): Promise<FromCacheResponse> {
+    return this.request<FromCacheResponse>('/v1/scans/from-cache', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
     });
   }
 
@@ -235,6 +274,13 @@ export class ApiClient {
  * to 0..1 in [x0, y0, x1, y1] order. When `detected` is false the
  * `reason` string is a one-sentence user-facing hint (or null if the
  * backend didn't supply one).
+ *
+ * `brand_name` / `net_contents` are best-effort recognition signals
+ * (KNOWN_LABEL_DESIGN.md Decision 2). `image_dhash` is the 64-bit
+ * perceptual hash the backend computed from the upload bytes, hex-
+ * encoded; the mobile app threads it into the finalize call so
+ * enrichment can stamp it on the cache entry. `known_label` carries the
+ * recognition payload when the lookup matched — null on miss.
  */
 export interface DetectContainerResponse {
   detected: boolean;
@@ -242,6 +288,10 @@ export interface DetectContainerResponse {
   bbox: [number, number, number, number] | null;
   confidence: number;
   reason: string | null;
+  brand_name?: string | null;
+  net_contents?: string | null;
+  image_dhash?: string | null;
+  known_label?: KnownLabelPayload | null;
 }
 
 // Default singleton; modules can also instantiate their own with

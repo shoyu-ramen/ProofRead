@@ -359,6 +359,43 @@ def verify(
             cache_key=cache_key,
         )
 
+    # 2.5. Pre-VLM image-quality gate (MODEL_INTEGRATION_PLAN §3.1). The
+    #      gate is a no-op in v1 (always returns advisory=False) so this
+    #      slot is forward-compat: when the MobileNetV3 quality classifier
+    #      ships, replacing `quality_gate()` flips this from no-op to
+    #      live with no other call-site edits.
+    #
+    #      SPEC §0.5: gate fires can ONLY downgrade to "advisory", never
+    #      to "fail". The user is told to rescan — never given a guess.
+    with traced_span("verify.quality_gate"):
+        from app.services.quality_gate import (
+            _emit_quality_gate_telemetry,
+            _timed_quality_gate,
+        )
+
+        qg_verdict, qg_elapsed_ms = _timed_quality_gate(inp.image_bytes)
+        _emit_quality_gate_telemetry(qg_verdict, qg_elapsed_ms)
+
+    if qg_verdict.advisory:
+        rule_results = _unreadable_rule_results(rules)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return _finalize(
+            VerifyReport(
+                overall="advisory",
+                rule_results=rule_results,
+                extracted={},
+                unreadable_fields=[],
+                image_quality="degraded",
+                image_quality_notes=(
+                    ", ".join(qg_verdict.reasons)
+                    or "Quality gate: rescan recommended"
+                ),
+                elapsed_ms=elapsed_ms,
+            ),
+            cache=cache,
+            cache_key=cache_key,
+        )
+
     # SPEC §0.5: hand the extractor everything we already know — the sensor
     # pre-check, the producer's claim, and the user-supplied beverage
     # type/container/imported flags. The model uses these as priors only;

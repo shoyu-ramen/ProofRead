@@ -53,6 +53,8 @@ import Svg, { Rect } from 'react-native-svg';
 
 import { Button, ErrorState, Skeleton } from '@src/components';
 import { apiClient } from '@src/api/client';
+import type { KnownLabelPayload } from '@src/api/types';
+import { KnownLabelSheet } from './KnownLabelSheet';
 import {
   PanoramaCanvas,
   stitchPanorama,
@@ -180,6 +182,11 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
   const setPanorama = useScanStore((s) => s.setPanorama);
   const appendFrame = useScanStore((s) => s.appendFrame);
   const clearScanCaptures = useScanStore((s) => s.clearScanCaptures);
+  const setFirstFrameSignatureHex = useScanStore(
+    (s) => s.setFirstFrameSignatureHex,
+  );
+  const setKnownLabel = useScanStore((s) => s.setKnownLabel);
+  const knownLabel = useScanStore((s) => s.knownLabel);
 
   // Live panorama snapshot — owned here so `stitchPanorama` can encode
   // the already-painted bytes from PanoramaCanvas's off-screen surface
@@ -391,6 +398,13 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
       try {
         const result = await apiClient.detectContainer(uri);
         if (cancelled) return;
+        // Persist the dhash + known_label payload to the scan store so
+        // (a) the finalize call can stamp the L3 row's first_frame_signature_hex
+        // and (b) the confirming{detected} overlay can render the
+        // recognition sheet when the backend matched a previous label.
+        // (KNOWN_LABEL_DESIGN.md Decisions 4, 6, 7.)
+        setFirstFrameSignatureHex(result.image_dhash ?? null);
+        setKnownLabel(result.known_label ?? null);
         if (result.detected && result.bbox && result.container_type) {
           // The backend may classify into bottle | can | box; if the
           // server returns a class that's not in our union (defensive
@@ -413,6 +427,11 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
       } catch (err) {
         if (cancelled) return;
         console.warn('[unwrap] detectContainer failed', err);
+        // Failed detect-container call → no known-label payload, no
+        // dhash to stamp. Clear both so a stale value from a prior
+        // confirming cycle doesn't leak into the finalize request.
+        setFirstFrameSignatureHex(null);
+        setKnownLabel(null);
         detectionResolved({
           detected: false,
           reason: null,
@@ -792,14 +811,21 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
       {/* Pre-capture confirmation overlay. Three sub-phases share a
           single overlay container — `ConfirmingOverlay` switches its
           contents based on `state.phase` so the camera feed (and the
-          live silhouette/ring chrome above) stays unobstructed. */}
+          live silhouette/ring chrome above) stays unobstructed.
+
+          When the backend recognized the label (knownLabel != null) and
+          the FSM is in confirming{detected}, the overlay swaps the
+          bbox/Start-scan UI for a recognition sheet
+          (KNOWN_LABEL_DESIGN.md Decision 7). */}
       {state.kind === 'confirming' ? (
         <ConfirmingOverlay
           state={state}
           previewWidth={previewLayout.width}
           previewHeight={previewLayout.height}
+          knownLabel={knownLabel}
           onStart={confirmStart}
           onRetry={confirmRetry}
+          onClearKnownLabel={() => setKnownLabel(null)}
         />
       ) : null}
 
@@ -832,7 +858,9 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
  * state). Three sub-phases:
  *
  *   - `detecting`  — Skeleton shimmer, "Looking for your drink..." caption.
- *   - `detected`   — bbox stroke + container-type label + Start/Reshoot CTAs.
+ *   - `detected`   — bbox stroke + container-type label + Start/Reshoot CTAs,
+ *                    OR known-label recognition sheet when `knownLabel != null`
+ *                    (KNOWN_LABEL_DESIGN.md Decision 7).
  *   - `failed`     — ErrorState with retry → confirmRetry.
  *
  * The overlay sits above the camera preview (and the live silhouette /
@@ -845,8 +873,10 @@ function ConfirmingOverlay({
   state,
   previewWidth,
   previewHeight,
+  knownLabel,
   onStart,
   onRetry,
+  onClearKnownLabel,
 }: {
   state: Extract<
     ReturnType<typeof useScanStateMachine>['state'],
@@ -854,8 +884,10 @@ function ConfirmingOverlay({
   >;
   previewWidth: number;
   previewHeight: number;
+  knownLabel: KnownLabelPayload | null;
   onStart: () => void;
   onRetry: () => void;
+  onClearKnownLabel: () => void;
 }): React.ReactElement {
   const insets = useSafeAreaInsets();
   if (state.phase === 'detecting') {
@@ -886,6 +918,26 @@ function ConfirmingOverlay({
   }
 
   if (state.phase === 'detected' && state.bbox) {
+    // Known-label recognition sheet — when the backend matched the
+    // captured frame to a previously-scanned label, render the
+    // recognition decision UI instead of the bbox + Start-scan flow.
+    // Per Decision 7, the FSM stays in confirming{detected}; only the
+    // overlay content swaps.
+    if (knownLabel) {
+      return (
+        <KnownLabelSheet
+          knownLabel={knownLabel}
+          onScanAnyway={() => {
+            onClearKnownLabel();
+            onStart();
+          }}
+          onReshoot={() => {
+            onClearKnownLabel();
+            onRetry();
+          }}
+        />
+      );
+    }
     // Convert normalized [x0, y0, x1, y1] → DP rect on the preview
     // surface. react-native-svg renders in DP, so we don't need to
     // multiply by PixelRatio — the camera fills the screen so the
