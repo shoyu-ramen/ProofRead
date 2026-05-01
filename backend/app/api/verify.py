@@ -39,11 +39,6 @@ router = APIRouter(prefix="/verify", tags=["verify"])
 # to a friendly message rather than dumping `detail` verbatim, so the
 # detail is allowed to be developer-facing.
 _SERVICE_UNAVAILABLE_CODE = "vision_unavailable"
-# 422 payload code for beverage_type values the rule engine does not yet
-# cover — same `{code, message}` shape as the 503 above so the client only
-# has one error envelope to parse. SPEC §1.2 lists wine + spirits as v2;
-# we ship spirits in v1 and gate wine here until the wine rule set lands.
-_UNSUPPORTED_BEVERAGE_CODE = "beverage_type_unsupported"
 # 413 payload code for uploads larger than `settings.max_image_bytes`. Same
 # `{code, message}` envelope so a single client handler covers every error
 # mode — UI maps the code to a friendly "image too large" affordance.
@@ -54,12 +49,11 @@ _IMAGE_TOO_LARGE_CODE = "image_too_large"
 _VERIFY_TIMEOUT_CODE = "verify_timeout"
 
 
-# Beverage types accepted by /v1/verify. Wine is intentionally omitted —
-# the rule engine has no wine.yaml in v1, so accepting wine here would
-# 500 inside `verify()` (`load_rules` returns []). SPEC §1.2 schedules
-# wine for v2; the verify path mirrors the scans-API gate at
-# `app/api/scans.py:create_scan`.
-_BEVERAGE_TYPES = {"beer", "spirits"}
+# Beverage types accepted by /v1/verify. Wine joined the set in v2 once
+# the wine extraction fields + rule pack landed (sulfite + organic).
+# `/v1/scans` (multi-image cylindrical) is still beer-only per SPEC §1.2
+# — that flow is tuned for cans/bottles, not wine bottles.
+_BEVERAGE_TYPES = {"beer", "spirits", "wine"}
 
 
 class RuleResultDTO(BaseModel):
@@ -342,20 +336,6 @@ async def verify_label(
     is_imported: bool = Form(False),
     application: str = Form(...),
 ) -> VerifyResponse:
-    if beverage_type == "wine":
-        # Distinct 422 (rather than the generic 400 below) so the UI can
-        # surface a friendly "wine support arrives in v2" affordance
-        # instead of treating this as a malformed request.
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": _UNSUPPORTED_BEVERAGE_CODE,
-                "message": (
-                    "Wine support arrives in v2; submit a beer or spirits "
-                    "label today."
-                ),
-            },
-        )
     if beverage_type not in _BEVERAGE_TYPES:
         raise HTTPException(400, f"beverage_type must be one of {sorted(_BEVERAGE_TYPES)}")
     if container_size_ml <= 0 or container_size_ml > 10_000:

@@ -108,24 +108,63 @@ def test_verify_returns_503_when_extractor_fails_mid_request(monkeypatch):
     assert "rate limit" in body["detail"]["message"]
 
 
-def test_verify_rejects_wine_with_422(monkeypatch):
-    """Wine isn't supported in v1; the rule engine has no wine.yaml. Gate
-    here with a structured 422 (`code: beverage_type_unsupported`) so the
-    UI can render a friendly "wine arrives in v2" affordance instead of
-    treating it as a malformed request or letting it 500 inside verify().
-    """
+def test_verify_accepts_wine(monkeypatch):
+    """Wine landed on /v1/verify in v2 once the wine extraction fields and
+    rule pack shipped. A wine POST must come back 200 with the wine-specific
+    rules (`wine.sulfite.presence`, `wine.organic.format`) surfaced in the
+    response. /v1/scans is still beer-only per SPEC §1.2 — that gate lives
+    elsewhere and is unrelated to this contract."""
+    fixture = {
+        "brand_name": "Mockingbird Vineyards",
+        "class_type": "Cabernet Sauvignon",
+        "alcohol_content": "13.8% Alc./Vol.",
+        "net_contents": "750 mL",
+        "name_address": "Bottled by Mockingbird Vineyards, Napa, California",
+        "health_warning": (
+            "GOVERNMENT WARNING: (1) According to the Surgeon General, women "
+            "should not drink alcoholic beverages during pregnancy because of "
+            "the risk of birth defects. (2) Consumption of alcoholic beverages "
+            "impairs your ability to drive a car or operate machinery, and may "
+            "cause health problems."
+        ),
+        "sulfite_declaration": "CONTAINS SULFITES",
+        "organic_certification": "Made with Organic Grapes",
+    }
+    monkeypatch.setattr(
+        verify_api, "get_default_extractor", lambda: MockVisionExtractor(fixture)
+    )
+
     client = TestClient(app)
     payload = _form_payload()
     payload["beverage_type"] = "wine"
+    payload["application"] = json.dumps(
+        {
+            "producer_record": {
+                "brand_name": "Mockingbird Vineyards",
+                "class_type": "Cabernet Sauvignon",
+                "alcohol_content": "13.8",
+                "net_contents": "750 mL",
+                "name_address": "Mockingbird Vineyards, Napa, California",
+                "country_of_origin": "USA",
+            }
+        }
+    )
     res = client.post(
         "/v1/verify",
         data=payload,
         files={"image": _png_file()},
     )
-    assert res.status_code == 422, res.text
+
+    assert res.status_code == 200, res.text
     body = res.json()
-    assert body["detail"]["code"] == "beverage_type_unsupported"
-    assert "v2" in body["detail"]["message"].lower()
+    rule_ids = {r["rule_id"] for r in body["rule_results"]}
+    assert "wine.sulfite.presence" in rule_ids
+    assert "wine.organic.format" in rule_ids
+    # Cold path: cache_hit must be False so we know the wine fixture
+    # actually flowed through the extractor + rule engine, not a stale
+    # cache entry from a prior test (the autouse fixture clears it, but
+    # asserting here makes the contract explicit).
+    assert body.get("cache_hit") is False
 
 
 def test_verify_returns_500_for_config_runtime_error(monkeypatch):
