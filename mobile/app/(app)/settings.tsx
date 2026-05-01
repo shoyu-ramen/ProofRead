@@ -13,7 +13,7 @@ import { router } from 'expo-router';
 import { Button, Screen, SectionHeader } from '@src/components';
 import { useAuthStore } from '@src/state/auth';
 import { useScanStore } from '@src/state/scanStore';
-import { colors, radius, spacing, typography } from '@src/theme';
+import { colors, interaction, radius, spacing, typography } from '@src/theme';
 
 interface RetentionOption {
   label: string;
@@ -68,7 +68,10 @@ export default function SettingsScreen(): React.ReactElement {
               style={({ pressed }) => [
                 styles.retentionRow,
                 selected && styles.retentionRowSelected,
-                pressed && { opacity: 0.85 },
+                pressed && {
+                  opacity: interaction.pressed.opacity,
+                  transform: [{ scale: interaction.pressed.scale }],
+                },
               ]}
             >
               <Text style={styles.retentionLabel}>{opt.label}</Text>
@@ -104,7 +107,7 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
   },
   cardValue: {
-    ...typography.heading,
+    ...typography.headingMd,
     color: colors.text,
   },
   retentionList: {
@@ -124,7 +127,7 @@ const styles = StyleSheet.create({
   },
   retentionLabel: {
     flex: 1,
-    ...typography.body,
+    ...typography.bodyMd,
     color: colors.text,
   },
   radio: {

@@ -23,7 +23,7 @@ import {
   useScanStore,
 } from '@src/state/scanStore';
 import type { BeverageType } from '@src/api/types';
-import { colors, radius, spacing, typography } from '@src/theme';
+import { colors, interaction, radius, spacing, typography } from '@src/theme';
 
 interface BeverageOption {
   type: BeverageType;
@@ -106,7 +106,10 @@ export default function ScanSetup(): React.ReactElement {
                 styles.option,
                 selected && styles.optionSelected,
                 !opt.enabled && styles.optionDisabled,
-                pressed && opt.enabled && { opacity: 0.85 },
+                pressed && opt.enabled && {
+                  opacity: interaction.pressed.opacity,
+                  transform: [{ scale: interaction.pressed.scale }],
+                },
               ]}
             >
               <View style={{ flex: 1 }}>
@@ -136,7 +139,10 @@ export default function ScanSetup(): React.ReactElement {
               style={({ pressed }) => [
                 styles.option,
                 selected && styles.optionSelected,
-                pressed && { opacity: 0.85 },
+                pressed && {
+                  opacity: interaction.pressed.opacity,
+                  transform: [{ scale: interaction.pressed.scale }],
+                },
               ]}
             >
               <View style={{ flex: 1 }}>
@@ -194,7 +200,7 @@ export default function ScanSetup(): React.ReactElement {
 
 const styles = StyleSheet.create({
   sectionLabel: {
-    ...typography.heading,
+    ...typography.headingMd,
     color: colors.text,
     marginTop: spacing.sm,
   },
@@ -218,7 +224,7 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   optionLabel: {
-    ...typography.heading,
+    ...typography.headingSm,
     color: colors.text,
   },
   optionHelper: {
@@ -249,12 +255,12 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   customLabel: {
-    ...typography.body,
+    ...typography.bodyMd,
     color: colors.text,
     flex: 1,
   },
   input: {
-    ...typography.body,
+    ...typography.bodyMd,
     color: colors.text,
     backgroundColor: colors.surface,
     borderColor: colors.border,
@@ -275,7 +281,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   toggleLabel: {
-    ...typography.body,
+    ...typography.bodyMd,
     color: colors.text,
   },
   toggleHelper: {

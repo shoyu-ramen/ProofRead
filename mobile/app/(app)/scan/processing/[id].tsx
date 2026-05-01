@@ -23,7 +23,13 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 
-import { Button, ProgressBar, Screen, SectionHeader } from '@src/components';
+import {
+  Button,
+  ErrorState,
+  ProgressBar,
+  Screen,
+  SectionHeader,
+} from '@src/components';
 import { apiClient } from '@src/api/client';
 import { queryKeys } from '@src/state/queryClient';
 import { colors, radius, spacing, typography } from '@src/theme';
@@ -133,34 +139,28 @@ export default function ProcessingScreen(): React.ReactElement {
       />
 
       {isFailed ? (
-        <View style={styles.failureCard}>
-          <Text style={styles.failureTitle}>Analysis didn't complete</Text>
-          <Text style={styles.failureMessage}>{failureMessage}</Text>
-          <View style={styles.failureActions}>
-            <Button
-              label="Try again"
-              variant="primary"
-              fullWidth
-              onPress={() => {
-                // The panorama + scan_id remain in the Zustand store;
-                // the review screen will re-run createScan + upload +
-                // finalize on mount.
-                router.replace('/(app)/scan/review');
-              }}
-            />
-            <Button
-              label="Rescan label"
-              variant="secondary"
-              fullWidth
-              onPress={() => router.replace('/(app)/scan/setup')}
-            />
-            <Button
-              label="Back to home"
-              variant="ghost"
-              fullWidth
-              onPress={() => router.replace('/(app)/home')}
-            />
-          </View>
+        <View>
+          <ErrorState
+            title="Analysis didn't complete"
+            description={failureMessage}
+            retry={() => {
+              // The panorama + scan_id remain in the Zustand store;
+              // the review screen will re-run createScan + upload +
+              // finalize on mount.
+              router.replace('/(app)/scan/review');
+            }}
+            retryLabel="Try again"
+            secondaryAction={{
+              label: 'Rescan label',
+              onPress: () => router.replace('/(app)/scan/setup'),
+            }}
+          />
+          <Button
+            label="Back to home"
+            variant="ghost"
+            fullWidth
+            onPress={() => router.replace('/(app)/home')}
+          />
         </View>
       ) : (
         <View style={styles.progressCard}>
@@ -217,7 +217,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   phaseLabel: {
-    ...typography.heading,
+    ...typography.headingMd,
     color: colors.text,
     textAlign: 'center',
   },
@@ -227,27 +227,6 @@ const styles = StyleSheet.create({
   elapsedText: {
     ...typography.caption,
     color: colors.textMuted,
-  },
-  failureCard: {
-    marginTop: spacing.lg,
-    padding: spacing.lg,
-    backgroundColor: colors.surface,
-    borderColor: colors.fail,
-    borderWidth: 1,
-    borderRadius: radius.md,
-    gap: spacing.md,
-  },
-  failureTitle: {
-    ...typography.heading,
-    color: colors.fail,
-  },
-  failureMessage: {
-    ...typography.body,
-    color: colors.text,
-  },
-  failureActions: {
-    gap: spacing.sm,
-    marginTop: spacing.xs,
   },
   captionBlock: {
     gap: spacing.xs,
