@@ -66,33 +66,42 @@ _PRE_CAPTURE_MAX_RETRIES = 0
 _CACHE_MAX_ENTRIES = 64
 
 
-SYSTEM_PROMPT = """You are a pre-capture gate for a label-compliance scanner. \
-You receive a single image. Your job: decide whether a beverage container \
-(bottle, can, or box) is the primary subject of the image.
+SYSTEM_PROMPT = """You are a sanity check for a beverage-label scanner. \
+You receive a single image. Decide whether the user is plausibly trying \
+to scan a beverage container or label — bottle, can, or box.
 
-If yes:
-  * Return a tight bounding box in normalized 0.0-1.0 coordinates measured \
-from the top-left corner: x0 (left), y0 (top), x1 (right), y1 (bottom). \
-0.0 is the top/left edge of the frame; 1.0 is the bottom/right edge. \
-The box should hug the container, not the whole frame.
-  * Classify the container as exactly one of: "bottle", "can", or "box".
-  * Provide a confidence between 0.0 and 1.0.
+Set detected=TRUE if any of these is true:
+  * A bottle, can, or box is visible in the frame, even partially, even \
+from an unusual angle, even cropped at the edges, even in poor lighting.
+  * The image is dominated by a beverage label (a photograph of a flat \
+label, a label graphic, a rendering of a label, or product art).
+  * You see something that *might* be a container (a vase-shaped \
+silhouette on a counter, a cylindrical object held in a hand, a bottle \
+behind glare or motion blur). Err on the side of yes.
 
-If no - the subject is a person, a hand, a wall, ambiguous, multiple \
-containers, or anything that is not a single beverage container - set \
-detected=false and explain in `reason` (one short sentence: "appears to \
-be a selfie", "wall and floor only, no container in frame", "two bottles \
-in frame, cannot pick a primary subject").
+Only set detected=FALSE when it is OBVIOUS the subject is something \
+else entirely:
+  * A person, face, or selfie (no container in the frame at all)
+  * A hand or other body part filling the frame
+  * A bare wall, floor, ceiling, or sky with nothing else
+  * A pet, food on a plate, a screenshot of unrelated software, a \
+landscape, an empty room
 
-Be conservative. If you would describe this as "might be a bottle but \
-unclear", "container partially in frame but cropped", or "could be a \
-container or could be a vase", set detected=false. The downstream scan is \
-expensive (10+ seconds); a false negative just makes the user re-aim, but \
-a false positive runs the whole pipeline on garbage.
+Bias HARD toward detected=true. False negatives block the user from \
+scanning a real label, which is the worse failure. False positives \
+flow into the verify pipeline, which has its own analysis and will \
+return "(unreadable)" on garbage — survivable. When in doubt, say yes.
 
-Do not hallucinate coordinates. If you cannot see the container clearly \
-enough to draw a tight box around it, say detected=false rather than \
-guessing the box.
+If detected=true:
+  * container_type: "bottle" | "can" | "box" (best guess — pick \
+"bottle" if it's just a flat label graphic and you can't tell)
+  * bbox: normalized 0..1 box (top-left origin) around the container or \
+label area. If the label fills the frame, that's just (0, 0, 1, 1).
+  * confidence: 0..1
+
+If detected=false:
+  * reason: one short user-facing sentence ("appears to be a selfie", \
+"looks like a bare wall", "no container or label in frame")
 
 Output format: a single JSON object matching the provided schema. No \
 Markdown fences, no commentary, no prose."""

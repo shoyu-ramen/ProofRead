@@ -849,46 +849,6 @@
     100% { opacity: 0; }
   }
 
-  /* Per-panel hint banner. Sits above the framing rect, below the top
-     icon bar. Soft pill, navy text, fades in from y=-6px so each
-     "Step N of 4 · …" prompt feels like a discrete instruction rather
-     than a static label. The `.flip` modifier rotates the banner 360°
-     once whenever the prompt advances past panel 0 — cheap delight
-     signal that also reinforces "rotate the bottle". */
-  .cam-panel-hint {
-    position: absolute;
-    top: 64px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 4;
-    padding: 8px 16px;
-    border-radius: 999px;
-    background: rgba(14, 42, 74, 0.78);
-    color: var(--cream);
-    font-size: 13px;
-    letter-spacing: 0.4px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-    animation: panelHintIn 0.32s ease-out;
-    pointer-events: none;
-    max-width: 80%;
-    text-align: center;
-  }
-  @keyframes panelHintIn {
-    from { opacity: 0; transform: translate(-50%, -10px); }
-    to   { opacity: 1; transform: translate(-50%, 0); }
-  }
-  .cam-panel-hint.flip {
-    background: rgba(170, 120, 50, 0.92);  /* amber emphasis on the flip step */
-    animation: panelHintFlip 0.6s ease-out;
-  }
-  @keyframes panelHintFlip {
-    0%   { opacity: 0; transform: translate(-50%, -10px) rotate(0deg); }
-    40%  { opacity: 1; transform: translate(-50%, 0) rotate(360deg); }
-    100% { opacity: 1; transform: translate(-50%, 0) rotate(360deg); }
-  }
-
   body.cam-open { overflow: hidden; }
 </style>
 </head>
@@ -1025,14 +985,6 @@
       <span class="corner tr"></span>
       <span class="corner bl"></span>
       <span class="corner br"></span>
-    </div>
-    <!-- Per-panel hint banner. Driven by `setPanelHint(panelIndex)`,
-         which walks through the ROTATION_HINTS copy ("Step N of 4 ·
-         …") for the camera flow's four ¼-turns. The `.flip` modifier
-         animates a brief rotation each time the prompt advances so
-         the cue feels active rather than passive. -->
-    <div class="cam-panel-hint" id="camPanelHint" aria-live="polite">
-      Hold steady on the label
     </div>
     <div class="cam-flash" aria-hidden="true"></div>
     <div class="cam-spinner" id="camSpinner">Starting camera…</div>
@@ -1641,15 +1593,18 @@ async function openCamera() {
   capturePending = false;
   autoCaptureScheduled = false;
   gateCooldownUntil = 0;
-  // Camera flow walks the user through four ¼-turns of the bottle
-  // (front → right → back → left), auto-capturing each steady frame.
-  // All four captures are POSTed to the multi-panel verify endpoint;
-  // the backend merges per-field by max confidence and tags each
-  // value with its source panel.
+  // Camera flow captures a single front-face frame and posts it to
+  // /v1/verify. An earlier iteration walked the user through four
+  // ¼-turns and merged per-field by confidence — accurate, but ~10 s
+  // of "rotate, hold steady, rotate" the user could feel. Most TTB
+  // fields (brand, class, ABV, net contents, name+address, country,
+  // and usually the health warning) print on the front face, so a
+  // single capture covers the common case in ~3 s. If a field comes
+  // back unreadable the user can scan again — much cheaper than
+  // forcing every successful scan through four captures.
   revokePanelUrls();
-  state.panelTarget = ROTATION_PANEL_COUNT;
+  state.panelTarget = 1;
   setDetectionState("searching");
-  setPanelHint(0);
   modal.hidden = false;
   document.body.classList.add("cam-open");
   try {
@@ -1665,37 +1620,6 @@ async function openCamera() {
   } catch (err) {
     showCamError(err);
   }
-}
-
-// Number of ¼-turn captures the camera flow collects before stitching.
-// Four matches the pragmatic web-panorama plan: 4 × 90° ≈ full label
-// circumference with one capture per "face".
-const ROTATION_PANEL_COUNT = 4;
-
-// Per-panel hint copy. Index 0 is the starting face; subsequent indices
-// are quarter-turns clockwise. The backend merges per-field by max
-// confidence across panels, so even 90° spacing isn't required — the
-// copy just nudges the user to cover all four sides.
-const ROTATION_HINTS = [
-  "Step 1 of 4 · Front of the bottle",
-  "Step 2 of 4 · Turn ¼ — show the right side",
-  "Step 3 of 4 · Turn ¼ — back of the bottle",
-  "Step 4 of 4 · Turn ¼ — left side",
-];
-
-function setPanelHint(panelIndex) {
-  // Swap viewfinder copy + active-class. The ready/searching/framing
-  // transitions continue to drive the corner colors independently.
-  const hint = $("camPanelHint");
-  if (!hint) return;
-  if (state.panelTarget <= 1) {
-    hint.textContent = "Hold steady on the label";
-    hint.classList.remove("flip");
-    return;
-  }
-  hint.textContent = ROTATION_HINTS[panelIndex] || `Step ${panelIndex + 1} of ${state.panelTarget}`;
-  if (panelIndex === 0) hint.classList.remove("flip");
-  else hint.classList.add("flip");
 }
 
 async function startStream(facing) {
@@ -1867,35 +1791,11 @@ async function capturePhoto() {
     startDetectionLoop();
     return;
   }
-  const name = `capture-${state.panels.length}-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
-  if (state.panels.length === 0) resetLiveDefaults();
+  const name = `capture-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
+  resetLiveDefaults();
   pushCapturedPanel(blob, name, "image/jpeg");
 
-  if (state.panels.length < state.panelTarget) {
-    // Mid-flow: brief "captured · turn the bottle" affordance, then
-    // re-arm the detection loop for the next ¼-turn. The shutter
-    // flash already played in CSS via `.capturing`; we re-enable
-    // the live preview and let the user rotate.
-    setPanelHint(state.panels.length);
-    capturePending = false;
-    autoCaptureScheduled = false;
-    $("camStage").classList.remove("capturing");
-    $("camShutter").disabled = false;
-    detectionStreak = 0;
-    setDetectionState("searching");
-    // Tiny grace so the user has time to actually rotate before the
-    // detector says "ready" again on a still-front frame.
-    cameraReadyAt = performance.now();
-    startDetectionLoop();
-    return;
-  }
-
-  // All panels collected — close the camera and post all four to the
-  // multi-panel verify endpoint. Each face keeps its native vertical
-  // resolution (a stitched panorama would compress fine print like
-  // ABV/health-warning past the model's reading threshold).
   closeCamera();
-  state.panelTarget = 1;
   runVerification();
 }
 
@@ -1966,42 +1866,12 @@ async function runVerification() {
   setStepState("working", "active");
   setStepState("result", "");
 
-  // Single-image submissions (upload, paste, sample) didn't go through
-  // the camera-flow gate — pre-check the image before we commit to the
-  // much-more-expensive /v1/verify call so a selfie or a screenshot of
-  // a wall doesn't burn a full pipeline run. Camera-flow submissions
-  // (4 panels) already had panel 0 gated at capture time and skip
-  // this. FAIL CLOSED: a gate error (503 / timeout) bounces back to
-  // the scan view with a "try again" prompt rather than silently
-  // letting the user reach /v1/verify on an unverified image.
-  if (state.panels.length === 1) {
-    setProgressLabel("Checking image…", "Making sure there's a label to read.");
-    const front = state.panels[0];
-    let gate = null;
-    let gateError = null;
-    try {
-      gate = await confirmContainerPresent(front.blob, front.name || "frame.jpg");
-    } catch (err) {
-      gateError = err;
-      console.warn("detect-container gate failed:", err);
-    }
-    if (gateError || !gate.detected) {
-      showView("scan");
-      revokePanelUrls();
-      const msg = gateError
-        ? gateError.name === "AbortError"
-          ? "Took too long to pre-check the image. Try again, or check your connection."
-          : gateError.code === "vision_unavailable"
-            ? "The image checker is offline for a moment. Try again shortly."
-            : "Couldn't pre-check the image. Try again, or pick a different photo."
-        : gate.reason
-          ? `That doesn't look like a beverage label — ${gate.reason}.`
-          : "That image doesn't look like a beverage label. Try a clearer photo of the front of the can or bottle.";
-      showScanError(msg);
-      return;
-    }
-  }
-
+  // Upload / paste / sample submissions go straight to /v1/verify.
+  // The user explicitly chose this image, so a pre-flight container
+  // gate would only ever block them — and gate false negatives on
+  // cropped or label-graphic images were the real cost in practice.
+  // The camera flow still runs the gate at capture time, where the
+  // user has the cheap option of re-aiming.
   setProgressLabel(
     "Working…",
     "Reading the label and checking it against TTB rules."
