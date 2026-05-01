@@ -9,7 +9,14 @@
  * instruction overlays.
  */
 
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
 import {
   runOnJS,
   useAnimatedReaction,
@@ -18,8 +25,11 @@ import {
 
 import type { TrackerState } from '@src/scan/tracker';
 import {
+  evaluateAutoCaptureTick,
+  INITIAL_AUTO_CAPTURE_TIMER,
   INITIAL_SCAN_STATE,
   scanReducer,
+  type AutoCaptureTimerState,
   type FailReason,
   type PauseReason,
   type ScanAction,
@@ -51,6 +61,10 @@ const MAX_REV_PER_SEC = 1.2; // ~432°/sec; protects optical-flow precision
 const UNTRACKABLE_THRESHOLD = 0.18;
 const UNTRACKABLE_MS = 2500;
 
+// Auto-capture gate constants live in scanMachine.ts so tests can
+// exercise them against the same numbers the hook uses. See
+// `evaluateAutoCaptureTick` for the pure timer math.
+
 export interface UseScanStateMachineResult {
   state: ScanState;
   /** Imperative escape hatches for the parent screen. */
@@ -58,6 +72,24 @@ export interface UseScanStateMachineResult {
   complete: (panoramaUri: string) => void;
   cancel: () => void;
   reset: () => void;
+  /**
+   * True iff the auto-capture predicate is currently true (preCheck
+   * ready, container & grip confidence both above the gate). Goes
+   * true the moment the predicate trips; flips back as soon as any
+   * leg drops. Use this to render the "Hold steady — starting in
+   * 1.5s" countdown pill — it visualizes the live gate state, not
+   * the latched verdict that drives the transition.
+   */
+  autoCaptureCandidate: boolean;
+  /**
+   * True after MANUAL_OVERRIDE_AFTER_MS of being in `ready` without
+   * the auto-capture predicate sustaining. Drives the "Tap to start
+   * manually" button — flips back to false on any state transition
+   * away from `ready`.
+   */
+  manualOverrideAvailable: boolean;
+  /** Dispatch a manual-start action (consumes the override button). */
+  manualStart: () => void;
 }
 
 /**
@@ -88,6 +120,30 @@ export function useScanStateMachine(
   // first-frame velocity dip doesn't immediately pause the scan.
   // null whenever we're not in `scanning`.
   const scanningEnteredAtRef = useRef<number | null>(null);
+  // Auto-capture timer state — held in a ref so it persists across
+  // ticks without driving a re-render every frame. The pure logic
+  // lives in `evaluateAutoCaptureTick`; this ref is just where we
+  // stash the previous tick's `next` so the test contract and the
+  // hook agree on the maths.
+  const autoCaptureTimerRef = useRef<AutoCaptureTimerState>(
+    INITIAL_AUTO_CAPTURE_TIMER,
+  );
+  // Wall-clock ms when `ready` was last entered. Drives the manual-
+  // override fallback timer. null whenever we're not in `ready`.
+  const readyEnteredAtRef = useRef<number | null>(null);
+  // We need the FSM `kind` inside `applyInputs` to decide whether the
+  // manual-override timer is active. `state` is captured inside the
+  // closure but the runOnJS callback may carry stale closure state on
+  // hot paths; a ref keeps the read O(1) and current.
+  const stateKindRef = useRef<ScanState['kind']>(INITIAL_SCAN_STATE.kind);
+  // Live JS-side mirror of the auto-capture predicate (per-tick value
+  // before the 1500ms hold completes). Mirrored as React state so the
+  // unwrap screen can render the "starting in 1.5s" countdown pill
+  // without sampling the trackerStateSv shared value directly.
+  const [autoCaptureCandidate, setAutoCaptureCandidate] = useState(false);
+  // Latched manual-override flag. Once set, stays set until the user
+  // leaves `ready` (manualStart, lost-bottle drop to aligning, fail).
+  const [manualOverrideAvailable, setManualOverrideAvailable] = useState(false);
 
   const dispatchTick = useCallback(
     (inputs: ScanMachineInputs) => {
@@ -103,6 +159,9 @@ export function useScanStateMachine(
       velocity: number;
       flowQuality: number;
       pauseReason: PauseReason | null;
+      preCheckReady: boolean;
+      containerConfidence: number;
+      gripSteadiness: number;
     }) => {
       // Read the timestamp here, after the runOnJS hop. Reading it in
       // the worklet would let the value drift by 50–100ms under JS
@@ -162,11 +221,42 @@ export function useScanStateMachine(
         untrackableSinceRef.current = null;
       }
 
+      // Auto-capture + manual-override timing — pure tick that the
+      // unit tests exercise directly. We keep the persistent state in
+      // a ref so the next tick sees the previous candidateSince /
+      // latched flag.
+      const autoTick = evaluateAutoCaptureTick(autoCaptureTimerRef.current, {
+        nowMs,
+        preCheckReady: raw.preCheckReady,
+        containerConfidence: raw.containerConfidence,
+        gripSteadiness: raw.gripSteadiness,
+        inReady: stateKindRef.current === 'ready',
+        readyEnteredAtMs: readyEnteredAtRef.current,
+      });
+      autoCaptureTimerRef.current = autoTick.next;
+
+      // Mirror the live candidate flag into React state for the
+      // countdown pill. Wrap in a setState that no-ops on equality so
+      // we don't re-render at frame rate.
+      setAutoCaptureCandidate((prev) =>
+        prev === autoTick.candidate ? prev : autoTick.candidate,
+      );
+      // Latch the manual-override flag in React state so the UI re-
+      // renders on the transition. The pure helper already dedupes
+      // (latched stays latched) but we still gate the setState behind
+      // an equality check to avoid a no-op render.
+      setManualOverrideAvailable((prev) =>
+        prev === autoTick.manualOverrideAvailable
+          ? prev
+          : autoTick.manualOverrideAvailable,
+      );
+
       dispatchTick({
         bottleSteady,
         coverage: raw.coverage,
         rotating: rotatingNow,
         pauseReason,
+        autoCaptureReady: autoTick.ready,
       });
     },
     [dispatchTick],
@@ -218,12 +308,24 @@ export function useScanStateMachine(
       const v = Math.abs(ts.angularVelocity);
       if (v > MAX_REV_PER_SEC) pauseReason = 'too_fast';
 
+      // Auto-capture inputs — fed through to the JS-side timer in
+      // applyInputs. preCheckReady is the simple kind===ready check;
+      // the worklet doesn't need to know about the 0.7 confidence
+      // floor (that lives in JS so it's tunable without a worklet
+      // recompile).
+      const preCheckReady = ts.preCheck.kind === 'ready';
+      const containerConfidence = ts.silhouette.containerConfidence;
+      const gripSteadiness = ts.gripSteadiness;
+
       runOnJS(applyInputs)({
         steadyNow,
         coverage: ts.coverage,
         velocity: v,
         flowQuality: ts.flowQuality,
         pauseReason,
+        preCheckReady,
+        containerConfidence,
+        gripSteadiness,
       });
     },
     // Empty deps — the reaction body captures the SharedValue refs
@@ -248,6 +350,20 @@ export function useScanStateMachine(
     stalledSinceRef.current = null;
     untrackableSinceRef.current = null;
     scanningEnteredAtRef.current = null;
+    autoCaptureTimerRef.current = INITIAL_AUTO_CAPTURE_TIMER;
+    readyEnteredAtRef.current = null;
+    setAutoCaptureCandidate(false);
+    setManualOverrideAvailable(false);
+  }, []);
+  const manualStart = useCallback(() => {
+    dispatch({ type: 'manualStart' } satisfies ScanAction);
+    // Clear the auto-capture timers so a re-entry to `ready` (e.g.
+    // lost-bottle then re-detect) starts the windows fresh rather
+    // than inheriting a stale "8 seconds elapsed" marker.
+    autoCaptureTimerRef.current = INITIAL_AUTO_CAPTURE_TIMER;
+    readyEnteredAtRef.current = null;
+    setAutoCaptureCandidate(false);
+    setManualOverrideAvailable(false);
   }, []);
 
   // Track `scanning` entry/exit so applyInputs can apply the
@@ -265,6 +381,37 @@ export function useScanStateMachine(
     }
   }, [state.kind]);
 
+  // Track `ready` entry/exit for the auto-capture + manual-override
+  // timers. Stamp on entry; clear on exit. Manual-override flag is
+  // tied to this lifecycle — once we leave `ready` it should
+  // disappear (the button is no longer relevant), and on re-entry
+  // (e.g. paused → ready isn't a thing in the current FSM, but
+  // aligning → ready will be) we want a fresh 8s window.
+  useEffect(() => {
+    stateKindRef.current = state.kind;
+    if (state.kind === 'ready') {
+      readyEnteredAtRef.current = Date.now();
+      // Clear the latched manual-override flag — a fresh ready window
+      // gets a fresh 8s timer.
+      autoCaptureTimerRef.current = {
+        ...autoCaptureTimerRef.current,
+        manualOverrideLatched: false,
+      };
+      setManualOverrideAvailable(false);
+    } else {
+      readyEnteredAtRef.current = null;
+      // On exit from `ready`, clear the live candidate so the UI
+      // pill doesn't briefly show a "starting in 1.5s" cue while we
+      // animate into `scanning`.
+      setAutoCaptureCandidate(false);
+      setManualOverrideAvailable(false);
+      // Reset the auto-capture sustain timer so the next entry to
+      // `ready` (after a lost-bottle drop, say) doesn't inherit a
+      // partial hold or a stale latched override.
+      autoCaptureTimerRef.current = INITIAL_AUTO_CAPTURE_TIMER;
+    }
+  }, [state.kind]);
+
   // Cleanup integrator state on unmount so a re-mounted scan doesn't
   // inherit a stale "steady since" timestamp.
   useEffect(() => {
@@ -273,11 +420,31 @@ export function useScanStateMachine(
       stalledSinceRef.current = null;
       untrackableSinceRef.current = null;
       scanningEnteredAtRef.current = null;
+      autoCaptureTimerRef.current = INITIAL_AUTO_CAPTURE_TIMER;
+      readyEnteredAtRef.current = null;
     };
   }, []);
 
   return useMemo(
-    () => ({ state, fail, complete, cancel, reset }),
-    [state, fail, complete, cancel, reset],
+    () => ({
+      state,
+      fail,
+      complete,
+      cancel,
+      reset,
+      autoCaptureCandidate,
+      manualOverrideAvailable,
+      manualStart,
+    }),
+    [
+      state,
+      fail,
+      complete,
+      cancel,
+      reset,
+      autoCaptureCandidate,
+      manualOverrideAvailable,
+      manualStart,
+    ],
   );
 }

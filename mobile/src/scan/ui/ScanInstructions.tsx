@@ -21,31 +21,17 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { colors } from '@src/theme';
-
-export type ScanStateKind =
-  | 'aligning'
-  | 'ready'
-  | 'scanning'
-  | 'paused'
-  | 'complete'
-  | 'failed';
-
-export type PauseReason =
-  | 'too_fast'
-  | 'too_slow'
-  | 'lost_bottle'
-  | 'blur'
-  | 'glare'
-  | 'motion'
-  | 'too_far'
-  | 'too_close'
-  | 'untrackable_surface';
-
-export type FailReason =
-  | 'permission_denied'
-  | 'no_camera'
-  | 'capture_error'
-  | 'cancelled';
+// FailReason / PauseReason / ScanStateKind live in `scanMachine.ts` —
+// re-export here so the existing UI consumers and the public surface
+// of `@src/scan/ui` keep their import paths. Defining them in the UI
+// module on top of the state module creates a cycle that breaks
+// `node:test` runs of the reducer.
+import type {
+  FailReason,
+  PauseReason,
+  ScanStateKind,
+} from '@src/scan/state/scanMachine';
+export type { FailReason, PauseReason, ScanStateKind };
 
 export interface ScanInstructionsProps {
   /** Top-level discriminator from the scan machine. */

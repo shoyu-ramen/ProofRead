@@ -32,6 +32,7 @@ import React, {
   useState,
 } from 'react';
 import {
+  Pressable,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -170,7 +171,16 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
 
   // Scan state machine. Reads tracker state via worklet reaction;
   // dispatches discrete transitions on the JS side.
-  const { state, fail, complete, cancel, reset } = useScanStateMachine(
+  const {
+    state,
+    fail,
+    complete,
+    cancel,
+    reset,
+    autoCaptureCandidate,
+    manualOverrideAvailable,
+    manualStart,
+  } = useScanStateMachine(
     tracker.trackerStateSv,
     tracker.frameTickSv,
   );
@@ -568,6 +578,45 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
         bottleDetected={snap.detected}
       />
 
+      {/* Auto-capture countdown pill. Visible only while we're in
+          `ready` and the live predicate is true but the 1.5s hold
+          hasn't latched yet — once it latches, the state machine
+          flips to `scanning` and this disappears. The pill lives just
+          below the silhouette so the cue reads near the bottle the
+          user is holding, not down by the dial. */}
+      {stateKind === 'ready' && autoCaptureCandidate ? (
+        <View
+          pointerEvents="none"
+          style={[styles.autoCapturePill, { top: insets.top + scanGeometry.panoramaPaddingTop + 12 }]}
+        >
+          <Text style={styles.autoCapturePillText}>
+            Hold steady — starting in 1.5s
+          </Text>
+        </View>
+      ) : null}
+
+      {/* Manual-override button. Surfaces only after 8 seconds in
+          `ready` without the auto-capture predicate ever sustaining
+          (dim labels, harsh contrast, anything the heuristic can't
+          confidently classify). Sits above the instruction pill so
+          the user can tap their way through without hunting for it. */}
+      {stateKind === 'ready' && manualOverrideAvailable ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Tap to start scanning manually"
+          onPress={manualStart}
+          style={({ pressed }) => [
+            styles.manualStartButton,
+            { bottom: insets.bottom + 96 + 56 },
+            pressed && styles.manualStartButtonPressed,
+          ]}
+        >
+          <Text style={styles.manualStartButtonText}>
+            Tap to start manually
+          </Text>
+        </Pressable>
+      ) : null}
+
       {/* Progress dial — bottom-right, big number + caption. */}
       <ProgressDial coverageSv={coverageSv} state={stateKind} />
 
@@ -672,5 +721,55 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     width: '100%',
     justifyContent: 'center',
+  },
+  // Auto-capture countdown pill. Reuses the same scrim + pill shape as
+  // ScanInstructions for visual continuity (small, peripheral pill on
+  // the camera feed) but sits in the upper-third near the silhouette
+  // outline rather than at the bottom — the bottle is what the user is
+  // looking at and the cue should land where their attention is. No
+  // new colors; reuses scanReadySoft border so the pill reads as the
+  // "almost-ready" cue without competing with the warn / fail palette.
+  autoCapturePill: {
+    position: 'absolute',
+    alignSelf: 'center',
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  autoCapturePillText: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: colors.scanOverlayScrim,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.scanReadySoft,
+    color: colors.scanInk,
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: 0.2,
+    overflow: 'hidden',
+  },
+  // Manual-override button. Subtle, low-emphasis affordance — the
+  // spec calls for "subtle" because in the happy path the user never
+  // sees it; only the long-tail lighting cases ever surface it.
+  manualStartButton: {
+    position: 'absolute',
+    alignSelf: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: colors.scanOverlayDim,
+    borderWidth: 1,
+    borderColor: colors.scanIdleSoft,
+  },
+  manualStartButtonPressed: {
+    opacity: 0.7,
+  },
+  manualStartButtonText: {
+    color: colors.scanInk,
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: 0.2,
+    textAlign: 'center',
   },
 });

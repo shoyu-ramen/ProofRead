@@ -26,7 +26,7 @@ import {
 import { useResizePlugin } from 'vision-camera-resize-plugin';
 import { Accelerometer, type AccelerometerMeasurement } from 'expo-sensors';
 
-import { detectBottle } from './bottleDetector';
+import { classifyContainer, detectBottle } from './bottleDetector';
 import { measureFlow } from './opticalFlow';
 import { computeAngularProgress } from './angleTracker';
 import type {
@@ -99,6 +99,7 @@ const EMPTY_SILHOUETTE: BottleSilhouette = {
   steadinessScore: 0,
   class: null,
   classConfidence: 0,
+  containerConfidence: 0,
 };
 
 const EMPTY_FLOW: FlowMeasurement = {
@@ -280,8 +281,32 @@ export function useTrackerFrameProcessor(): TrackerFrameProcessor {
           rawSilhouette.steadinessScore * STEADINESS_ALPHA
         : prevSteady * (1 - STEADINESS_ALPHA);
       steadinessEmaSv.value = nextSteady;
+      // Re-classify with the EMA-smoothed steadiness so
+      // containerConfidence rides the same smoothed signal the
+      // auto-trigger gate compares against. The detector returned a
+      // per-frame classification; reusing its `class` decision is fine
+      // (aspect-ratio bands are deterministic) but the confidence has
+      // to reflect the multi-frame steadiness, not just one frame.
+      const reclassified =
+        rawSilhouette.detected && rawSilhouette.heightPx > 0
+          ? classifyContainer(
+              rawSilhouette.widthPx,
+              rawSilhouette.heightPx,
+              nextSteady,
+            )
+          : null;
       const silhouette: BottleSilhouette = rawSilhouette.detected
-        ? { ...rawSilhouette, steadinessScore: nextSteady }
+        ? {
+            ...rawSilhouette,
+            steadinessScore: nextSteady,
+            class: reclassified ? reclassified.class : rawSilhouette.class,
+            classConfidence: reclassified
+              ? reclassified.classConfidence
+              : rawSilhouette.classConfidence,
+            containerConfidence: reclassified
+              ? reclassified.containerConfidence
+              : rawSilhouette.containerConfidence,
+          }
         : { ...EMPTY_SILHOUETTE, steadinessScore: nextSteady };
 
       // Flow needs a valid previous luma; on the very first accepted

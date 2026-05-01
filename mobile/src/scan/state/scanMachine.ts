@@ -12,7 +12,18 @@
  * reached the renderer.
  */
 
-import type { FailReason } from '@src/scan/ui';
+/**
+ * Terminal failure reasons. Canonical here so the reducer's discriminated
+ * union and the UI's instruction copy share a single source of truth —
+ * previously this lived in `scan/ui/ScanInstructions.tsx`, which created
+ * an import cycle (state ← ui ← state) and broke `node:test` runs that
+ * try to load the reducer in isolation.
+ */
+export type FailReason =
+  | 'permission_denied'
+  | 'no_camera'
+  | 'capture_error'
+  | 'cancelled';
 
 export type ScanStateKind =
   | 'aligning'
@@ -43,8 +54,6 @@ export type PauseReason =
   | 'too_close'
   | 'untrackable_surface';
 
-export type { FailReason };
-
 export type ScanState =
   | { kind: 'aligning' }
   | { kind: 'ready' }
@@ -68,6 +77,17 @@ export interface ScanMachineInputs {
   rotating: boolean;
   /** Pause reason from rate / pre-check evaluation; null when fine. */
   pauseReason: PauseReason | null;
+  /**
+   * True once the auto-capture predicate (preCheck=ready,
+   * containerConfidence>0.7, gripSteadiness>0.7) has been sustained
+   * for ≥AUTO_CAPTURE_HOLD_MS. Drives the `ready → scanning`
+   * transition without requiring the user to manually rotate first
+   * (the original `rotating` trigger still works in parallel).
+   *
+   * Hysteresis lives in the hook (`useScanStateMachine`); the reducer
+   * just consumes the latched verdict.
+   */
+  autoCaptureReady: boolean;
 }
 
 export type ScanAction =
@@ -75,7 +95,16 @@ export type ScanAction =
   | { type: 'fail'; reason: FailReason }
   | { type: 'complete'; panoramaUri: string }
   | { type: 'cancel' }
-  | { type: 'reset' };
+  | { type: 'reset' }
+  /**
+   * User tap on the manual override button (exposed once
+   * `manualOverrideAvailable` flips true in `useScanStateMachine`).
+   * Forces a `ready → scanning` transition so the user can start
+   * capture even when the auto-capture predicate never sustains —
+   * dim labels, harsh backgrounds, anything that keeps the heuristic
+   * confidence below the 0.7 gate.
+   */
+  | { type: 'manualStart' };
 
 export const INITIAL_SCAN_STATE: ScanState = { kind: 'aligning' };
 
@@ -98,8 +127,22 @@ export function scanReducer(state: ScanState, action: ScanAction): ScanState {
       return { kind: 'complete', panoramaUri: action.panoramaUri };
     case 'cancel':
       return { kind: 'failed', reason: 'cancelled' };
+    case 'manualStart': {
+      // Only meaningful from `ready` — anywhere else it would either
+      // be a no-op (already scanning / paused / complete) or a regress
+      // (aligning, no detection yet). The hook only surfaces the
+      // button while in `ready` so this is a defensive guard.
+      if (state.kind !== 'ready') return state;
+      return { kind: 'scanning', coverage: 0 };
+    }
     case 'tick': {
-      const { bottleSteady, coverage, rotating, pauseReason } = action.inputs;
+      const {
+        bottleSteady,
+        coverage,
+        rotating,
+        pauseReason,
+        autoCaptureReady,
+      } = action.inputs;
 
       // Terminal states stop accepting ticks (other than reset).
       if (state.kind === 'complete' || state.kind === 'failed') return state;
@@ -132,9 +175,13 @@ export function scanReducer(state: ScanState, action: ScanAction): ScanState {
         case 'ready':
           // Drop back to aligning if we lose the bottle in the ready
           // hold-window; otherwise fall into scanning the moment the
-          // user starts rotating.
+          // user starts rotating *or* the auto-capture predicate has
+          // sustained long enough to fire on its own. The auto path
+          // lets the user just hold the bottle — no rotation kick
+          // required — and the rotation path remains as the canonical
+          // start gesture for users who like to drive it themselves.
           if (!bottleSteady) return { kind: 'aligning' };
-          if (rotating || coverage > 0) {
+          if (rotating || coverage > 0 || autoCaptureReady) {
             return { kind: 'scanning', coverage };
           }
           if (pauseReason) {
@@ -199,4 +246,144 @@ export function coverageOf(state: ScanState): number {
     default:
       return 0;
   }
+}
+
+// --- Auto-capture timer (brief #2) -----------------------------------
+
+/**
+ * Threshold for both `containerConfidence` and `gripSteadiness` before
+ * the auto-capture predicate trips. Exported so the `useScanStateMachine`
+ * hook can apply the same gate the tests assert on.
+ */
+export const AUTO_CAPTURE_CONFIDENCE_GATE = 0.7;
+/** Time the predicate must hold before `autoCaptureReady` latches. */
+export const AUTO_CAPTURE_HOLD_MS = 1500;
+/**
+ * Time after entering `ready` without auto-capture latching at which
+ * the manual-override affordance becomes available.
+ */
+export const MANUAL_OVERRIDE_AFTER_MS = 8000;
+
+/**
+ * Per-tick inputs to the auto-capture timer. `nowMs` is wall-clock
+ * (ms); the timer is purely time-based so a frozen clock means the
+ * timer never advances — handy for deterministic tests.
+ */
+export interface AutoCaptureTickInputs {
+  /** Wall-clock ms (typically `Date.now()`). */
+  nowMs: number;
+  /** True iff `preCheck.kind === 'ready'`. */
+  preCheckReady: boolean;
+  /** Live container-confidence from the silhouette (0..1). */
+  containerConfidence: number;
+  /** Live grip-steadiness from the tracker (0..1). */
+  gripSteadiness: number;
+  /**
+   * Whether the state machine is currently in `ready`. Drives the
+   * manual-override timer — outside `ready` the timer doesn't run.
+   */
+  inReady: boolean;
+  /**
+   * Wall-clock ms at which the FSM most recently entered `ready`.
+   * `null` if we're not in `ready` (or never have been). The auto-
+   * capture timer itself is independent (it can pre-warm in
+   * `aligning`), but `manualOverrideAvailable` only counts time
+   * spent in `ready`.
+   */
+  readyEnteredAtMs: number | null;
+}
+
+/**
+ * Persistent state for the auto-capture timer — the bits the hook
+ * keeps in refs across ticks. Pure data so tests can construct, mutate,
+ * and assert on it without React or shared values.
+ */
+export interface AutoCaptureTimerState {
+  /**
+   * Wall-clock ms when the auto-capture predicate first turned true
+   * in the current run. `null` whenever any leg has dropped (so a
+   * flicker resets the 1500ms hold instead of extending it).
+   */
+  candidateSinceMs: number | null;
+  /**
+   * Latched manual-override flag. Once flipped to `true` it stays
+   * true until the FSM leaves `ready` (the hook clears it in the
+   * state-transition effect).
+   */
+  manualOverrideLatched: boolean;
+}
+
+export const INITIAL_AUTO_CAPTURE_TIMER: AutoCaptureTimerState = {
+  candidateSinceMs: null,
+  manualOverrideLatched: false,
+};
+
+/**
+ * Per-tick output from the auto-capture timer. `next` is the new
+ * persistent state to write back; the booleans are what the hook
+ * forwards to React state and the reducer.
+ */
+export interface AutoCaptureTickResult {
+  next: AutoCaptureTimerState;
+  /** True iff the predicate is currently true (drives the UI pill). */
+  candidate: boolean;
+  /** True iff the predicate has held for ≥AUTO_CAPTURE_HOLD_MS. */
+  ready: boolean;
+  /**
+   * True iff we've been in `ready` for ≥MANUAL_OVERRIDE_AFTER_MS
+   * without the auto-capture latching. Once true, stays true for the
+   * rest of the `ready` window.
+   */
+  manualOverrideAvailable: boolean;
+}
+
+/**
+ * Pure tick function for the auto-capture timer. Given the previous
+ * persistent state and the current inputs, returns the next state and
+ * the derived booleans. Exposed for unit tests; the hook uses refs to
+ * carry `AutoCaptureTimerState` across ticks but the math is the same.
+ *
+ * Test contract:
+ *   (a) sustained-good signals trigger after AUTO_CAPTURE_HOLD_MS
+ *   (b) flicker (predicate transiently false) resets the timer
+ *   (c) MANUAL_OVERRIDE_AFTER_MS in `ready` without trigger latches
+ *       `manualOverrideAvailable`
+ */
+export function evaluateAutoCaptureTick(
+  prev: AutoCaptureTimerState,
+  inputs: AutoCaptureTickInputs,
+): AutoCaptureTickResult {
+  const candidate =
+    inputs.preCheckReady &&
+    inputs.containerConfidence > AUTO_CAPTURE_CONFIDENCE_GATE &&
+    inputs.gripSteadiness > AUTO_CAPTURE_CONFIDENCE_GATE;
+
+  const candidateSinceMs = candidate
+    ? prev.candidateSinceMs ?? inputs.nowMs
+    : null;
+
+  const ready =
+    candidateSinceMs !== null &&
+    inputs.nowMs - candidateSinceMs >= AUTO_CAPTURE_HOLD_MS;
+
+  // Manual-override: only counts wall-clock time in `ready`. The
+  // latch persists once set; the hook is responsible for clearing it
+  // when the FSM transitions away from `ready`.
+  let manualOverrideLatched = prev.manualOverrideLatched;
+  if (
+    !manualOverrideLatched &&
+    inputs.inReady &&
+    inputs.readyEnteredAtMs !== null &&
+    !ready &&
+    inputs.nowMs - inputs.readyEnteredAtMs >= MANUAL_OVERRIDE_AFTER_MS
+  ) {
+    manualOverrideLatched = true;
+  }
+
+  return {
+    next: { candidateSinceMs, manualOverrideLatched },
+    candidate,
+    ready,
+    manualOverrideAvailable: manualOverrideLatched,
+  };
 }

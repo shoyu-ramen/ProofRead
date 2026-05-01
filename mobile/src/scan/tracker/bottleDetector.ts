@@ -66,6 +66,24 @@ const VERT_SCAN_MISS_TOL = 2;
 const VERT_SCAN_TOL_FRAC = 0.15;
 const VERT_SCAN_TOL_FLOOR_PX = 12;
 
+// Aspect-ratio bands for heuristic container classification. Bottles
+// are tall and slender (heightPx/widthPx > 1.8 in real-world holds);
+// cans are shorter and chunkier (1.0..1.8). Below 1.0 the silhouette
+// is wider than tall — likely a non-container in the frame — and we
+// reject. Above the floor the wider it is, the higher the confidence
+// it's a true bottle (tall bottles are unmistakable). Tuned against
+// reference holds at the canonical 30–90% width band.
+const ASPECT_BOTTLE_MIN = 1.8;
+const ASPECT_CAN_MIN = 1.0;
+const ASPECT_CAN_MAX = 1.8;
+
+// Where on the aspect-ratio scale we max out the aspect-confidence
+// component. A 12oz can is ~2.5:1 H:W; a 750ml wine bottle is ~3.5:1+.
+// Map ASPECT_BOTTLE_MIN..ASPECT_CONF_PEAK linearly onto 0.6..1.0 so a
+// borderline-narrow can doesn't read with the same confidence as an
+// unambiguous bottle.
+const ASPECT_CONF_PEAK = 3.5;
+
 // Empty silhouette returned when detection fails. Stable shape so the
 // shared value's writes stay JIT-friendly.
 const EMPTY: BottleSilhouette = {
@@ -80,6 +98,7 @@ const EMPTY: BottleSilhouette = {
   steadinessScore: 0,
   class: null,
   classConfidence: 0,
+  containerConfidence: 0,
 };
 
 /**
@@ -220,6 +239,20 @@ export function detectBottle(
   const edgeBottomY = scanForBottomEdge(luma, w, h, yBot, leftMedian, rightMedian, colTol);
   const heightPx = edgeBottomY > edgeTopY ? edgeBottomY - edgeTopY : 0;
 
+  // Heuristic container classification. We can't measure heightPx
+  // when the top/bottom edge scan punted (cap glints, frame-bleed
+  // bottles) — leave the class null in that case so the auto-trigger
+  // gate doesn't fire on an indeterminate silhouette. Otherwise feed
+  // the aspect ratio into `classifyContainer` for the bottle/can
+  // bands. Confidence blends the per-frame edge tightness with the
+  // aspect-ratio fit so a noisy near-the-band measurement reads
+  // softer than a clean unambiguous bottle.
+  const perFrameSteady = clamp01(tightness);
+  const classification =
+    heightPx > 0
+      ? classifyContainer(widthPx, heightPx, perFrameSteady)
+      : { class: null, classConfidence: 0, containerConfidence: 0 };
+
   return {
     detected: true,
     edgeLeftX: leftMedian,
@@ -229,12 +262,91 @@ export function detectBottle(
     centerX: (leftMedian + rightMedian) * 0.5,
     widthPx,
     heightPx,
-    steadinessScore: clamp01(tightness),
-    // Heuristic detector can't classify; Phase 2's TFLite path will
-    // populate these. Keeping the field present keeps the shape stable
-    // so the worklet's writes to trackerStateSv don't deopt.
-    class: null,
-    classConfidence: 0,
+    steadinessScore: perFrameSteady,
+    class: classification.class,
+    classConfidence: classification.classConfidence,
+    containerConfidence: classification.containerConfidence,
+  };
+}
+
+/**
+ * Result shape for `classifyContainer`. Kept narrow so the worklet's
+ * writes to `BottleSilhouette` only pull these three fields.
+ */
+export interface ContainerClassification {
+  class: 'bottle' | 'can' | null;
+  classConfidence: number;
+  containerConfidence: number;
+}
+
+/**
+ * Classify a silhouette into bottle/can/null based on aspect ratio
+ * and blend a composite container-confidence score from the per-frame
+ * edge tightness. Pure / worklet-safe — exposed so the auto-trigger
+ * tests can drive it directly without spinning up a full luma plane.
+ *
+ * The auto-trigger gate (scanMachine §autotrigger) reads
+ * `containerConfidence` not `classConfidence`: the gate cares whether
+ * the silhouette is *a* scannable container, not which specific class
+ * it is. Confidence is the geometric mean-ish of edge crispness and
+ * aspect-ratio fit so a near-the-band aspect with crisp edges still
+ * reads cleanly, but a noisy silhouette doesn't trip the 0.7 gate.
+ */
+export function classifyContainer(
+  widthPx: number,
+  heightPx: number,
+  steadinessScore: number,
+): ContainerClassification {
+  'worklet';
+  if (widthPx <= 0 || heightPx <= 0) {
+    return { class: null, classConfidence: 0, containerConfidence: 0 };
+  }
+  const aspect = heightPx / widthPx;
+  const steady = clamp01(steadinessScore);
+
+  // Outside both bands → reject. Wider-than-tall silhouettes are
+  // almost always background clutter (tabletop edges, books); above
+  // the cap the silhouette is taller than any real beverage container
+  // (curtains, bookshelves) — but we don't impose an explicit ceiling
+  // because real wine bottles stretch high in handheld holds. The
+  // ASPECT_BOTTLE_MIN..ASPECT_CONF_PEAK linear ramp soft-caps it.
+  if (aspect < ASPECT_CAN_MIN) {
+    return { class: null, classConfidence: 0, containerConfidence: 0 };
+  }
+
+  let cls: 'bottle' | 'can';
+  let aspectFit: number;
+  if (aspect >= ASPECT_BOTTLE_MIN) {
+    cls = 'bottle';
+    // Linear ramp from 0.6 at the band-min to 1.0 at the peak.
+    const denom = ASPECT_CONF_PEAK - ASPECT_BOTTLE_MIN;
+    const t = denom > 0 ? (aspect - ASPECT_BOTTLE_MIN) / denom : 1;
+    aspectFit = 0.6 + 0.4 * clamp01(t);
+  } else {
+    cls = 'can';
+    // Triangular fit centered on the can band's midpoint (1.4): a
+    // standard 12oz can sits near 2.0..2.5 in real holds, but the
+    // heuristic detector under-measures heightPx when the can's top
+    // rim has poor contrast, so we widen the band rather than chase
+    // the long tail. Peak fit at midpoint = 0.85; falls to 0.5 at
+    // either band edge.
+    const mid = (ASPECT_CAN_MIN + ASPECT_CAN_MAX) * 0.5;
+    const half = (ASPECT_CAN_MAX - ASPECT_CAN_MIN) * 0.5;
+    const dist = Math.abs(aspect - mid);
+    const fit = half > 0 ? 1 - dist / half : 0;
+    aspectFit = 0.5 + 0.35 * clamp01(fit);
+  }
+
+  // Composite confidence: geometric mean of edge tightness and aspect
+  // fit. Keeps it harsh — both have to be good for the auto-trigger
+  // gate to fire. classConfidence (which-class) is the same as the
+  // composite for v1; Phase 2's TFLite path will give a real per-class
+  // probability and we'll split them then.
+  const containerConfidence = clamp01(Math.sqrt(steady * aspectFit));
+  return {
+    class: cls,
+    classConfidence: containerConfidence,
+    containerConfidence,
   };
 }
 
