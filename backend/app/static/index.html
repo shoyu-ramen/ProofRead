@@ -1529,15 +1529,28 @@ async function snapshotForDetection(video) {
 }
 
 // POST a single image to the backend container-detection gate. Resolves
-// to the parsed JSON on a 2xx; rejects on any non-2xx. Callers should
-// treat any rejection as "couldn't pre-check" and fall through to the
-// next step — the gate is best-effort, not load-bearing.
+// to the parsed JSON on a 2xx; rejects on any non-2xx or on local
+// timeout. Callers FAIL CLOSED on any rejection — a silent fall-through
+// to capture / verify is precisely the failure mode this gate exists
+// to prevent. The 18 s deadline is paired with the backend's 15 s
+// per-call timeout (services/container_check.py) — the extra 3 s
+// covers upload time on a slow connection.
 async function confirmContainerPresent(blob, filename) {
   const fd = new FormData();
   fd.append("image", blob, filename || "frame.jpg");
-  const res = await fetch("/v1/detect-container", { method: "POST", body: fd });
-  if (!res.ok) throw await buildVerifyError(res);
-  return res.json();
+  const ctrl = new AbortController();
+  const tmo = setTimeout(() => ctrl.abort(), 18000);
+  try {
+    const res = await fetch("/v1/detect-container", {
+      method: "POST",
+      body: fd,
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw await buildVerifyError(res);
+    return await res.json();
+  } finally {
+    clearTimeout(tmo);
+  }
 }
 
 // Pin the rejection hint on screen for DETECT_GATE_COOLDOWN_MS without
@@ -1571,10 +1584,11 @@ async function confirmAndCapture() {
   } catch (err) {
     console.warn("snapshot for detection failed:", err);
   }
-  // Snapshot failure is a local issue, not a "no container" verdict —
-  // fall through to the real capture and let /v1/verify do its thing.
+  // Snapshot is a local browser-side encode — failing here means a
+  // canvas / codec problem, not a "no container" verdict. Treat as
+  // a transient rejection so the user can re-aim and we try again.
   if (!blob) {
-    capturePhoto();
+    showGateRejection("couldn't read the frame, try again");
     return;
   }
   // The user can hit cancel during the in-flight LLM call. Bail out
@@ -1584,19 +1598,33 @@ async function confirmAndCapture() {
     return;
   }
   let result = null;
+  let gateError = null;
   try {
     result = await confirmContainerPresent(blob);
   } catch (err) {
-    // 503 / network / parse failure → null. Best-effort: better to let
-    // the user reach /v1/verify than to silently block the whole flow
-    // when the gate is unreachable.
+    gateError = err;
     console.warn("detect-container gate failed:", err);
   }
   if ($("camModal").hidden) {
     autoCaptureScheduled = false;
     return;
   }
-  if (result == null || result.detected) {
+  // FAIL CLOSED. Letting a 503 / timeout / network blip silently
+  // fall through to capturePhoto is exactly how a selfie reaches
+  // /v1/verify — the original failure mode this gate was added to
+  // prevent. On a gate error we surface a transient hint so the user
+  // can retry, but we do NOT proceed to capture.
+  if (gateError) {
+    const msg =
+      gateError.name === "AbortError"
+        ? "took too long to check, try again"
+        : gateError.code === "vision_unavailable"
+          ? "checker is offline for a moment, try again"
+          : "couldn't check the frame, try again";
+    showGateRejection(msg);
+    return;
+  }
+  if (result.detected) {
     capturePhoto();
     return;
   }
@@ -1943,28 +1971,33 @@ async function runVerification() {
   // much-more-expensive /v1/verify call so a selfie or a screenshot of
   // a wall doesn't burn a full pipeline run. Camera-flow submissions
   // (4 panels) already had panel 0 gated at capture time and skip
-  // this. Best-effort: any gate failure (503 / network) falls through
-  // to /v1/verify rather than block the user.
+  // this. FAIL CLOSED: a gate error (503 / timeout) bounces back to
+  // the scan view with a "try again" prompt rather than silently
+  // letting the user reach /v1/verify on an unverified image.
   if (state.panels.length === 1) {
     setProgressLabel("Checking image…", "Making sure there's a label to read.");
     const front = state.panels[0];
     let gate = null;
+    let gateError = null;
     try {
       gate = await confirmContainerPresent(front.blob, front.name || "frame.jpg");
     } catch (err) {
+      gateError = err;
       console.warn("detect-container gate failed:", err);
     }
-    if (gate && !gate.detected) {
-      // Bounce back to the scan view with the server's reason in the
-      // inline error region — same shape as the existing showScanError
-      // path so the user can pick up where they left off.
+    if (gateError || !gate.detected) {
       showView("scan");
       revokePanelUrls();
-      showScanError(
-        gate.reason
+      const msg = gateError
+        ? gateError.name === "AbortError"
+          ? "Took too long to pre-check the image. Try again, or check your connection."
+          : gateError.code === "vision_unavailable"
+            ? "The image checker is offline for a moment. Try again shortly."
+            : "Couldn't pre-check the image. Try again, or pick a different photo."
+        : gate.reason
           ? `That doesn't look like a beverage label — ${gate.reason}.`
-          : "That image doesn't look like a beverage label. Try a clearer photo of the front of the can or bottle."
-      );
+          : "That image doesn't look like a beverage label. Try a clearer photo of the front of the can or bottle.";
+      showScanError(msg);
       return;
     }
   }

@@ -248,9 +248,10 @@ def test_cache_miss_for_different_bytes():
 
 
 def test_timeout_maps_to_extractor_unavailable():
-    """The 8 s timeout (no retries) must surface as ExtractorUnavailable so
-    the route can render a 503 envelope. The SDK's `APITimeoutError` is
-    the thing `call_with_resilience` translates."""
+    """The pre-capture timeout (no retries) must surface as
+    ExtractorUnavailable so the route can render a 503 envelope. The
+    SDK's `APITimeoutError` is the thing `call_with_resilience`
+    translates."""
     request = _FakeRequest()
     timeout_exc = anthropic.APITimeoutError(request=request)
     client = _FakeClient(timeout_exc)

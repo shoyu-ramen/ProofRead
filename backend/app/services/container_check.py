@@ -37,7 +37,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.config import settings
 from app.services.anthropic_client import (
-    DEFAULT_SECOND_PASS_TIMEOUT_S,
     build_client,
     call_with_resilience,
 )
@@ -48,7 +47,15 @@ logger = logging.getLogger(__name__)
 # Pre-capture latency budget: retries hurt the user more than they help.
 # A flaky upstream is better surfaced as a one-shot 503 the UI can
 # render as "tap to retry" than as an 8 s × 3 cascade the user stares at.
-_PRE_CAPTURE_TIMEOUT_S = DEFAULT_SECOND_PASS_TIMEOUT_S
+#
+# Timeout sized for cold-start tolerance: warm calls return in 2-4 s but
+# the first request after a deploy can hit a cold worker and a cold
+# Anthropic connection together, pushing past 8 s. The default
+# second-pass budget (8 s) was tripping false 503s in prod and — paired
+# with the UI's older fail-open posture — let selfies leak through to
+# /v1/verify. 15 s gives cold paths headroom while still capping the
+# "Checking…" hint at something a user will actually wait through.
+_PRE_CAPTURE_TIMEOUT_S = 15.0
 _PRE_CAPTURE_MAX_RETRIES = 0
 
 # In-process LRU sized for the rapid-retry pattern: a user tapping the
