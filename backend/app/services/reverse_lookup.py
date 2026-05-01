@@ -75,7 +75,7 @@ import io
 import logging
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -390,7 +390,7 @@ class ReverseLookupCache:
                 # exceeds threshold.
                 worst = 0
                 ok = True
-                for query_h, entry_h in zip(signature, snap.signature):
+                for query_h, entry_h in zip(signature, snap.signature, strict=True):
                     d = hamming(query_h, entry_h)
                     if d > self._threshold:
                         ok = False

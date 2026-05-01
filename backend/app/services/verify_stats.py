@@ -20,7 +20,6 @@ from collections import Counter, deque
 from dataclasses import dataclass
 from typing import Literal
 
-
 # Outcome classes for the second-pass swallow path. Tracked separately so
 # operators can distinguish a systemic Anthropic outage (`extractor_unavailable`
 # spikes) from a one-off bad response (`malformed_json`) from a user-facing

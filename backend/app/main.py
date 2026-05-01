@@ -35,9 +35,9 @@ def _apply_alembic_migrations_sync() -> None:
     """
     from pathlib import Path
 
-    from alembic import command
     from alembic.config import Config
 
+    from alembic import command
     from app.config import settings
 
     # Locate alembic.ini relative to the backend package — works under

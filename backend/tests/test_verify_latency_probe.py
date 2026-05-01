@@ -18,13 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import json
 import sys
 from pathlib import Path
 
 import httpx
 import pytest
-
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "verify_latency.py"
 

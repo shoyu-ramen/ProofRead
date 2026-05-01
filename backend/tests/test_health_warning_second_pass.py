@@ -18,7 +18,7 @@ from app.services.health_warning_second_pass import (
     _parse_response,
     cross_check,
 )
-from app.services.verify import Panel, VerifyInput, verify
+from app.services.verify import VerifyInput, verify
 from app.services.vision import MockVisionExtractor
 
 CANONICAL = (
@@ -840,9 +840,9 @@ def test_no_second_pass_missing_warning_under_glare_is_advisory():
     returned no warning AND the capture report shows obstruction, the
     "warning missing" FAIL must downgrade to ADVISORY. This exercises
     `_downgrade_missing_warning_under_obstruction` directly."""
-    from app.rules.types import CheckOutcome as _CO
-    from app.rules.types import ExtractedField, ExtractionContext, RuleResult
-    from app.services.health_warning_second_pass import ObstructionSignal as _OS
+    from app.rules.types import CheckOutcome as _CO  # noqa: N814
+    from app.rules.types import ExtractionContext, RuleResult
+    from app.services.health_warning_second_pass import ObstructionSignal as _OS  # noqa: N814
     from app.services.verify import _downgrade_missing_warning_under_obstruction
 
     ctx = ExtractionContext(
@@ -1019,9 +1019,9 @@ def test_backstop_does_not_downgrade_edit_distance_fail_with_real_text():
     reader successfully transcribed — that's a substantive non-compliance
     we want to surface, glare or no glare. Only the "I see nothing"
     branch becomes advisory under obstruction."""
-    from app.rules.types import CheckOutcome as _CO
+    from app.rules.types import CheckOutcome as _CO  # noqa: N814
     from app.rules.types import ExtractedField, ExtractionContext, RuleResult
-    from app.services.health_warning_second_pass import ObstructionSignal as _OS
+    from app.services.health_warning_second_pass import ObstructionSignal as _OS  # noqa: N814
     from app.services.verify import _downgrade_missing_warning_under_obstruction
 
     ctx = ExtractionContext(
