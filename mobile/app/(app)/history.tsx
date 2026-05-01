@@ -8,11 +8,15 @@
  *
  * Pull-to-refresh re-runs the query — useful after a brand-new scan
  * lands while the user was on this screen.
+ *
+ * UI/UX pass: replaced the placeholder ActivityIndicator with a
+ * `<Skeleton>` row stack, the empty list with `<EmptyState>`, and the
+ * load-failure path with `<ErrorState>`. Each shows the user clearly
+ * "what's coming" or "what's wrong + how to recover".
  */
 
 import React, { useCallback } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   Pressable,
   RefreshControl,
@@ -23,7 +27,13 @@ import {
 import { router } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 
-import { Button, StatusBadge } from '@src/components';
+import {
+  EmptyState,
+  ErrorState,
+  Icon,
+  Skeleton,
+  StatusBadge,
+} from '@src/components';
 import { apiClient } from '@src/api/client';
 import { queryKeys } from '@src/state/queryClient';
 import { colors, radius, spacing, typography } from '@src/theme';
@@ -75,9 +85,12 @@ export default function HistoryScreen(): React.ReactElement {
 
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.center} edges={['top', 'bottom']}>
-        <ActivityIndicator color={colors.primary} />
-        <Text style={styles.muted}>Loading scans…</Text>
+      <SafeAreaView style={styles.root} edges={['top', 'bottom']}>
+        <View style={styles.skeletonList}>
+          {Array.from({ length: 6 }).map((_, i) => (
+            <SkeletonHistoryRow key={i} />
+          ))}
+        </View>
       </SafeAreaView>
     );
   }
@@ -85,11 +98,15 @@ export default function HistoryScreen(): React.ReactElement {
   if (error) {
     return (
       <SafeAreaView style={styles.center} edges={['top', 'bottom']}>
-        <Text style={styles.title}>Couldn't load history</Text>
-        <Text style={styles.muted}>
-          Check your connection and try again.
-        </Text>
-        <Button label="Retry" onPress={onRefresh} />
+        <ErrorState
+          title="Couldn't load history"
+          description="Check your connection and try again."
+          retry={onRefresh}
+          secondaryAction={{
+            label: 'Back to home',
+            onPress: () => router.replace('/(app)/home'),
+          }}
+        />
       </SafeAreaView>
     );
   }
@@ -99,13 +116,14 @@ export default function HistoryScreen(): React.ReactElement {
   if (items.length === 0) {
     return (
       <SafeAreaView style={styles.center} edges={['top', 'bottom']}>
-        <Text style={styles.title}>No scans yet</Text>
-        <Text style={styles.muted}>
-          Scan your first label to see it here.
-        </Text>
-        <Button
-          label="Scan your first label"
-          onPress={() => router.replace('/(app)/scan/setup')}
+        <EmptyState
+          icon="inbox"
+          title="No scans yet"
+          description="Scan your first label to see it here."
+          action={{
+            label: 'Scan your first label',
+            onPress: () => router.replace('/(app)/scan/setup'),
+          }}
         />
       </SafeAreaView>
     );
@@ -163,7 +181,29 @@ function HistoryRow({ item }: { item: HistoryItem }): React.ReactElement {
         </Text>
       </View>
       <StatusBadge status={item.overall} size="sm" />
+      {/* Disclosure chevron — SF Symbol on iOS, Feather on Android.
+          Hints that the row is tappable, the iOS list-row convention. */}
+      <Icon name="chevron-right" size={16} color={colors.textMuted} />
     </Pressable>
+  );
+}
+
+/**
+ * Skeleton row for the loading state. Sized to match HistoryRow's
+ * intrinsic geometry so the layout doesn't pop when real items arrive:
+ * a stretching title line, a shorter meta line, and a small status pill
+ * to the right.
+ */
+function SkeletonHistoryRow(): React.ReactElement {
+  return (
+    <View style={styles.row}>
+      <View style={styles.rowText}>
+        <Skeleton width="60%" height={18} radius={4} />
+        <View style={{ height: spacing.xs }} />
+        <Skeleton width="35%" height={13} radius={4} />
+      </View>
+      <Skeleton width={56} height={20} radius={radius.sm} />
+    </View>
   );
 }
 
@@ -178,20 +218,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: spacing.lg,
-    gap: spacing.md,
-  },
-  title: {
-    ...typography.title,
-    color: colors.text,
-    textAlign: 'center',
-  },
-  muted: {
-    ...typography.body,
-    color: colors.textMuted,
-    textAlign: 'center',
   },
   listContent: {
     padding: spacing.lg,
+  },
+  skeletonList: {
+    padding: spacing.lg,
+    gap: spacing.sm,
   },
   separator: {
     height: spacing.sm,
@@ -214,7 +247,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   rowTitle: {
-    ...typography.heading,
+    ...typography.headingSm,
     color: colors.text,
   },
   rowMeta: {
