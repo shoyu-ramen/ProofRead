@@ -278,7 +278,7 @@ def test_glare_blob_overlap_downgrades_fail_to_advisory():
     from app.rules.engine import RuleEngine
     from app.rules.loader import load_rules
     from app.rules.types import ExtractedField, ExtractionContext
-    from app.services.sensor_check import Bbox, GlareBlob, SurfaceCaptureQuality
+    from app.services.sensor_check import Bbox
     from app.services.verify import _downgrade_fails_for_glare_blob
 
     # Build a SurfaceCaptureQuality with one big saturated blob.

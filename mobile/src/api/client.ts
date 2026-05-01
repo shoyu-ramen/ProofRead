@@ -193,6 +193,55 @@ export class ApiClient {
       }
     );
   }
+
+  /**
+   * POST /v1/detect-container — pre-capture confirmation gate.
+   *
+   * Snapshots a single frame from the scan flow and asks the backend to
+   * locate a bottle / can / box. Used by the unwrap screen between
+   * `ready` and `scanning` so the user gets to confirm what the system
+   * sees before committing to a 8–15s panorama capture.
+   *
+   * Multipart upload — `image` form field, named `frame.jpg`. Auth
+   * header is attached via `request<T>()` like all other endpoints.
+   *
+   * The returned `bbox` is normalized to [0..1] in [x0, y0, x1, y1]
+   * order; the caller is responsible for converting to its own pixel
+   * (or DP) coordinate system.
+   */
+  async detectContainer(imageUri: string): Promise<DetectContainerResponse> {
+    const form = new FormData();
+    // RN's FormData accepts the `{uri, name, type}` object literal for
+    // file parts — same pattern Expo Image Picker / vision-camera docs
+    // recommend. Cast through `unknown` because the DOM lib types only
+    // know about Blob/string and complain about the RN file shape.
+    form.append('image', {
+      uri: imageUri,
+      name: 'frame.jpg',
+      type: 'image/jpeg',
+    } as unknown as Blob);
+    return this.request<DetectContainerResponse>('/v1/detect-container', {
+      method: 'POST',
+      // Do NOT set Content-Type: the runtime needs to fill in the
+      // multipart boundary. RN's fetch handles this automatically when
+      // the body is a FormData and Content-Type is absent.
+      body: form as unknown as BodyInit,
+    });
+  }
+}
+
+/**
+ * Response shape for `POST /v1/detect-container`. `bbox` is normalized
+ * to 0..1 in [x0, y0, x1, y1] order. When `detected` is false the
+ * `reason` string is a one-sentence user-facing hint (or null if the
+ * backend didn't supply one).
+ */
+export interface DetectContainerResponse {
+  detected: boolean;
+  container_type: 'bottle' | 'can' | 'box' | null;
+  bbox: [number, number, number, number] | null;
+  confidence: number;
+  reason: string | null;
 }
 
 // Default singleton; modules can also instantiate their own with

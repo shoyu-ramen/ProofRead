@@ -314,8 +314,9 @@ async def test_enrich_persists_to_l3_on_reverse_lookup_hit():
     service treats this identically to a cold-path report for L3
     upsert purposes — both have the data needed to write the row.
     """
-    from app.services.vision import VisionExtraction
     from unittest.mock import AsyncMock, MagicMock
+
+    from app.services.vision import VisionExtraction
 
     # Synthesize a "reverse-lookup hit" report: extraction reused from
     # a prior cold path, panel_signature carried through from that L2

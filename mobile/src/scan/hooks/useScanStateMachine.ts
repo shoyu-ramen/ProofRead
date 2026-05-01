@@ -30,6 +30,7 @@ import {
   INITIAL_SCAN_STATE,
   scanReducer,
   type AutoCaptureTimerState,
+  type DetectedContainerType,
   type FailReason,
   type PauseReason,
   type ScanAction,
@@ -88,8 +89,40 @@ export interface UseScanStateMachineResult {
    * away from `ready`.
    */
   manualOverrideAvailable: boolean;
+  /**
+   * True iff the auto-capture timer has latched (the predicate held
+   * for ≥ AUTO_CAPTURE_HOLD_MS). The unwrap screen consumes this to
+   * decide when to snapshot the frame and POST it to the
+   * /v1/detect-container gate — it's the *trigger* signal, distinct
+   * from `autoCaptureCandidate` which only flips per-frame.
+   */
+  autoCaptureLatched: boolean;
   /** Dispatch a manual-start action (consumes the override button). */
   manualStart: () => void;
+  /**
+   * Dispatch a `requestConfirmation` action with a captured snapshot
+   * URI — drives `ready → confirming{phase:'detecting'}`. Called by
+   * the unwrap screen once `cameraRef.current.takePhoto()` resolves.
+   */
+  requestConfirmation: (snapshotUri: string) => void;
+  /**
+   * Dispatch the backend response — drives `confirming{detecting} →
+   * confirming{detected|failed}`. The unwrap screen calls this after
+   * `apiClient.detectContainer()` resolves (or rejects).
+   */
+  detectionResolved: (
+    result:
+      | {
+          detected: true;
+          bbox: [number, number, number, number];
+          containerType: DetectedContainerType;
+        }
+      | { detected: false; reason: string | null },
+  ) => void;
+  /** User tapped "Start scan" while in `confirming{detected}`. */
+  confirmStart: () => void;
+  /** User tapped "Reshoot" / "Retry" while in any `confirming` sub-phase. */
+  confirmRetry: () => void;
 }
 
 /**
@@ -144,6 +177,12 @@ export function useScanStateMachine(
   // Latched manual-override flag. Once set, stays set until the user
   // leaves `ready` (manualStart, lost-bottle drop to aligning, fail).
   const [manualOverrideAvailable, setManualOverrideAvailable] = useState(false);
+  // Latched auto-capture flag — flips true the tick the 1.5s hold
+  // completes and stays true until the FSM leaves `ready`. The unwrap
+  // screen reads this to know when to snapshot a frame and POST to
+  // `/v1/detect-container`. Distinct from `autoCaptureCandidate`,
+  // which is per-frame.
+  const [autoCaptureLatched, setAutoCaptureLatched] = useState(false);
 
   const dispatchTick = useCallback(
     (inputs: ScanMachineInputs) => {
@@ -162,6 +201,7 @@ export function useScanStateMachine(
       preCheckReady: boolean;
       containerConfidence: number;
       gripSteadiness: number;
+      containerClassPresent: boolean;
     }) => {
       // Read the timestamp here, after the runOnJS hop. Reading it in
       // the worklet would let the value drift by 50–100ms under JS
@@ -230,6 +270,7 @@ export function useScanStateMachine(
         preCheckReady: raw.preCheckReady,
         containerConfidence: raw.containerConfidence,
         gripSteadiness: raw.gripSteadiness,
+        containerClassPresent: raw.containerClassPresent,
         inReady: stateKindRef.current === 'ready',
         readyEnteredAtMs: readyEnteredAtRef.current,
       });
@@ -250,13 +291,28 @@ export function useScanStateMachine(
           ? prev
           : autoTick.manualOverrideAvailable,
       );
+      // Same for the latched auto-capture flag — drives the unwrap
+      // screen's snapshot-and-detect trigger. Pre-capture gate: we no
+      // longer pass `autoTick.ready` straight through to the reducer
+      // as `autoCaptureReady`; the reducer's `ready → scanning` edge
+      // would skip the confirmation gate. Instead the unwrap screen
+      // watches `autoCaptureLatched` and dispatches
+      // `requestConfirmation` (with a snapshot URI) when it flips.
+      setAutoCaptureLatched((prev) =>
+        prev === autoTick.ready ? prev : autoTick.ready,
+      );
 
       dispatchTick({
         bottleSteady,
         coverage: raw.coverage,
         rotating: rotatingNow,
         pauseReason,
-        autoCaptureReady: autoTick.ready,
+        // Pre-capture gate: autoCaptureReady is force-set to false in
+        // the reducer's tick path so the FSM never auto-skips the
+        // `confirming` state. The unwrap screen reads
+        // `autoCaptureLatched` (above) to drive the snapshot+detect
+        // pipeline instead.
+        autoCaptureReady: false,
       });
     },
     [dispatchTick],
@@ -310,12 +366,15 @@ export function useScanStateMachine(
 
       // Auto-capture inputs — fed through to the JS-side timer in
       // applyInputs. preCheckReady is the simple kind===ready check;
-      // the worklet doesn't need to know about the 0.7 confidence
+      // the worklet doesn't need to know about the 0.85 confidence
       // floor (that lives in JS so it's tunable without a worklet
       // recompile).
       const preCheckReady = ts.preCheck.kind === 'ready';
       const containerConfidence = ts.silhouette.containerConfidence;
       const gripSteadiness = ts.gripSteadiness;
+      // Defense in depth alongside the 0.85 gate: a silhouette that
+      // doesn't classify as bottle/can must not fire the snapshot.
+      const containerClassPresent = ts.silhouette.class !== null;
 
       runOnJS(applyInputs)({
         steadyNow,
@@ -326,6 +385,7 @@ export function useScanStateMachine(
         preCheckReady,
         containerConfidence,
         gripSteadiness,
+        containerClassPresent,
       });
     },
     // Empty deps — the reaction body captures the SharedValue refs
@@ -354,16 +414,62 @@ export function useScanStateMachine(
     readyEnteredAtRef.current = null;
     setAutoCaptureCandidate(false);
     setManualOverrideAvailable(false);
+    setAutoCaptureLatched(false);
   }, []);
   const manualStart = useCallback(() => {
+    // Pre-capture gate: manualStart is no longer the trigger that
+    // drives `ready → scanning`. The unwrap screen handles the manual
+    // tap by snapshotting the frame and dispatching
+    // `requestConfirmation` itself; this dispatch is now a no-op
+    // safety net for callers that wired up the legacy contract. The
+    // timer reset below stays — when the user hits the override they
+    // shouldn't inherit stale window state.
     dispatch({ type: 'manualStart' } satisfies ScanAction);
-    // Clear the auto-capture timers so a re-entry to `ready` (e.g.
-    // lost-bottle then re-detect) starts the windows fresh rather
-    // than inheriting a stale "8 seconds elapsed" marker.
     autoCaptureTimerRef.current = INITIAL_AUTO_CAPTURE_TIMER;
     readyEnteredAtRef.current = null;
     setAutoCaptureCandidate(false);
     setManualOverrideAvailable(false);
+    setAutoCaptureLatched(false);
+  }, []);
+  const requestConfirmation = useCallback((snapshotUri: string) => {
+    dispatch({
+      type: 'requestConfirmation',
+      snapshotUri,
+    } satisfies ScanAction);
+    // The user is now mid-confirmation; clear the auto-capture timers
+    // so a `confirmRetry` (back to `aligning`) gives a clean re-arm
+    // window when they next reach `ready`.
+    autoCaptureTimerRef.current = INITIAL_AUTO_CAPTURE_TIMER;
+    setAutoCaptureCandidate(false);
+    setAutoCaptureLatched(false);
+  }, []);
+  const detectionResolved = useCallback(
+    (
+      result:
+        | {
+            detected: true;
+            bbox: [number, number, number, number];
+            containerType: DetectedContainerType;
+          }
+        | { detected: false; reason: string | null },
+    ) => {
+      dispatch({ type: 'detectionResolved', result } satisfies ScanAction);
+    },
+    [],
+  );
+  const confirmStart = useCallback(() => {
+    dispatch({ type: 'confirmStart' } satisfies ScanAction);
+  }, []);
+  const confirmRetry = useCallback(() => {
+    dispatch({ type: 'confirmRetry' } satisfies ScanAction);
+    // Mirrors `manualStart` / `reset`: dropping back to `aligning`
+    // resets the integrators so the next `ready` window starts clean.
+    steadySinceRef.current = null;
+    autoCaptureTimerRef.current = INITIAL_AUTO_CAPTURE_TIMER;
+    readyEnteredAtRef.current = null;
+    setAutoCaptureCandidate(false);
+    setManualOverrideAvailable(false);
+    setAutoCaptureLatched(false);
   }, []);
 
   // Track `scanning` entry/exit so applyInputs can apply the
@@ -405,6 +511,11 @@ export function useScanStateMachine(
       // animate into `scanning`.
       setAutoCaptureCandidate(false);
       setManualOverrideAvailable(false);
+      // Clear the latched-trigger flag too — once we've left `ready`
+      // (into `confirming`, `scanning`, or back to `aligning` from a
+      // lost-bottle drop) the snapshot trigger should not re-fire on
+      // re-entry until the predicate sustains again.
+      setAutoCaptureLatched(false);
       // Reset the auto-capture sustain timer so the next entry to
       // `ready` (after a lost-bottle drop, say) doesn't inherit a
       // partial hold or a stale latched override.
@@ -434,7 +545,12 @@ export function useScanStateMachine(
       reset,
       autoCaptureCandidate,
       manualOverrideAvailable,
+      autoCaptureLatched,
       manualStart,
+      requestConfirmation,
+      detectionResolved,
+      confirmStart,
+      confirmRetry,
     }),
     [
       state,
@@ -444,7 +560,12 @@ export function useScanStateMachine(
       reset,
       autoCaptureCandidate,
       manualOverrideAvailable,
+      autoCaptureLatched,
       manualStart,
+      requestConfirmation,
+      detectionResolved,
+      confirmStart,
+      confirmRetry,
     ],
   );
 }

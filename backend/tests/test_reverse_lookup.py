@@ -25,7 +25,6 @@ from app.services.reverse_lookup import (
 from app.services.vision import VisionExtraction
 from tests.conftest import _make_synthetic_png
 
-
 # ---------------------------------------------------------------------------
 # dhash + hamming
 # ---------------------------------------------------------------------------

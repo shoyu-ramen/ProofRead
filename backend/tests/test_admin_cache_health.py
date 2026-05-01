@@ -23,7 +23,6 @@ from app.services.external.ttb_cola import TTBColaAdapter
 from app.services.vision import MockVisionExtractor
 from tests.conftest import _make_synthetic_png
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

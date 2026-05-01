@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
-from app.api import admin, scans, verify
+from app.api import admin, detect, scans, verify
 from app.auth import _TEST_USER
 from app.db import dispose_engine, get_session_factory
 from app.models import Company, User
@@ -35,9 +35,9 @@ def _apply_alembic_migrations_sync() -> None:
     """
     from pathlib import Path
 
-    from alembic import command
     from alembic.config import Config
 
+    from alembic import command
     from app.config import settings
 
     # Locate alembic.ini relative to the backend package — works under
@@ -251,6 +251,7 @@ app.add_middleware(
 
 app.include_router(scans.router, prefix="/v1")
 app.include_router(verify.router, prefix="/v1")
+app.include_router(detect.router, prefix="/v1")
 app.include_router(admin.router, prefix="/v1")
 
 

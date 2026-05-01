@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import io
 import json
-from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -391,7 +390,7 @@ def test_endpoint_single_image_tags_panorama(monkeypatch):
     body = res.json()
     # panel_count is intentionally absent from the response model in v1.
     assert "panel_count" not in body
-    for name, info in body["extracted"].items():
+    for _name, info in body["extracted"].items():
         if info.get("value") is not None:
             assert info["source_image_id"] == "panorama"
 

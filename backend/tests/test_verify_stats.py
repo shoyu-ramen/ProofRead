@@ -72,10 +72,10 @@ def test_classify_other_exception():
     monotonically captures unknown failure modes — a spike in
     `other_error` is the signal to add a new classifier branch."""
 
-    class _Strange(RuntimeError):
+    class _StrangeError(RuntimeError):
         pass
 
-    assert verify_stats.classify_second_pass_exception(_Strange("?")) == "other_error"
+    assert verify_stats.classify_second_pass_exception(_StrangeError("?")) == "other_error"
 
 
 def test_snapshot_serializes_to_json():

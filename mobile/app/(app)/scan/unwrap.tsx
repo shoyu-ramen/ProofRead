@@ -32,6 +32,7 @@ import React, {
   useState,
 } from 'react';
 import {
+  LayoutChangeEvent,
   Pressable,
   StyleSheet,
   Text,
@@ -48,8 +49,10 @@ import {
 } from 'react-native-vision-camera';
 import { useDerivedValue, useSharedValue } from 'react-native-reanimated';
 import type { SkImage } from '@shopify/react-native-skia';
+import Svg, { Rect } from 'react-native-svg';
 
-import { Button } from '@src/components';
+import { Button, ErrorState, Skeleton } from '@src/components';
+import { apiClient } from '@src/api/client';
 import {
   PanoramaCanvas,
   stitchPanorama,
@@ -156,6 +159,24 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
   const screen = useWindowDimensions();
   const cameraRef = useRef<Camera>(null);
 
+  // Live measured size of the camera preview surface, used to map
+  // normalized bbox coords (0..1 from `/v1/detect-container`) into DP
+  // for the SVG overlay. Defaults to the window size on first render
+  // — the Camera component fills `StyleSheet.absoluteFill`, so the
+  // window size is the right approximation until onLayout fires.
+  const [previewLayout, setPreviewLayout] = useState<{
+    width: number;
+    height: number;
+  }>(() => ({ width: screen.width, height: screen.height }));
+  const handlePreviewLayout = useCallback((e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    setPreviewLayout((prev) =>
+      prev.width === width && prev.height === height
+        ? prev
+        : { width, height },
+    );
+  }, []);
+
   const setPanorama = useScanStore((s) => s.setPanorama);
   const appendFrame = useScanStore((s) => s.appendFrame);
   const clearScanCaptures = useScanStore((s) => s.clearScanCaptures);
@@ -180,7 +201,12 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
     reset,
     autoCaptureCandidate,
     manualOverrideAvailable,
+    autoCaptureLatched,
     manualStart,
+    requestConfirmation,
+    detectionResolved,
+    confirmStart,
+    confirmRetry,
   } = useScanStateMachine(
     tracker.trackerStateSv,
     tracker.frameTickSv,
@@ -300,6 +326,132 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
       }
     })();
   }, [state.kind, silhouetteSv]);
+
+  // Pre-capture confirmation gate (`confirming` state). Two trigger
+  // paths funnel into the same `requestConfirmation` dispatch:
+  //
+  //   1. Auto: `autoCaptureLatched` flips true once the on-device gate
+  //      sustains for ≥1500ms. We snapshot the frame and dispatch.
+  //   2. Manual: the user taps the override button after 8s in `ready`
+  //      without auto-latch — `handleManualStart` snapshots + dispatches.
+  //
+  // Both paths route through this effect's helper so the snapshot+dispatch
+  // sequence is owned in one place. A single-flight guard keeps a fast
+  // re-entry (auto-latch re-fires after a confirmRetry, say) from
+  // double-snapshotting — at most one `takePhoto()` is in flight at a
+  // time per `confirming` window.
+  const snapshotInFlightRef = useRef(false);
+  const triggerConfirmation = useCallback(async () => {
+    if (!cameraRef.current) return;
+    if (snapshotInFlightRef.current) return;
+    snapshotInFlightRef.current = true;
+    try {
+      const photo = await cameraRef.current.takePhoto({
+        flash: 'off',
+        enableShutterSound: false,
+      });
+      const snapshotUri = photo.path.startsWith('file://')
+        ? photo.path
+        : `file://${photo.path}`;
+      requestConfirmation(snapshotUri);
+    } catch (err) {
+      console.warn('[unwrap] confirmation snapshot failed', err);
+      // If the snapshot itself fails, we can't even start confirmation —
+      // bail out as a capture error so the user sees the failure card.
+      fail('capture_error');
+    } finally {
+      snapshotInFlightRef.current = false;
+    }
+  }, [requestConfirmation, fail]);
+
+  // Auto-path: when the gate latches while still in `ready`, snapshot
+  // and dispatch. The hook clears `autoCaptureLatched` on exit from
+  // `ready`, so this effect won't re-fire after the FSM has already
+  // moved into `confirming`.
+  useEffect(() => {
+    if (state.kind !== 'ready') return;
+    if (!autoCaptureLatched) return;
+    void triggerConfirmation();
+  }, [state.kind, autoCaptureLatched, triggerConfirmation]);
+
+  // Detect-container request: when the FSM enters `confirming{detecting}`,
+  // POST the snapshot and dispatch the resolved result. An AbortController-
+  // style flag lets a stale response (user already retried) drop on the
+  // floor instead of stomping the new state.
+  const detectInFlightRef = useRef(false);
+  useEffect(() => {
+    if (state.kind !== 'confirming') return;
+    if (state.phase !== 'detecting') return;
+    if (!state.snapshotUri) return;
+    if (detectInFlightRef.current) return;
+    let cancelled = false;
+    detectInFlightRef.current = true;
+    const uri = state.snapshotUri;
+    void (async () => {
+      try {
+        const result = await apiClient.detectContainer(uri);
+        if (cancelled) return;
+        if (result.detected && result.bbox && result.container_type) {
+          // The backend may classify into bottle | can | box; if the
+          // server returns a class that's not in our union (defensive
+          // future-proofing), surface it as a soft failure rather than
+          // crashing the screen.
+          const ct = result.container_type;
+          if (ct === 'bottle' || ct === 'can' || ct === 'box') {
+            detectionResolved({
+              detected: true,
+              bbox: result.bbox,
+              containerType: ct,
+            });
+            return;
+          }
+        }
+        detectionResolved({
+          detected: false,
+          reason: result.reason,
+        });
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('[unwrap] detectContainer failed', err);
+        detectionResolved({
+          detected: false,
+          reason: null,
+        });
+      } finally {
+        detectInFlightRef.current = false;
+      }
+    })();
+    return () => {
+      // Late-response guard: even if React tears down the effect
+      // before the fetch settles (e.g. user retried), the in-flight
+      // promise's then-handler will see `cancelled` and bail. The
+      // reducer is also defensive (detectionResolved is a no-op
+      // outside `confirming{detecting}`), but this avoids a noisy
+      // warn log on the new path.
+      cancelled = true;
+      detectInFlightRef.current = false;
+    };
+    // We deliberately key on the snapshotUri (not the whole `state`)
+    // so a re-render that doesn't change the URI doesn't restart the
+    // detect call.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.kind === 'confirming' ? state.phase : null,
+      state.kind === 'confirming' ? state.snapshotUri : null]);
+
+  // Manual-path snapshot: replaces the legacy `manualStart` dispatch
+  // — instead of jumping to `scanning`, take a snapshot and route
+  // through the same `confirming` gate as the auto-path.
+  const handleManualStart = useCallback(() => {
+    void triggerConfirmation();
+    // Clear the override-button affordance immediately so a double-tap
+    // doesn't take two snapshots. The hook clears `manualOverrideAvailable`
+    // on exit from `ready` (which `requestConfirmation` will trigger),
+    // but the dispatch is async — calling `manualStart` here makes the
+    // clear synchronous so the UI hides the button on the very next
+    // render. The `manualStart` action is itself a no-op now (kept for
+    // backwards-compat), so this is purely a UI sync.
+    manualStart();
+  }, [triggerConfirmation, manualStart]);
 
   // JS-side snapshots of tracker fields the React chrome reads. The
   // shared value updates at frame rate; the UI bands (instruction copy
@@ -478,14 +630,19 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
   // encode + the reveal animation. Cancelled also takes the camera
   // down so a back-press doesn't keep frames flowing during route
   // transition.
+  //
+  // `confirming` keeps the camera active so the live feed stays
+  // visible behind the bbox overlay (and so a `confirmRetry` drops
+  // straight back into a live `aligning` view without a black flash).
   const cameraActive =
     stateKind === 'aligning' ||
     stateKind === 'ready' ||
+    stateKind === 'confirming' ||
     stateKind === 'scanning' ||
     stateKind === 'paused';
 
   return (
-    <View style={styles.root}>
+    <View style={styles.root} onLayout={handlePreviewLayout}>
       <Camera
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
@@ -612,12 +769,14 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
           `ready` without the auto-capture predicate ever sustaining
           (dim labels, harsh contrast, anything the heuristic can't
           confidently classify). Sits above the instruction pill so
-          the user can tap their way through without hunting for it. */}
+          the user can tap their way through without hunting for it.
+          Tapping triggers the same snapshot+confirm flow as the auto
+          path — the user always sees the bbox confirmation. */}
       {stateKind === 'ready' && manualOverrideAvailable ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Tap to start scanning manually"
-          onPress={manualStart}
+          onPress={handleManualStart}
           style={({ pressed }) => [
             styles.manualStartButton,
             { bottom: insets.bottom + 96 + 56 },
@@ -628,6 +787,20 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
             Tap to start manually
           </Text>
         </Pressable>
+      ) : null}
+
+      {/* Pre-capture confirmation overlay. Three sub-phases share a
+          single overlay container — `ConfirmingOverlay` switches its
+          contents based on `state.phase` so the camera feed (and the
+          live silhouette/ring chrome above) stays unobstructed. */}
+      {state.kind === 'confirming' ? (
+        <ConfirmingOverlay
+          state={state}
+          previewWidth={previewLayout.width}
+          previewHeight={previewLayout.height}
+          onStart={confirmStart}
+          onRetry={confirmRetry}
+        />
       ) : null}
 
       {/* Progress dial — bottom-right, big number + caption. */}
@@ -650,6 +823,155 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
           onDismiss={handleCancel}
         />
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * ConfirmingOverlay — pre-capture confirmation gate (the `confirming`
+ * state). Three sub-phases:
+ *
+ *   - `detecting`  — Skeleton shimmer, "Looking for your drink..." caption.
+ *   - `detected`   — bbox stroke + container-type label + Start/Reshoot CTAs.
+ *   - `failed`     — ErrorState with retry → confirmRetry.
+ *
+ * The overlay sits above the camera preview (and the live silhouette /
+ * ring chrome above) but below the top chrome (cancel button, quality
+ * chip, panorama strip). The bbox stroke uses `colors.scanReady` so it
+ * reads as the "we found it" cue without competing with the warn/fail
+ * palettes.
+ */
+function ConfirmingOverlay({
+  state,
+  previewWidth,
+  previewHeight,
+  onStart,
+  onRetry,
+}: {
+  state: Extract<
+    ReturnType<typeof useScanStateMachine>['state'],
+    { kind: 'confirming' }
+  >;
+  previewWidth: number;
+  previewHeight: number;
+  onStart: () => void;
+  onRetry: () => void;
+}): React.ReactElement {
+  const insets = useSafeAreaInsets();
+  if (state.phase === 'detecting') {
+    return (
+      <View
+        accessibilityLiveRegion="polite"
+        accessibilityRole="alert"
+        style={styles.confirmingScrim}
+      >
+        {/* Full-bleed skeleton: a single tall pulse gives the user a
+            visual cue that something is happening over the camera
+            feed without occluding the silhouette underneath. */}
+        <View pointerEvents="none" style={styles.confirmingSkeletonWrap}>
+          <Skeleton
+            width={Math.max(0, Math.min(previewWidth - spacing.xl * 2, 280))}
+            height={420}
+            radius={scanGeometry.silhouetteCornerRadius}
+            style={styles.confirmingSkeleton}
+          />
+        </View>
+        <View style={styles.confirmingCaptionWrap}>
+          <Text style={styles.confirmingCaption}>
+            Looking for your drink...
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (state.phase === 'detected' && state.bbox) {
+    // Convert normalized [x0, y0, x1, y1] → DP rect on the preview
+    // surface. react-native-svg renders in DP, so we don't need to
+    // multiply by PixelRatio — the camera fills the screen so the
+    // measured layout dims are the right canvas.
+    const [x0, y0, x1, y1] = state.bbox;
+    const x = x0 * previewWidth;
+    const y = y0 * previewHeight;
+    const w = Math.max(0, (x1 - x0) * previewWidth);
+    const h = Math.max(0, (y1 - y0) * previewHeight);
+    const labelText = (state.containerType ?? 'container').toUpperCase();
+    return (
+      <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+        {/* Bbox stroke + soft inner shadow. We use two concentric Rects:
+            the outer is a faint glow (fill rgba), the inner is the
+            crisp 3px stroke. */}
+        <Svg
+          pointerEvents="none"
+          width={previewWidth}
+          height={previewHeight}
+          style={StyleSheet.absoluteFill}
+        >
+          <Rect
+            x={x - 2}
+            y={y - 2}
+            width={w + 4}
+            height={h + 4}
+            rx={10}
+            ry={10}
+            fill="none"
+            stroke={colors.scanReadySoft}
+            strokeWidth={6}
+          />
+          <Rect
+            x={x}
+            y={y}
+            width={w}
+            height={h}
+            rx={8}
+            ry={8}
+            fill="none"
+            stroke={colors.scanReady}
+            strokeWidth={3}
+          />
+        </Svg>
+        {/* Container-type label chip — sits above the bbox if there's
+            room; falls back to inside the bbox at the top edge if the
+            bbox is up against the screen top. */}
+        <View
+          pointerEvents="none"
+          style={[
+            styles.confirmingLabelChip,
+            {
+              left: x,
+              top: Math.max(insets.top + spacing.sm, y - 30),
+            },
+          ]}
+        >
+          <Text style={styles.confirmingLabelText}>{labelText}</Text>
+        </View>
+        {/* Action row at the bottom — Start scan (primary) + Reshoot
+            (ghost). */}
+        <View
+          style={[
+            styles.confirmingActions,
+            { bottom: insets.bottom + spacing.lg },
+          ]}
+        >
+          <Button label="Start scan" onPress={onStart} />
+          <Button label="Reshoot" variant="ghost" onPress={onRetry} />
+        </View>
+      </View>
+    );
+  }
+
+  // phase === 'failed' (or detected without bbox — defensive fallback).
+  return (
+    <View style={styles.confirmingFailedWrap}>
+      <ErrorState
+        title="We can't see a bottle or can."
+        description={
+          state.failureReason ??
+          'Make sure your drink is centered in the frame and try again.'
+        }
+        retry={onRetry}
+        retryLabel="Try again"
+      />
     </View>
   );
 }
@@ -784,5 +1106,77 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0.2,
     textAlign: 'center',
+  },
+  // --- Pre-capture confirmation overlay ---
+  // The detecting scrim sits over the camera feed at low opacity so
+  // the live preview is still visible underneath — gives the user
+  // confidence the camera hasn't frozen while we wait on the
+  // backend. The Skeleton inside provides the "still loading" pulse.
+  confirmingScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: colors.scanOverlayScrim,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmingSkeletonWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  confirmingSkeleton: {
+    opacity: 0.4,
+  },
+  confirmingCaptionWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: '30%',
+    alignItems: 'center',
+  },
+  confirmingCaption: {
+    ...typography.headingSm,
+    color: colors.scanInk,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: 999,
+    backgroundColor: colors.scanOverlayDim,
+    overflow: 'hidden',
+  },
+  // Bbox label chip — small all-caps badge announcing the detected
+  // class. Reuses scanReadySoft for the background to echo the
+  // bbox stroke's accent without competing with it.
+  confirmingLabelChip: {
+    position: 'absolute',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: colors.scanReadySoft,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.scanReady,
+  },
+  confirmingLabelText: {
+    ...typography.label,
+    color: colors.scanReady,
+  },
+  // Action row sits flush to the bottom safe-area inset; gap between
+  // primary + ghost buttons matches the failure-card pattern so the
+  // affordances feel like the same family of UI.
+  confirmingActions: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    gap: spacing.md,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // Failed-card wrap: the ErrorState owns its own padding/layout, so
+  // we just position-anchor it in the center over a low-opacity scrim.
+  confirmingFailedWrap: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: colors.scanOverlayDim,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
