@@ -103,6 +103,17 @@ If detected=false:
   * reason: one short user-facing sentence ("appears to be a selfie", \
 "looks like a bare wall", "no container or label in frame")
 
+If detected=true AND the label text is legible enough:
+  * brand_name: the brand or producer name visible on the label, as \
+printed (e.g. "Sierra Nevada", "Dogfish Head"). Omit / null if not \
+legible.
+  * net_contents: the net contents declaration as printed on the label \
+(e.g. "12 FL OZ (355 mL)", "500 mL"). Omit / null if not legible.
+
+These fields are OPTIONAL context for downstream recognition — they \
+do not affect whether detected is true or false. When in doubt, set \
+detected=true and leave brand_name/net_contents null.
+
 Output format: a single JSON object matching the provided schema. No \
 Markdown fences, no commentary, no prose."""
 
@@ -131,6 +142,25 @@ class ContainerDetection(BaseModel):
     reason: str | None = Field(
         default=None,
         description="Required when detected=False; explains the rejection.",
+    )
+    # Optional best-effort recognition signals. NEVER gating —
+    # `detected=True` may carry a null brand_name/net_contents when the
+    # label text isn't legible enough. The known-label probe at
+    # `/v1/detect-container` uses these to short-circuit the panorama
+    # scan when the backend recognizes the label by brand alone.
+    brand_name: str | None = Field(
+        default=None,
+        description=(
+            "Brand or producer name visible on the label, as printed. "
+            "Null when not legible."
+        ),
+    )
+    net_contents: str | None = Field(
+        default=None,
+        description=(
+            "Net contents declaration as printed (e.g. '12 FL OZ "
+            "(355 mL)'). Null when not legible."
+        ),
     )
 
     @model_validator(mode="after")

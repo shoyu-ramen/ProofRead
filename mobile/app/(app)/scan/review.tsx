@@ -60,6 +60,13 @@ export default function ReviewScreen(): React.ReactElement {
   const isImported = useScanStore((s) => s.isImported);
   const panorama = useScanStore((s) => s.panorama);
   const setScanId = useScanStore((s) => s.setScanId);
+  // Threaded through to /finalize so enrichment can stamp the L3 cache
+  // row's first_frame_signature_hex (KNOWN_LABEL_DESIGN.md Decision 6).
+  // null when detect-container didn't return a hash (e.g. older backend
+  // or the call failed) — finalize tolerates absence.
+  const firstFrameSignatureHex = useScanStore(
+    (s) => s.firstFrameSignatureHex,
+  );
 
   const [phase, setPhase] = useState<Phase>('submitting');
   const [error, setError] = useState<ErrorState | null>(null);
@@ -111,7 +118,9 @@ export default function ReviewScreen(): React.ReactElement {
 
       setPhase('analyzing');
       await runWithTimeout(
-        apiClient.finalizeScan(created.scan_id),
+        apiClient.finalizeScan(created.scan_id, {
+          firstFrameSignatureHex,
+        }),
         FINALIZE_TIMEOUT_MS,
         controller.signal,
       );
@@ -146,6 +155,7 @@ export default function ReviewScreen(): React.ReactElement {
     panorama,
     setScanId,
     showToast,
+    firstFrameSignatureHex,
   ]);
 
   useEffect(() => {

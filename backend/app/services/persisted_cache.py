@@ -327,12 +327,17 @@ class PersistedLabelCache:
         identical to a row already in the table — same labels in the
         same panel order. On exact-match we refresh the extraction
         (the cold path may have produced a higher-confidence read
-        than the cached one) and update ``updated_at`` / ``last_seen_at``.
-        Enrichment columns are left alone — they belong to other
-        workstreams and are written via the dedicated update methods.
+        than the cached one), update ``updated_at`` / ``last_seen_at``,
+        and re-derive ``brand_name_normalized`` from the freshly stored
+        extraction so the index never goes stale relative to the JSON.
+        Other enrichment columns (TTB COLA, AI explanations,
+        ``first_frame_signature_hex``) are left alone — they belong to
+        other workstreams and are written via the dedicated update
+        methods / ``enrich_verdict``'s post-upsert stamp.
         """
         sig_hex = signature_to_hex(signature)
         extraction_json = extraction_to_dict(_freeze_extraction(extraction))
+        brand_norm = _brand_normalized_from_extraction(extraction_json)
         factory = self._factory()
         async with factory() as session:
             stmt = select(LabelCacheEntry).where(
@@ -348,6 +353,7 @@ class PersistedLabelCache:
                     .where(LabelCacheEntry.id == existing.id)
                     .values(
                         extraction_json=extraction_json,
+                        brand_name_normalized=brand_norm,
                         last_seen_at=now,
                     )
                 )
@@ -358,6 +364,8 @@ class PersistedLabelCache:
                 beverage_type=beverage_type,
                 panel_count=len(signature),
                 signature_hex=sig_hex,
+                brand_name_normalized=brand_norm,
+                first_frame_signature_hex=None,
                 extraction_json=extraction_json,
                 external_match_json=None,
                 explanations_json=None,
@@ -366,6 +374,226 @@ class PersistedLabelCache:
             session.add(entry)
             await session.commit()
             return entry.id
+
+    async def lookup_by_brand(
+        self,
+        beverage_type: str | None,
+        brand_name: str,
+    ) -> PersistedHit | None:
+        """Return the best-matching row whose ``brand_name_normalized``
+        equals the supplied brand_name (case-insensitive, stripped).
+
+        ``beverage_type=None`` queries across every type — the
+        detect-container gate has the user's declared brand but doesn't
+        always know the beverage type at probe time.
+
+        Fail-honestly (SPEC §0.5): a candidate row is ineligible if its
+        cached extraction was a low-confidence read. Proxy:
+        ``extraction_json["fields"]["brand_name"]["confidence"] < 0.5``.
+        Returning a recognition payload built off a downgraded extraction
+        would let a stale or disputed read drive the user past the scan
+        flow with a confident-looking "view results" affordance.
+        """
+        if not brand_name or not brand_name.strip():
+            return None
+        normalized = brand_name.strip().lower()
+        factory = self._factory()
+        async with factory() as session:
+            stmt = (
+                select(LabelCacheEntry)
+                .where(LabelCacheEntry.brand_name_normalized == normalized)
+                .order_by(
+                    LabelCacheEntry.hit_count.desc(),
+                    LabelCacheEntry.last_seen_at.desc(),
+                )
+                .limit(5)
+            )
+            if beverage_type is not None:
+                stmt = stmt.where(LabelCacheEntry.beverage_type == beverage_type)
+            rows = (await session.scalars(stmt)).all()
+            if not rows:
+                return None
+
+            chosen: LabelCacheEntry | None = None
+            for row in rows:
+                if _row_extraction_is_eligible(row.extraction_json):
+                    chosen = row
+                    break
+            if chosen is None:
+                return None
+
+            now = datetime.now(UTC)
+            await session.execute(
+                update(LabelCacheEntry)
+                .where(LabelCacheEntry.id == chosen.id)
+                .values(
+                    hit_count=LabelCacheEntry.hit_count + 1,
+                    last_seen_at=now,
+                )
+            )
+            await session.commit()
+
+            extraction = extraction_from_dict(chosen.extraction_json)
+            row_signature = signature_from_hex(chosen.signature_hex)
+            return PersistedHit(
+                entry_id=chosen.id,
+                extraction=extraction,
+                external_match=(
+                    dict(chosen.external_match_json)
+                    if chosen.external_match_json is not None
+                    else None
+                ),
+                explanations=(
+                    dict(chosen.explanations_json)
+                    if chosen.explanations_json is not None
+                    else None
+                ),
+                # Brand match is not a Hamming probe — distance is N/A,
+                # surface a sentinel zero so downstream tuning logic
+                # doesn't misread the field.
+                min_distance=0,
+                signature=row_signature,
+            )
+
+    async def lookup_by_first_frame(
+        self,
+        signature_hex: str,
+        beverage_type: str | None = None,
+    ) -> PersistedHit | None:
+        """Return any row whose ``first_frame_signature_hex`` lies within
+        ``self._threshold`` of ``signature_hex``.
+
+        Decodes both hashes to 64-bit ints and uses the same Hamming
+        helper as the panel-signature lookup so the tuning pivot
+        (``self._threshold``) stays consistent.
+
+        Fail-honestly: same eligibility filter as ``lookup_by_brand``
+        — skip rows whose cached brand_name extraction was a
+        low-confidence read.
+        """
+        if not signature_hex or not signature_hex.strip():
+            return None
+        try:
+            query_int = int(signature_hex.strip(), 16)
+        except ValueError:
+            return None
+
+        factory = self._factory()
+        async with factory() as session:
+            stmt = select(LabelCacheEntry).where(
+                LabelCacheEntry.first_frame_signature_hex.is_not(None)
+            )
+            if beverage_type is not None:
+                stmt = stmt.where(LabelCacheEntry.beverage_type == beverage_type)
+            rows = (await session.scalars(stmt)).all()
+
+            best_row: LabelCacheEntry | None = None
+            best_distance = self._threshold + 1
+
+            for row in rows:
+                row_hex = (row.first_frame_signature_hex or "").strip()
+                if not row_hex:
+                    continue
+                try:
+                    row_int = int(row_hex, 16)
+                except ValueError:
+                    continue
+                d = hamming(query_int, row_int)
+                if d > self._threshold:
+                    continue
+                if not _row_extraction_is_eligible(row.extraction_json):
+                    continue
+                if d < best_distance:
+                    best_distance = d
+                    best_row = row
+                    if d == 0:
+                        break
+
+            if best_row is None:
+                return None
+
+            now = datetime.now(UTC)
+            await session.execute(
+                update(LabelCacheEntry)
+                .where(LabelCacheEntry.id == best_row.id)
+                .values(
+                    hit_count=LabelCacheEntry.hit_count + 1,
+                    last_seen_at=now,
+                )
+            )
+            await session.commit()
+
+            extraction = extraction_from_dict(best_row.extraction_json)
+            row_signature = signature_from_hex(best_row.signature_hex)
+            return PersistedHit(
+                entry_id=best_row.id,
+                extraction=extraction,
+                external_match=(
+                    dict(best_row.external_match_json)
+                    if best_row.external_match_json is not None
+                    else None
+                ),
+                explanations=(
+                    dict(best_row.explanations_json)
+                    if best_row.explanations_json is not None
+                    else None
+                ),
+                min_distance=best_distance,
+                signature=row_signature,
+            )
+
+    async def stamp_first_frame_signature(
+        self, entry_id: uuid.UUID, signature_hex: str
+    ) -> None:
+        """Idempotently stamp ``first_frame_signature_hex`` on a row.
+
+        ``IS NULL`` guard so a label scanned multiple times only ever
+        records the first observed frame hash — subsequent finalizes
+        no-op. Centralizing the write here keeps ``finalize_scan`` from
+        touching the L3 row directly (only ``enrich_verdict`` does).
+        """
+        if not signature_hex or not signature_hex.strip():
+            return
+        normalized = signature_hex.strip().lower()
+        factory = self._factory()
+        async with factory() as session:
+            await session.execute(
+                update(LabelCacheEntry)
+                .where(
+                    LabelCacheEntry.id == entry_id,
+                    LabelCacheEntry.first_frame_signature_hex.is_(None),
+                )
+                .values(first_frame_signature_hex=normalized)
+            )
+            await session.commit()
+
+    async def stamp_brand_name_normalized(
+        self, entry_id: uuid.UUID, brand_name: str | None
+    ) -> None:
+        """Idempotently stamp ``brand_name_normalized`` on a row.
+
+        ``IS NULL`` guard so the column never silently rewrites itself
+        on subsequent scans. The ``upsert`` path also writes this
+        column from the same extraction; this helper exists so a
+        downstream caller (``enrich_verdict``) can stamp the field
+        without re-running ``upsert`` when the row already existed.
+        """
+        if brand_name is None:
+            return
+        normalized = brand_name.strip().lower()
+        if not normalized:
+            return
+        factory = self._factory()
+        async with factory() as session:
+            await session.execute(
+                update(LabelCacheEntry)
+                .where(
+                    LabelCacheEntry.id == entry_id,
+                    LabelCacheEntry.brand_name_normalized.is_(None),
+                )
+                .values(brand_name_normalized=normalized)
+            )
+            await session.commit()
 
     async def update_external_match(
         self, entry_id: uuid.UUID, match: dict | None
@@ -457,6 +685,54 @@ class PersistedLabelCache:
                     }
                 )
             return results
+
+
+def _brand_normalized_from_extraction(
+    extraction_json: dict[str, Any],
+) -> str | None:
+    """Lift ``fields.brand_name.value`` out of the JSON form, lower + strip.
+
+    Returns ``None`` when the brand isn't present, isn't a string, or
+    normalizes to empty. Matched at upsert time (when we already have
+    the dict form) and re-derived in ``stamp_brand_name_normalized`` /
+    enrichment to keep the index aligned with the row's content.
+    """
+    fields = extraction_json.get("fields") if isinstance(extraction_json, dict) else None
+    if not isinstance(fields, dict):
+        return None
+    info = fields.get("brand_name")
+    if not isinstance(info, dict):
+        return None
+    value = info.get("value")
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def _row_extraction_is_eligible(extraction_json: Any) -> bool:
+    """Fail-honestly gate for the known-label lookups (SPEC §0.5).
+
+    A cached row is ineligible when its ``brand_name`` confidence
+    indicates a low-quality or downgraded read — proxy for the
+    cross-check disagreement / health-warning advisory cases. Returning
+    a recognition payload built off such a row would let the user
+    skip the panorama capture on a row whose verdict we already
+    refused to stand behind.
+    """
+    if not isinstance(extraction_json, dict):
+        return False
+    fields = extraction_json.get("fields")
+    if not isinstance(fields, dict):
+        return False
+    info = fields.get("brand_name")
+    if not isinstance(info, dict):
+        return False
+    confidence = info.get("confidence")
+    try:
+        return float(confidence) >= 0.5
+    except (TypeError, ValueError):
+        return False
 
 
 def _freeze_extraction(extraction: VisionExtraction) -> VisionExtraction:

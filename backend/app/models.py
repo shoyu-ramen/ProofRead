@@ -210,6 +210,23 @@ class LabelCacheEntry(Base):
     # order. Decoded back to a tuple by ``signature_from_hex`` at lookup
     # time so per-panel Hamming distance can be computed in Python.
     signature_hex: Mapped[str] = mapped_column(String(128))
+    # Lower-cased + stripped brand name lifted from
+    # ``extraction_json["fields"]["brand_name"]["value"]`` at upsert time
+    # (and idempotently restamped post-upsert by ``enrich_verdict``).
+    # Indexed for the known-label brand lookup. Nullable for rows that
+    # predate the column or whose extraction never read a brand.
+    brand_name_normalized: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, index=True
+    )
+    # 16-char lowercase hex of the detect-container frame's dhash.
+    # Stamped post-finalize via an ``IS NULL`` guard so the first
+    # observed frame wins; subsequent scans of the same label do not
+    # overwrite it. Not indexed: queries always pre-filter on
+    # ``beverage_type`` (or omit it) and Hamming-scan the candidate set
+    # in Python, same as ``signature_hex``.
+    first_frame_signature_hex: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
     extraction_json: Mapped[dict] = mapped_column(JSON)
     external_match_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     explanations_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

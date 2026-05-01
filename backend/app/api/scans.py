@@ -24,8 +24,9 @@ import time
 import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,17 +36,23 @@ from app.config import settings
 from app.db import get_session
 from app.models import (
     ExtractedFieldRow,
+    LabelCacheEntry,
     OCRResultRow,
     Report,
     RuleResultRow,
     Scan,
     ScanImage,
 )
+from app.rules.aggregation import overall_status as aggregate_overall_status
+from app.rules.engine import RuleEngine
+from app.rules.loader import load_rules
+from app.rules.types import CheckOutcome, ExtractionContext
 from app.services.enrichment import enrich_verdict
 from app.services.extractors.claude_vision import (
     ClaudeVisionExtractor,
 )
 from app.services.ocr import OCRProvider, OCRResult, get_default_provider
+from app.services.persisted_cache import extraction_from_dict
 from app.services.pipeline import ScanInput, VisionExtractor, process_scan
 from app.services.reverse_lookup import compute_dhash_bytes
 from app.services.storage import StorageBackend, get_default_storage, scan_image_key
@@ -145,6 +152,31 @@ class HistoryResponse(BaseModel):
 
 class FlagRuleResultRequest(BaseModel):
     comment: str
+
+
+class FromCacheRequest(BaseModel):
+    """Body for `POST /v1/scans/from-cache`.
+
+    The mobile UI takes the `KnownLabelPayload` returned by
+    `/v1/detect-container`, hands it to the user as a "we recognized
+    this" sheet, and POSTs back here on confirm. The user's actual
+    container_size_ml + is_imported come from the same payload (the
+    detect-container route derived them off the cached row), but the
+    mobile UI is allowed to override them — e.g. a 12-pack vs single can
+    of the same SKU.
+    """
+
+    entry_id: str
+    beverage_type: str = Field(pattern="^(beer|wine|spirits)$")
+    container_size_ml: int = Field(gt=0, le=10_000)
+    is_imported: bool = False
+
+
+class FromCacheResponse(BaseModel):
+    scan_id: str
+    status: str
+    overall: str
+    image_quality: str
 
 
 def get_ocr_provider() -> OCRProvider:
@@ -304,6 +336,158 @@ async def create_scan(
     return CreateScanResponse(scan_id=str(scan.id), upload_urls=upload_urls)
 
 
+@router.post(
+    "/from-cache",
+    response_model=FromCacheResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_scan_from_cache(
+    req: FromCacheRequest,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> FromCacheResponse:
+    """Materialize a `Scan` from a previously-verified L3 cache entry.
+
+    Flow:
+      1. Resolve the `entry_id` to a `LabelCacheEntry` row (404 if
+         missing or its `extraction_json` is null/empty).
+      2. Re-run the rule engine FRESH with `req.container_size_ml` +
+         `req.is_imported` — we never serve the explanations cached on
+         the row as a verdict, only as supplemental context. The rule
+         engine is the deterministic judge.
+      3. Persist a `Scan` (`container_size_source="cache"`),
+         `ExtractedFieldRow`s from the cached extraction, a `Report` +
+         `RuleResultRow`s from the fresh rule eval, and the cache row's
+         enrichment fields (external_match + per-rule explanations).
+      4. Return the same shape `/v1/scans/{id}/finalize` does so the
+         mobile client can navigate to the report screen identically.
+
+    No `ScanImage` rows are created — the UI's "View results" path
+    skips the panorama capture entirely and the report screen tolerates
+    missing image rows.
+    """
+    try:
+        entry_uuid = uuid.UUID(req.entry_id)
+    except (TypeError, ValueError):
+        raise HTTPException(404, "label cache entry not found") from None
+
+    entry = await session.scalar(
+        select(LabelCacheEntry).where(LabelCacheEntry.id == entry_uuid)
+    )
+    if entry is None or not entry.extraction_json:
+        raise HTTPException(404, "label cache entry not found")
+
+    # Rebuild the cached extraction in its dataclass form so we can feed
+    # it through the rule engine and persist its fields.
+    extraction = extraction_from_dict(entry.extraction_json)
+
+    rules = load_rules(beverage_type=req.beverage_type)
+    if not rules:
+        raise HTTPException(
+            422,
+            f"no rules configured for beverage_type={req.beverage_type!r}",
+        )
+    engine = RuleEngine(rules)
+    ctx = ExtractionContext(
+        fields=dict(extraction.fields),
+        beverage_type=req.beverage_type,
+        container_size_ml=req.container_size_ml,
+        is_imported=req.is_imported,
+        unreadable_fields=list(extraction.unreadable),
+    )
+    rule_results = engine.evaluate(ctx)
+
+    image_quality = extraction.image_quality or "good"
+    image_quality_notes = extraction.image_quality_notes
+    overall = aggregate_overall_status(
+        rule_results,
+        image_quality=image_quality,
+        unreadable_fields=list(extraction.unreadable),
+    )
+
+    rule_versions = sorted({str(r.rule_version) for r in rule_results})
+    rule_version_str = ",".join(rule_versions) if rule_versions else "1"
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    scan = Scan(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        beverage_type=req.beverage_type,
+        container_size_ml=req.container_size_ml,
+        is_imported=req.is_imported,
+        status="complete",
+        container_size_source="cache",
+        completed_at=now,
+    )
+    session.add(scan)
+    await session.flush()
+
+    for name, fe in extraction.fields.items():
+        bbox_value: Any = list(fe.bbox) if fe.bbox is not None else None
+        session.add(
+            ExtractedFieldRow(
+                id=uuid.uuid4(),
+                scan_id=scan.id,
+                field_id=name,
+                value=fe.value,
+                bbox=bbox_value,
+                confidence=float(fe.confidence),
+                source_image_id=None,
+            )
+        )
+
+    report_row = Report(
+        id=uuid.uuid4(),
+        scan_id=scan.id,
+        overall=overall,
+        rule_version=rule_version_str,
+        image_quality=image_quality,
+        image_quality_notes=image_quality_notes,
+        extractor="cache",
+        external_match_json=(
+            dict(entry.external_match_json)
+            if entry.external_match_json is not None
+            else None
+        ),
+    )
+    session.add(report_row)
+    await session.flush()
+
+    explanations = (
+        dict(entry.explanations_json) if entry.explanations_json else {}
+    )
+    for r in rule_results:
+        status_str = (
+            r.status.value if isinstance(r.status, CheckOutcome) else str(r.status)
+        )
+        session.add(
+            RuleResultRow(
+                id=uuid.uuid4(),
+                report_id=report_row.id,
+                rule_id=r.rule_id,
+                rule_version=r.rule_version,
+                status=status_str,
+                finding=r.finding,
+                expected=r.expected,
+                citation=r.citation,
+                fix_suggestion=r.fix_suggestion,
+                bbox=list(r.bbox) if r.bbox is not None else None,
+                image_id=None,
+                surface=r.surface,
+                explanation=explanations.get(r.rule_id),
+            )
+        )
+
+    await session.commit()
+
+    return FromCacheResponse(
+        scan_id=str(scan.id),
+        status="complete",
+        overall=overall,
+        image_quality=image_quality,
+    )
+
+
 @router.put("/{scan_id}/upload/{surface}", status_code=status.HTTP_204_NO_CONTENT)
 async def upload_image(
     scan_id: str,
@@ -370,6 +554,7 @@ async def upload_image(
 @router.post("/{scan_id}/finalize", response_model=ScanStatusResponse)
 async def finalize_scan(
     scan_id: str,
+    first_frame_signature_hex: str | None = Form(default=None),
     session: AsyncSession = Depends(get_session),
     ocr: OCRProvider = Depends(get_ocr_provider),
     vision: VisionExtractor | None = Depends(get_vision_extractor),
@@ -531,6 +716,7 @@ async def finalize_scan(
             persisted_cache=persisted_cache,
             persisted_hit=persisted_hit,
             signature=scan_signature,
+            first_frame_signature_hex=first_frame_signature_hex,
         )
         if enrichment.external_match is not None:
             report_row.external_match_json = enrichment.external_match
