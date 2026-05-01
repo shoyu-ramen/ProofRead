@@ -30,15 +30,19 @@ def check_presence(params: dict, ctx: ExtractionContext) -> CheckResult:
     return CheckResult(outcome=CheckOutcome.PASS, bbox=bbox)
 
 
-def check_regex(params: dict, ctx: ExtractionContext) -> CheckResult:
-    field = params["field"]
-    pattern = params["pattern"]
-    flags_str = params.get("flags", "")
-    optional = params.get("optional", False)
-
+def _parse_regex_flags(flags_str: str) -> int:
+    """Translate the YAML-friendly `flags: i` shorthand to a `re` bitmask."""
     flags = 0
     if "i" in flags_str.lower():
         flags |= re.IGNORECASE
+    return flags
+
+
+def check_regex(params: dict, ctx: ExtractionContext) -> CheckResult:
+    field = params["field"]
+    pattern = params["pattern"]
+    flags = _parse_regex_flags(params.get("flags", ""))
+    optional = params.get("optional", False)
 
     value, bbox = _get_field_value(ctx, field)
     if value is None or not value.strip():
@@ -414,6 +418,107 @@ def check_cross_reference_volume(params: dict, ctx: ExtractionContext) -> CheckR
     )
 
 
+# Words that, paired with "Straight", trigger 27 CFR 5.40's age-statement
+# requirement. Any spirit whose `class_type` contains "Straight" plus one
+# of these designators must declare an age when bottled under four years
+# old. The check below treats the requirement as REQUIRED for that combo
+# and as ADVISORY for everything else (so a present-but-malformed age
+# statement on, say, a gin still surfaces, just without failing the
+# report).
+_STRAIGHT_WHISKEY_TRIGGER_WORDS = (
+    "whiskey",
+    "whisky",
+    "bourbon",
+    "rye",
+    "corn",
+    "malt",
+    "wheat",
+)
+
+
+def _is_straight_whiskey_class(class_type_value: str | None) -> bool:
+    """True when `class_type_value` declares a straight whiskey class.
+
+    27 CFR 5.40 requires an age statement on straight whiskey under four
+    years old; the cleanest heuristic is "label says 'straight' AND a
+    whiskey designator". Case-insensitive; tolerates spacing and
+    punctuation variants ("Kentucky Straight Bourbon Whiskey", "STRAIGHT
+    RYE WHISKEY").
+    """
+    if not class_type_value:
+        return False
+    text = class_type_value.lower()
+    if "straight" not in text:
+        return False
+    return any(word in text for word in _STRAIGHT_WHISKEY_TRIGGER_WORDS)
+
+
+def check_age_statement(params: dict, ctx: ExtractionContext) -> CheckResult:
+    """Validate a spirits age statement (27 CFR 5.40).
+
+    Severity is conditional on the class_type the label declares:
+
+      * Straight whiskey class (e.g. "Kentucky Straight Bourbon
+        Whiskey"): REQUIRED — missing or malformed age FAILs.
+      * Anything else: ADVISORY — missing is PASS (no requirement);
+        malformed value still surfaces as ADVISORY so the producer can
+        clean up the wording without failing the report.
+
+    The rule's static severity is `required` so the engine's
+    REQUIRED-rule confidence-aware downgrade still fires when the field
+    is unreadable. The check decides FAIL vs ADVISORY directly based on
+    what the label actually says.
+    """
+    field = params["field"]
+    class_type_field = params.get("class_type_field", "class_type")
+    pattern = params["pattern"]
+    flags = _parse_regex_flags(params.get("flags", ""))
+
+    class_type_value, _ = _get_field_value(ctx, class_type_field)
+    age_value, age_bbox = _get_field_value(ctx, field)
+
+    is_required = _is_straight_whiskey_class(class_type_value)
+
+    if age_value is None or not age_value.strip():
+        # No age statement on the label.
+        if is_required:
+            return CheckResult(
+                outcome=CheckOutcome.FAIL,
+                finding=(
+                    "Straight whiskey labels require an age statement under "
+                    "27 CFR 5.40 when bottled at less than four years old; "
+                    "none was found on this label."
+                ),
+                expected="An age statement (e.g. 'Aged 4 Years').",
+            )
+        return CheckResult(outcome=CheckOutcome.PASS)
+
+    if re.search(pattern, age_value.strip(), flags):
+        return CheckResult(outcome=CheckOutcome.PASS, bbox=age_bbox)
+
+    if is_required:
+        return CheckResult(
+            outcome=CheckOutcome.FAIL,
+            finding=(
+                f"Age statement {age_value.strip()!r} does not match the "
+                "required 'Aged <number> Years/Months' format (27 CFR 5.40)."
+            ),
+            expected="A statement matching pattern 'Aged <number> Years/Months'.",
+            bbox=age_bbox,
+        )
+
+    return CheckResult(
+        outcome=CheckOutcome.ADVISORY,
+        finding=(
+            f"Age statement {age_value.strip()!r} does not match the "
+            "recommended 'Aged <number> Years/Months' format. Format is "
+            "advisory only for non-straight-whiskey classes."
+        ),
+        expected="A statement matching pattern 'Aged <number> Years/Months'.",
+        bbox=age_bbox,
+    )
+
+
 CHECK_REGISTRY: dict[str, Callable[[dict, ExtractionContext], CheckResult]] = {
     "presence": check_presence,
     "regex": check_regex,
@@ -423,4 +528,5 @@ CHECK_REGISTRY: dict[str, Callable[[dict, ExtractionContext], CheckResult]] = {
     "cross_reference_numeric": check_cross_reference_numeric,
     "cross_reference_volume": check_cross_reference_volume,
     "warning_compliance": check_warning_compliance,
+    "age_statement": check_age_statement,
 }

@@ -146,6 +146,8 @@ def test_two_panels_merge_disjoint_fields():
                     "confidence": 0.95,
                 },
                 "net_contents": {"value": "750 mL", "confidence": 0.94},
+                # Straight whiskey requires an age statement (27 CFR 5.40).
+                "age_statement": {"value": "Aged 4 Years", "confidence": 0.93},
             },
             {  # panel_1 (back)
                 "name_address": {

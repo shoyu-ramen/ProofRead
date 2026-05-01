@@ -58,6 +58,8 @@ def test_pass_scenario_returns_pass():
             "net_contents": "750 mL",
             "name_address": "Bottled by Old Tom Distilling Co., Bardstown, Kentucky",
             "health_warning": CANONICAL_WARNING,
+            # Straight whiskey requires an age statement (27 CFR 5.40).
+            "age_statement": "Aged 4 Years",
         }
     )
     assert report.overall == "pass", [
@@ -418,3 +420,177 @@ def test_verify_and_scan_aggregations_agree_on_same_input():
             f"Aggregator divergence on rules={[r.status.value for r in rules]}, "
             f"image_quality={iq!r}: verify={v!r} scan={s!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-beverage e2e: each beverage type must touch at least one of the new
+# beverage-type-conditional fields end-to-end through verify().
+# ---------------------------------------------------------------------------
+
+
+def _wine_application(**overrides):
+    record = {
+        "brand_name": "Mockingbird Vineyards",
+        "class_type": "Cabernet Sauvignon",
+        "alcohol_content": "13.8",
+        "net_contents": "750 mL",
+        "name_address": "Mockingbird Vineyards, Napa, California",
+        "country_of_origin": "USA",
+    }
+    record.update(overrides)
+    return {"producer_record": record}
+
+
+def _beer_application(**overrides):
+    record = {
+        "brand_name": "Anytown Ale",
+        "class_type": "India Pale Ale",
+        "alcohol_content": "5.5",
+        "net_contents": "12 FL OZ",
+        "name_address": "Anytown Brewing Co., Anytown, ST",
+    }
+    record.update(overrides)
+    return {"producer_record": record}
+
+
+def test_e2e_wine_pass_with_sulfite_and_organic():
+    """Wine label end-to-end: a compliant label with sulfite declaration
+    and an organic claim passes the wine rule set, and the new fields
+    propagate into `report.extracted`."""
+    extracted = {
+        "brand_name": "Mockingbird Vineyards",
+        "class_type": "Cabernet Sauvignon",
+        "alcohol_content": "13.8% Alc./Vol.",
+        "net_contents": "750 mL",
+        "name_address": "Bottled by Mockingbird Vineyards, Napa, California",
+        "health_warning": CANONICAL_WARNING,
+        "sulfite_declaration": "CONTAINS SULFITES",
+        "organic_certification": "Made with Organic Grapes",
+    }
+    report = _verify(
+        extracted,
+        application=_wine_application(),
+        beverage_type="wine",
+    )
+    rule_ids = {r.rule_id for r in report.rule_results}
+    assert "wine.sulfite.presence" in rule_ids
+    assert "wine.organic.format" in rule_ids
+    sulfite_result = next(
+        r for r in report.rule_results if r.rule_id == "wine.sulfite.presence"
+    )
+    organic_result = next(
+        r for r in report.rule_results if r.rule_id == "wine.organic.format"
+    )
+    assert sulfite_result.status.value == "pass", sulfite_result.finding
+    assert organic_result.status.value == "pass", organic_result.finding
+    # Both new fields surface in the extracted summary.
+    assert report.extracted["sulfite_declaration"]["value"] == "CONTAINS SULFITES"
+    assert (
+        report.extracted["organic_certification"]["value"]
+        == "Made with Organic Grapes"
+    )
+
+
+def test_e2e_wine_fail_when_sulfite_missing():
+    """A wine label that explicitly carries an unrecognised sulfite value
+    surfaces a FAIL on the sulfite presence rule."""
+    extracted = {
+        "brand_name": "Mockingbird Vineyards",
+        "class_type": "Cabernet Sauvignon",
+        "alcohol_content": "13.8% Alc./Vol.",
+        "net_contents": "750 mL",
+        "name_address": "Bottled by Mockingbird Vineyards, Napa, California",
+        "health_warning": CANONICAL_WARNING,
+        # Wrong text — present but doesn't contain "Contains Sulfite(s)".
+        "sulfite_declaration": "All Natural Wine",
+    }
+    report = _verify(
+        extracted,
+        application=_wine_application(),
+        beverage_type="wine",
+    )
+    fail_ids = {
+        r.rule_id for r in report.rule_results if r.status.value == "fail"
+    }
+    assert "wine.sulfite.presence" in fail_ids
+
+
+def test_e2e_spirits_pass_with_age_statement():
+    """Spirits straight whiskey label end-to-end: the age_statement field
+    flows through verify() and the rule passes when the format is valid."""
+    extracted = {
+        "brand_name": "Old Tom Distillery",
+        "class_type": "Kentucky Straight Bourbon Whiskey",
+        "alcohol_content": "45% Alc./Vol. (90 Proof)",
+        "net_contents": "750 mL",
+        "name_address": "Bottled by Old Tom Distilling Co., Bardstown, Kentucky",
+        "health_warning": CANONICAL_WARNING,
+        "age_statement": "Aged 4 Years",
+    }
+    report = _verify(extracted, beverage_type="spirits")
+    age_result = next(
+        r
+        for r in report.rule_results
+        if r.rule_id == "spirits.age_statement.format"
+    )
+    assert age_result.status.value == "pass", age_result.finding
+    assert report.extracted["age_statement"]["value"] == "Aged 4 Years"
+
+
+def test_e2e_spirits_fail_when_straight_whiskey_missing_age():
+    """A straight whiskey label with no age statement FAILs on the age
+    rule (severity becomes REQUIRED via class_type detection)."""
+    extracted = {
+        "brand_name": "Old Tom Distillery",
+        "class_type": "Kentucky Straight Bourbon Whiskey",
+        "alcohol_content": "45% Alc./Vol. (90 Proof)",
+        "net_contents": "750 mL",
+        "name_address": "Bottled by Old Tom Distilling Co., Bardstown, Kentucky",
+        "health_warning": CANONICAL_WARNING,
+        # age_statement intentionally omitted
+    }
+    report = _verify(extracted, beverage_type="spirits")
+    age_result = next(
+        r
+        for r in report.rule_results
+        if r.rule_id == "spirits.age_statement.format"
+    )
+    assert age_result.status.value == "fail", age_result.finding
+
+
+def test_e2e_beer_does_not_load_wine_or_spirits_rules():
+    """Beer scans must not pick up wine or spirits rules. The new
+    beverage-type-conditional fields don't apply to beer; verify must
+    keep working with the original 7-field flow with no regression on
+    the existing beer rule set.
+    """
+    extracted = {
+        "brand_name": "Anytown Ale",
+        "class_type": "India Pale Ale",
+        "alcohol_content": "5.5% ABV",
+        "net_contents": "12 FL OZ",
+        "name_address": "Brewed and bottled by Anytown Brewing Co., Anytown, ST",
+        "health_warning": CANONICAL_WARNING,
+    }
+    report = _verify(
+        extracted,
+        application=_beer_application(),
+        beverage_type="beer",
+        container_size_ml=355,
+    )
+    rule_ids = {r.rule_id for r in report.rule_results}
+    # No wine or spirits rules should fire on a beer scan.
+    assert not any(rid.startswith("wine.") for rid in rule_ids)
+    assert not any(rid.startswith("spirits.") for rid in rule_ids)
+    # The new beverage-type-conditional fields must not appear in a beer
+    # scan's extracted summary either.
+    assert "sulfite_declaration" not in report.extracted
+    assert "organic_certification" not in report.extracted
+    assert "age_statement" not in report.extracted
+    # Overall verdict is "advisory" because of the unrelated v1
+    # `beer.health_warning.size` advisory rule (no calibration in v1) —
+    # what matters is no FAIL or WARN landed on this happy path.
+    assert report.overall in {"pass", "advisory"}, report.overall
+    assert all(
+        r.status.value in {"pass", "na", "advisory"} for r in report.rule_results
+    )

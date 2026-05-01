@@ -15,8 +15,12 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.vision import (
+    EXTRACTOR_BASE_FIELDS,
     ClaudeVisionExtractor,
+    MockVisionExtractor,
+    _build_user_text,
     _parse_vision_response,
+    fields_for_beverage,
 )
 
 _VALID_RESPONSE = json.dumps(
@@ -211,3 +215,165 @@ def test_parse_vision_response_recovers_json_with_trailing_prose():
     # The class_type field came back unreadable, so it's in the unreadable
     # list rather than fields.
     assert "class_type" in result.unreadable
+
+
+# ---------------------------------------------------------------------------
+# Beverage-type-conditional field routing
+# ---------------------------------------------------------------------------
+
+
+def test_fields_for_beverage_routes_per_type():
+    """Each beverage_type pulls in its own conditional fields without
+    leaking into the others. Beer gets the seven base fields only;
+    wine adds sulfite/organic; spirits adds age_statement.
+    """
+    base = set(EXTRACTOR_BASE_FIELDS)
+    assert set(fields_for_beverage("beer")) == base
+    assert set(fields_for_beverage("wine")) == base | {
+        "sulfite_declaration",
+        "organic_certification",
+    }
+    assert set(fields_for_beverage("spirits")) == base | {"age_statement"}
+    # Unknown beverage type / None falls back to base.
+    assert set(fields_for_beverage("absinthe")) == base
+    assert set(fields_for_beverage(None)) == base
+
+
+def test_user_text_lists_beverage_specific_fields_for_wine():
+    """The per-request user message must enumerate the wine-only
+    conditional fields so the model knows to look for them.
+    """
+    text = _build_user_text(
+        capture_quality=None,
+        producer_record=None,
+        beverage_type="wine",
+        container_size_ml=750,
+        is_imported=False,
+    )
+    assert "sulfite_declaration" in text
+    assert "organic_certification" in text
+    # No spirits-only field on a wine prompt.
+    assert "age_statement" not in text
+
+
+def test_user_text_lists_age_statement_for_spirits():
+    text = _build_user_text(
+        capture_quality=None,
+        producer_record=None,
+        beverage_type="spirits",
+        container_size_ml=750,
+        is_imported=False,
+    )
+    assert "age_statement" in text
+    # No wine fields on a spirits prompt.
+    assert "sulfite_declaration" not in text
+    assert "organic_certification" not in text
+
+
+def test_user_text_omits_conditional_fields_for_beer():
+    """Beer panels must not be asked for sulfites, organic, or age — the
+    prompt explicitly tells the model NOT to emit those keys."""
+    text = _build_user_text(
+        capture_quality=None,
+        producer_record=None,
+        beverage_type="beer",
+        container_size_ml=355,
+        is_imported=False,
+    )
+    # Beer text should reference the don't-emit instruction by name.
+    assert "do NOT" in text
+    assert "sulfite_declaration" in text
+    # The beverage-type-specific extraction header (used for wine/spirits)
+    # must NOT fire for beer — there are no beverage-type-specific fields
+    # on a beer panel to extract.
+    assert "Beverage-type-specific fields (wine)" not in text
+    assert "Beverage-type-specific fields (spirits)" not in text
+
+
+def test_parse_vision_response_extracts_wine_conditional_fields():
+    """A wine-shaped response with sulfite + organic must surface those
+    fields in the parsed extraction.
+    """
+    raw = json.dumps(
+        {
+            "brand_name": {"value": "MOCKINGBIRD VINEYARDS", "confidence": 0.95},
+            "class_type": {"value": "Cabernet Sauvignon", "confidence": 0.93},
+            "alcohol_content": {"value": "13.8% Alc./Vol.", "confidence": 0.96},
+            "net_contents": {"value": "750 mL", "confidence": 0.97},
+            "name_address": {
+                "value": "Bottled by Mockingbird Vineyards, Napa, California",
+                "confidence": 0.91,
+            },
+            "country_of_origin": {"value": None, "unreadable": True},
+            "health_warning": {"value": "GOVERNMENT WARNING: ...", "confidence": 0.92},
+            "sulfite_declaration": {"value": "CONTAINS SULFITES", "confidence": 0.94},
+            "organic_certification": {
+                "value": "Made with Organic Grapes",
+                "confidence": 0.88,
+            },
+        }
+    )
+    result = _parse_vision_response(raw)
+    assert result.fields["sulfite_declaration"].value == "CONTAINS SULFITES"
+    assert (
+        result.fields["organic_certification"].value == "Made with Organic Grapes"
+    )
+
+
+def test_parse_vision_response_marks_unreadable_organic_when_absent():
+    """When a wine label has no organic claim, the model returns
+    unreadable: true and the parser routes it to `unreadable`.
+    """
+    raw = json.dumps(
+        {
+            "brand_name": {"value": "MOCKINGBIRD", "confidence": 0.95},
+            "sulfite_declaration": {
+                "value": "Contains Sulfites",
+                "confidence": 0.93,
+            },
+            "organic_certification": {
+                "value": None,
+                "unreadable": True,
+                "confidence": 0.0,
+            },
+        }
+    )
+    result = _parse_vision_response(raw)
+    assert "organic_certification" in result.unreadable
+    assert "sulfite_declaration" not in result.unreadable
+
+
+def test_parse_vision_response_extracts_spirits_age_statement():
+    raw = json.dumps(
+        {
+            "brand_name": {"value": "Old Tom Distillery", "confidence": 0.97},
+            "class_type": {
+                "value": "Kentucky Straight Bourbon Whiskey",
+                "confidence": 0.97,
+            },
+            "age_statement": {"value": "Aged 4 Years", "confidence": 0.95},
+        }
+    )
+    result = _parse_vision_response(raw)
+    assert result.fields["age_statement"].value == "Aged 4 Years"
+
+
+def test_mock_extractor_propagates_new_fields():
+    """`MockVisionExtractor` must round-trip the three new fields so
+    end-to-end tests can drive the rule engine with wine + spirits
+    fixtures.
+    """
+    fixture = {
+        "brand_name": "Mockingbird Vineyards",
+        "sulfite_declaration": "Contains Sulfites",
+        "organic_certification": "USDA Organic",
+        "age_statement": "Aged 4 Years",
+    }
+    extractor = MockVisionExtractor(fixture)
+    extraction = extractor.extract(b"\x00", media_type="image/png", beverage_type="wine")
+    # Beverage-type-conditional fields the test fixture provides survive
+    # the parse round-trip.
+    assert extraction.fields["sulfite_declaration"].value == "Contains Sulfites"
+    assert extraction.fields["organic_certification"].value == "USDA Organic"
+    assert extraction.fields["age_statement"].value == "Aged 4 Years"
+    assert extraction.fields["brand_name"].value == "Mockingbird Vineyards"
