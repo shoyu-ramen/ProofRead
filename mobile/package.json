@@ -10,7 +10,8 @@
     "prebuild": "expo prebuild",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
-    "lint": "echo \"(lint stub) - configure eslint later\""
+    "lint": "echo \"(lint stub) - configure eslint later\"",
+    "test": "node --require sucrase/register --test 'src/**/__tests__/**/*.test.ts'"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "1.23.1",

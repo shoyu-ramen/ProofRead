@@ -29,12 +29,25 @@ export interface BottleSilhouette {
   heightPx: number;
   steadinessScore: number;
   /**
-   * Top COCO class among the beverage subset. `null` until Phase 2
-   * lands a real classifier; Phase 1 leaves this unpopulated.
+   * Container class derived from the silhouette aspect ratio. Used by
+   * the auto-trigger gate to decide whether the user is holding a
+   * scannable beverage container. `null` when the silhouette aspect
+   * ratio falls outside the bottle/can bands or the silhouette isn't
+   * detected. Phase 2's TFLite path can refine these from COCO classes
+   * (`wine_glass`, `cup`) without breaking the existing union — they
+   * narrow into `'bottle' | 'can'` for the auto-trigger predicate.
    */
-  class: 'bottle' | 'wine_glass' | 'cup' | null;
+  class: 'bottle' | 'can' | null;
   /** 0..1 probability of `class`; 0 when class is null. */
   classConfidence: number;
+  /**
+   * Composite container-confidence score in 0..1, blending edge
+   * tightness (steadinessScore) with the aspect-ratio fit. Used by the
+   * scan machine's auto-trigger gate (≥0.7 sustained for ≥1500ms) to
+   * decide that the user is holding a real scannable container — even
+   * before they start rotating.
+   */
+  containerConfidence: number;
 }
 
 export interface HandBox {

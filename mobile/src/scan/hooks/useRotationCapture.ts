@@ -273,6 +273,34 @@ export function useRotationCapture(
     [enabled, numCheckpoints],
   );
 
+  // Auto-trigger entry path (brief #3). When the state machine flips
+  // `enabled` to true while the user is just *holding* the bottle —
+  // no rotation has started, coverage is still 0 — fire checkpoint 0
+  // immediately so the panorama doesn't sit empty for the 1–2s it
+  // takes for the first measurable angular displacement to register.
+  // Subsequent checkpoints continue to be driven by the rotation
+  // reaction above; the `lastTriggeredRef` guard prevents the same
+  // checkpoint firing twice if rotation happens to push coverage
+  // past 0 in the same tick.
+  useEffect(() => {
+    if (!enabled) return;
+    if (cancelledRef.current) return;
+    if (lastTriggeredRef.current >= 0) return;
+    // Coverage may have already advanced past 0 if scanning was
+    // entered via the rotation path — in that case the worklet
+    // reaction will fire checkpoint 0 itself, so skip the immediate
+    // shot.
+    const liveCoverage = trackerStateSv.value.coverage;
+    if (liveCoverage > 0) return;
+    lastTriggeredRef.current = 0;
+    void triggerCapture(0, liveCoverage);
+    // We deliberately don't depend on `triggerCapture` — re-running
+    // the immediate-trigger effect on every renderer cycle would
+    // double-fire. The lastTriggeredRef guard above means a stale
+    // closure here is harmless: the next tick re-checks the ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, trackerStateSv]);
+
   const maybeTrigger = useCallback(
     (ckpt: number, coverage: number) => {
       if (cancelledRef.current) return;

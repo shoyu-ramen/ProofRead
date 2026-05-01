@@ -15,7 +15,11 @@ export type {
   TrackerState,
 } from './types';
 
-export { detectBottle } from './bottleDetector';
+export {
+  classifyContainer,
+  detectBottle,
+  type ContainerClassification,
+} from './bottleDetector';
 export { measureFlow } from './opticalFlow';
 export {
   computeAngularProgress,
