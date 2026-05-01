@@ -61,11 +61,11 @@ const styles = StyleSheet.create({
     marginTop: spacing.xxl,
   },
   title: {
-    ...typography.display,
+    ...typography.displayLg,
     color: colors.text,
   },
   subtitle: {
-    ...typography.body,
+    ...typography.bodyLg,
     color: colors.textMuted,
   },
   formBlock: {
