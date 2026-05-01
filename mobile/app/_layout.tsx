@@ -6,6 +6,7 @@ import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { ToastProvider } from '@src/components';
 import { queryClient } from '@src/state/queryClient';
 import { colors } from '@src/theme';
 
@@ -14,22 +15,28 @@ export default function RootLayout(): React.ReactElement {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
       <SafeAreaProvider>
         <QueryClientProvider client={queryClient}>
-          <StatusBar style="light" />
-          <Stack
-            screenOptions={{
-              headerStyle: { backgroundColor: colors.background },
-              headerTintColor: colors.text,
-              headerShadowVisible: false,
-              contentStyle: { backgroundColor: colors.background },
-            }}
-          >
-            <Stack.Screen name="index" options={{ headerShown: false }} />
-            <Stack.Screen
-              name="signin"
-              options={{ headerShown: false, presentation: 'modal' }}
-            />
-            <Stack.Screen name="(app)" options={{ headerShown: false }} />
-          </Stack>
+          {/* ToastProvider sits above the Stack so toasts overlay every
+              screen — including modals and the camera-occupying scan
+              flow. The provider is mounted below SafeAreaProvider so its
+              `useSafeAreaInsets()` call resolves correctly. */}
+          <ToastProvider>
+            <StatusBar style="light" />
+            <Stack
+              screenOptions={{
+                headerStyle: { backgroundColor: colors.background },
+                headerTintColor: colors.text,
+                headerShadowVisible: false,
+                contentStyle: { backgroundColor: colors.background },
+              }}
+            >
+              <Stack.Screen name="index" options={{ headerShown: false }} />
+              <Stack.Screen
+                name="signin"
+                options={{ headerShown: false, presentation: 'modal' }}
+              />
+              <Stack.Screen name="(app)" options={{ headerShown: false }} />
+            </Stack>
+          </ToastProvider>
         </QueryClientProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

@@ -143,3 +143,23 @@ export const scanMotion = {
   slowEase: { duration: 520 },
   hero: { duration: 900 },
 } as const;
+
+/**
+ * Toast subsystem tokens (in-app transient alerts surfaced via the
+ * ToastProvider hook). The toast slide-in motion deliberately reuses
+ * the scan screen's spring + mid-ease values so the app's motion
+ * language stays consistent — a toast feels like the same family of
+ * UI as the scan-screen banners. The default 4s lifetime sits between
+ * "long enough to read a 6-word message" and "short enough that a
+ * neglected toast doesn't crowd the next one".
+ */
+export const toastMotion = {
+  spring: scanMotion.spring,
+  midEase: scanMotion.midEase,
+  fastEase: scanMotion.fastEase,
+  defaultDurationMs: 4000,
+  // Vertical gap between stacked toasts.
+  stackGapPx: 8,
+  // Maximum number of toasts visible at once.
+  maxVisible: 3,
+} as const;

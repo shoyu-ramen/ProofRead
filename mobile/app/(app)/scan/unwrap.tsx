@@ -61,6 +61,7 @@ import {
   BottleSilhouetteOverlay,
   CancelButton,
   CompletionReveal,
+  InScanWarningBanner,
   ProgressDial,
   QualityChip,
   RotationGuideRing,
@@ -556,6 +557,18 @@ function CylindricalScan({ device }: CylindricalScanProps): React.ReactElement {
         state={stateKind}
         preCheck={snap.preCheck}
         pauseReason={pauseReason}
+      />
+
+      {/* In-scan warning banner — soft nudge during the late-stretch
+          coverage band (240°..300°) that the back label, where the
+          §16.21 Government Warning typically lives, may not have been
+          captured yet. Heuristic-only; no streaming verify. The banner
+          self-hides once coverage clears 300° (the user has rotated
+          enough to confidently catch the back label). */}
+      <InScanWarningBanner
+        state={stateKind}
+        coverage={snap.coverage}
+        topPx={panoramaFrame.y + panoramaFrame.height + 12}
       />
 
       {/* Adaptive instruction copy — center-bottom pill. */}

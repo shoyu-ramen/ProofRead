@@ -13,6 +13,30 @@ export type { ConfidenceBarProps } from './ConfidenceBar';
 export { ExternalMatchCard } from './ExternalMatchCard';
 export type { ExternalMatchCardProps } from './ExternalMatchCard';
 
+export {
+  HealthWarningCard,
+  CANONICAL_HEALTH_WARNING,
+  HEALTH_WARNING_ECFR_URL,
+  isHealthWarningRule,
+  ruleIsSurfacedByHero,
+} from './HealthWarningCard';
+export type {
+  HealthWarningCardProps,
+  HealthWarningStatus,
+} from './HealthWarningCard';
+
+export { Toast } from './Toast';
+export type { ToastProps } from './Toast';
+
+export { ToastProvider } from './ToastProvider';
+export type { ToastProviderProps } from './ToastProvider';
+
+export type {
+  ToastShowOptions,
+  ToastVariant,
+  ToastContextValue,
+} from './ToastContext';
+
 export { ProgressBar } from './ProgressBar';
 export type { ProgressBarProps } from './ProgressBar';
 

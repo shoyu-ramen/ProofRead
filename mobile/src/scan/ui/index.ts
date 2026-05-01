@@ -30,6 +30,13 @@ export {
   CompletionReveal,
   type CompletionRevealProps,
 } from './CompletionReveal';
+export {
+  InScanWarningBanner,
+  shouldShowInScanWarning,
+  IN_SCAN_WARNING_LOWER,
+  IN_SCAN_WARNING_UPPER,
+  type InScanWarningBannerProps,
+} from './InScanWarningBanner';
 
 // --- Deviations from SCAN_DESIGN.md ---------------------------------
 //

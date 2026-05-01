@@ -16,7 +16,7 @@
  * eCFR deep link on each rule.
  */
 
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -44,11 +44,15 @@ import {
   CaptureQualityPill,
   ConfidenceBar,
   ExternalMatchCard,
+  HealthWarningCard,
+  isHealthWarningRule,
   RuleResultCard,
+  ruleIsSurfacedByHero,
   SectionHeader,
   StatusBadge,
 } from '@src/components';
 import { apiClient } from '@src/api/client';
+import { useToast } from '@src/hooks/useToast';
 import { queryKeys } from '@src/state/queryClient';
 import { useScanStore } from '@src/state/scanStore';
 import { colors, radius, scanMotion, spacing, typography } from '@src/theme';
@@ -83,12 +87,51 @@ export default function ReportScreen(): React.ReactElement {
   const { id } = useLocalSearchParams<{ id: string }>();
   const scanId = typeof id === 'string' ? id : '';
   const panorama = useScanStore((s) => s.panorama);
+  const { show: showToast } = useToast();
 
   const { data, isLoading, isRefetching, refetch, error } = useQuery({
     queryKey: queryKeys.report(scanId),
     enabled: scanId.length > 0,
     queryFn: () => apiClient.getReport(scanId),
   });
+
+  // Surface a top-of-screen toast on any failure path that reaches the
+  // report screen — covers the /v1/scans/:id/report fetch, which is the
+  // mobile client's compliance verifier endpoint (the legacy /v1/verify
+  // is web-only). One toast per error transition; we ref-guard so
+  // re-render churn from refetch doesn't double-fire.
+  const lastErrorIdRef = useRef<unknown>(null);
+  useEffect(() => {
+    if (error && error !== lastErrorIdRef.current) {
+      lastErrorIdRef.current = error;
+      showToast({
+        variant: 'error',
+        message: "Couldn't reach the verifier. Tap to retry.",
+      });
+    }
+    if (!error) {
+      lastErrorIdRef.current = null;
+    }
+  }, [error, showToast]);
+
+  // If the backend response carries a `cached=true` field (durable L3
+  // cache short-circuit), surface a quick info toast so the user knows
+  // they're looking at history-derived data rather than a fresh
+  // verification. Indexed by scanId so we only fire once per report
+  // load. The field is currently optional on the DTO (older API rows
+  // may not include it); the truthy check covers both shapes.
+  const cachedToastFiredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!data) return;
+    const isCached = (data as ReportResponse & { cached?: boolean }).cached;
+    if (isCached && cachedToastFiredRef.current !== scanId) {
+      cachedToastFiredRef.current = scanId;
+      showToast({
+        variant: 'info',
+        message: 'Loaded from history.',
+      });
+    }
+  }, [data, scanId, showToast]);
 
   if (isLoading) {
     return (
@@ -118,6 +161,12 @@ export default function ReportScreen(): React.ReactElement {
 
   const grouped = groupByStatus(data.rule_results);
 
+  // Find the health-warning exact-text rule so the hero card can render
+  // the verbatim comparison. The rule may be absent (older reports, or
+  // backend versions where the rule wasn't evaluated); the card handles
+  // that as the `unverified` state.
+  const healthWarningRule = data.rule_results.find(isHealthWarningRule) ?? null;
+
   const onShare = async () => {
     try {
       await Share.share({ message: composeShareText(data) });
@@ -143,6 +192,14 @@ export default function ReportScreen(): React.ReactElement {
             user sees the regulatory anchor before the rule breakdown. */}
         {data.external_match ? <ExternalMatchCard match={data.external_match} /> : null}
         <HeaderCard data={data} grouped={grouped} />
+
+        {/* Government Warning hero card — surfaced ABOVE the rule list
+            because §16.21 is the highest-stakes label rule. The
+            corresponding `health_warning.exact_text` rule still appears
+            in the rule list below; ruleIsSurfacedByHero() lets the rule
+            list flag duplication if the design ever wants to dim the
+            row. */}
+        <HealthWarningCard rule={healthWarningRule} />
 
         {/* Single panorama thumbnail — captures the entire label in one
             unrolled image. The deleted /(app)/scan/captures/[surface]
@@ -374,6 +431,11 @@ function Section({
           >
             <View style={{ gap: spacing.xs }}>
               <RuleResultCard result={r} />
+              {ruleIsSurfacedByHero(r) ? (
+                <Text style={styles.heroAnnotation}>
+                  Also shown above in the Government Warning card
+                </Text>
+              ) : null}
               {(confidence != null && confidence > 0) || ecfrUrl ? (
                 <View style={styles.ruleMeta}>
                   {confidence != null && confidence > 0 ? (
@@ -648,6 +710,12 @@ const styles = StyleSheet.create({
   citationLinkIcon: {
     ...typography.caption,
     color: colors.primary,
+  },
+  heroAnnotation: {
+    ...typography.caption,
+    color: colors.textMuted,
+    fontStyle: 'italic',
+    paddingHorizontal: spacing.md,
   },
   actions: {
     gap: spacing.sm,
