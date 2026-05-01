@@ -3,18 +3,24 @@
  *
  * Reads `GET /v1/scans` (HistoryResponse) via tanstack-query and
  * conditionally renders the rail:
- *   - 0 scans → hero + scan CTA + settings only.
+ *   - 0 scans → hero + scan CTA + EmptyState (with "Start your first
+ *     scan" affordance) + settings link.
  *   - 1+ scans → scan CTA on top, "Recent scans" with up to 3 rows,
  *     and a "View all" link to /history when more exist.
  *
  * The rail uses the locally-cached panorama (scanStore.recentPanoramas)
  * for thumbnails when available — keeps the home screen feeling fast
  * after a scan completes, no second download required.
+ *
+ * Loading-state delta (UI/UX pass): the previous rail-loading block
+ * was a tiny `<ActivityIndicator>` that popped in late and made the
+ * layout shift. We now render `<Skeleton>` rows matching the real
+ * recent-scan tiles, so the wait reads as "data shape is on its way"
+ * rather than "something is loading somewhere".
  */
 
 import React from 'react';
 import {
-  ActivityIndicator,
   Image,
   Pressable,
   StyleSheet,
@@ -24,7 +30,14 @@ import {
 import { router } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 
-import { Button, Screen, StatusBadge } from '@src/components';
+import {
+  Button,
+  EmptyState,
+  Icon,
+  Screen,
+  Skeleton,
+  StatusBadge,
+} from '@src/components';
 import { apiClient } from '@src/api/client';
 import { queryKeys } from '@src/state/queryClient';
 import { useScanStore } from '@src/state/scanStore';
@@ -56,6 +69,18 @@ export default function Home(): React.ReactElement {
     router.push('/(app)/scan/setup');
   };
 
+  // Rail variants:
+  //   loading  → skeleton rows shaped like the real rail tiles
+  //   empty    → friendly EmptyState with a primary CTA
+  //   filled   → header + up to RAIL_LIMIT real rows + optional "View all"
+  //   error    → silently hidden (the scan CTA above is still useful)
+  const railVariant: 'loading' | 'empty' | 'filled' | 'hidden' = (() => {
+    if (isLoading && !hasItems) return 'loading';
+    if (error) return 'hidden';
+    if (!hasItems) return 'empty';
+    return 'filled';
+  })();
+
   return (
     <Screen>
       <View style={styles.heroBlock}>
@@ -72,16 +97,27 @@ export default function Home(): React.ReactElement {
         onPress={handleStartScan}
       />
 
-      {/* Loading: show a small inline spinner so the rail doesn't pop
-          in late and shift the layout abruptly. Errors silently hide
-          the rail (the scan CTA is still useful on its own). */}
-      {isLoading && !hasItems ? (
-        <View style={styles.railLoading}>
-          <ActivityIndicator color={colors.textMuted} size="small" />
+      {railVariant === 'loading' ? (
+        <View style={styles.rail}>
+          <View style={styles.railHeader}>
+            <Skeleton width={120} height={22} radius={4} />
+          </View>
+          {[0, 1, 2].map((i) => (
+            <SkeletonRow key={i} />
+          ))}
         </View>
       ) : null}
 
-      {hasItems && !error ? (
+      {railVariant === 'empty' ? (
+        <EmptyState
+          icon="inbox"
+          title="No scans yet"
+          description="Your scanned labels will show up here. Tap above to start your first scan."
+          action={{ label: 'Start your first scan', onPress: handleStartScan }}
+        />
+      ) : null}
+
+      {railVariant === 'filled' ? (
         <View style={styles.rail}>
           <View style={styles.railHeader}>
             <Text style={styles.railTitle}>Recent scans</Text>
@@ -134,11 +170,17 @@ export default function Home(): React.ReactElement {
           style={styles.historyLink}
         >
           {({ pressed }) => (
-            <Text
-              style={[styles.historyLinkText, pressed && { opacity: 0.7 }]}
+            <View
+              style={[
+                styles.historyLinkRow,
+                pressed && { opacity: 0.7 },
+              ]}
             >
-              {hasItems ? 'View full history' : 'History'}
-            </Text>
+              <Icon name="clock" size={14} color={colors.primary} />
+              <Text style={styles.historyLinkText}>
+                {hasItems ? 'View full history' : 'History'}
+              </Text>
+            </View>
           )}
         </Pressable>
       </View>
@@ -191,7 +233,30 @@ function RecentRow({
         </Text>
       </View>
       <StatusBadge status={item.overall} size="sm" />
+      {/* Disclosure chevron — picks up SF Symbol on iOS via the Icon
+          wrapper. Visual cue that the row is tappable. */}
+      <Icon name="chevron-right" size={16} color={colors.textMuted} />
     </Pressable>
+  );
+}
+
+/**
+ * One row of the loading-state rail. Mirrors the real tile geometry so
+ * the layout doesn't pop when data lands: the same 56×40 thumbnail
+ * placeholder, two text lines, and a tiny pill-sized block for the
+ * status badge.
+ */
+function SkeletonRow(): React.ReactElement {
+  return (
+    <View style={styles.row}>
+      <Skeleton width={56} height={40} radius={radius.sm} />
+      <View style={styles.rowText}>
+        <Skeleton width="70%" height={16} radius={4} />
+        <View style={{ height: spacing.xs }} />
+        <Skeleton width="40%" height={12} radius={4} />
+      </View>
+      <Skeleton width={48} height={20} radius={radius.sm} />
+    </View>
   );
 }
 
@@ -201,20 +266,16 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
   },
   headline: {
-    ...typography.display,
+    ...typography.displayMd,
     color: colors.text,
   },
   subhead: {
-    ...typography.body,
+    ...typography.bodyLg,
     color: colors.textMuted,
   },
   rail: {
     gap: spacing.sm,
     marginTop: spacing.sm,
-  },
-  railLoading: {
-    paddingVertical: spacing.md,
-    alignItems: 'flex-start',
   },
   railHeader: {
     flexDirection: 'row',
@@ -222,13 +283,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   railTitle: {
-    ...typography.heading,
+    ...typography.headingMd,
     color: colors.text,
   },
   viewAllLink: {
-    ...typography.caption,
+    ...typography.captionStrong,
     color: colors.primary,
-    fontWeight: '600',
   },
   row: {
     flexDirection: 'row',
@@ -263,7 +323,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   rowTitle: {
-    ...typography.body,
+    ...typography.bodyMd,
     color: colors.text,
     fontWeight: '600',
   },
@@ -280,9 +340,13 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingVertical: spacing.xs,
   },
+  historyLinkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
   historyLinkText: {
-    ...typography.caption,
+    ...typography.captionStrong,
     color: colors.primary,
-    fontWeight: '600',
   },
 });

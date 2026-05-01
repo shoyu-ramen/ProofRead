@@ -21,13 +21,12 @@ import {
   Animated,
   Easing,
   Image,
-  Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { router } from 'expo-router';
-import { Button, Screen, SectionHeader } from '@src/components';
+import { Button, ErrorState, Screen, SectionHeader, Skeleton } from '@src/components';
 import { apiClient } from '@src/api/client';
 import { describeError } from '@src/api/errors';
 import { useToast } from '@src/hooks/useToast';
@@ -215,17 +214,18 @@ export default function ReviewScreen(): React.ReactElement {
             resizeMode="cover"
           />
         ) : (
-          <View style={styles.panoramaEmpty}>
-            <Text style={styles.panoramaEmptyText}>No scan yet</Text>
-          </View>
+          // Skeleton fills the panorama frame while the local capture is
+          // wiring up — the user briefly sees a pulsing tile rather than
+          // bare "No scan yet" copy on a flash of grey.
+          <Skeleton width="100%" height="100%" radius={radius.md} />
         )}
       </View>
       {panoramaCaption ? (
         <Text style={styles.panoramaCaption}>{panoramaCaption}</Text>
       ) : null}
 
-      <View style={styles.statusBlock}>
-        {phase !== 'error' ? (
+      {phase !== 'error' ? (
+        <View style={styles.statusBlock}>
           <View style={styles.progressWrap}>
             <View style={styles.stepRow}>
               {PHASE_STEPS.map((step, idx) => {
@@ -259,21 +259,17 @@ export default function ReviewScreen(): React.ReactElement {
               />
             </View>
           </View>
-        ) : null}
-        {phase === 'error' && error ? (
-          <Pressable
-            accessibilityRole="button"
-            onPress={handleRetry}
-            style={({ pressed }) => [
-              styles.errorBox,
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <Text style={styles.errorTitle}>{error.title}</Text>
-            <Text style={styles.errorMessage}>{error.message}</Text>
-          </Pressable>
-        ) : null}
-      </View>
+        </View>
+      ) : null}
+
+      {phase === 'error' && error ? (
+        <ErrorState
+          title={error.title}
+          description={error.message}
+          retry={handleRetry}
+          retryLabel="Retry submission"
+        />
+      ) : null}
 
       <View style={{ flex: 1 }} />
       <Button
@@ -380,15 +376,6 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  panoramaEmpty: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  panoramaEmptyText: {
-    ...typography.caption,
-    color: colors.textMuted,
-  },
   panoramaCaption: {
     ...typography.caption,
     color: colors.textMuted,
@@ -446,21 +433,5 @@ const styles = StyleSheet.create({
     width: '40%',
     backgroundColor: colors.primary,
     borderRadius: radius.sm,
-  },
-  errorBox: {
-    backgroundColor: colors.surface,
-    borderColor: colors.fail,
-    borderWidth: 1,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    gap: spacing.xs,
-  },
-  errorTitle: {
-    ...typography.heading,
-    color: colors.fail,
-  },
-  errorMessage: {
-    ...typography.body,
-    color: colors.text,
   },
 });

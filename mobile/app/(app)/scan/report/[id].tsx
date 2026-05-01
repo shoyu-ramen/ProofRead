@@ -18,7 +18,6 @@
 
 import React, { useEffect, useMemo, useRef } from 'react';
 import {
-  ActivityIndicator,
   Image,
   Linking,
   Pressable,
@@ -29,6 +28,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import Animated, {
@@ -43,12 +43,14 @@ import {
   Button,
   CaptureQualityPill,
   ConfidenceBar,
+  ErrorState,
   ExternalMatchCard,
   HealthWarningCard,
   isHealthWarningRule,
   RuleResultCard,
   ruleIsSurfacedByHero,
   SectionHeader,
+  Skeleton,
   StatusBadge,
 } from '@src/components';
 import { apiClient } from '@src/api/client';
@@ -133,27 +135,69 @@ export default function ReportScreen(): React.ReactElement {
     }
   }, [data, scanId, showToast]);
 
+  // Outcome haptic: success notification on overall=pass, warning on
+  // fail/advisory. Fires once per scanId — refetches don't re-trigger.
+  // expo-haptics is a JS-thread call; the native side handles the
+  // platform-correct pattern (taptic engine on iOS, vibration on
+  // Android) so we don't have to fan out by Platform.OS here.
+  const hapticFiredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!data || !scanId) return;
+    if (hapticFiredRef.current === scanId) return;
+    hapticFiredRef.current = scanId;
+    const fire = async () => {
+      try {
+        if (data.overall === 'pass') {
+          await Haptics.notificationAsync(
+            Haptics.NotificationFeedbackType.Success,
+          );
+        } else {
+          // Advisory and fail share the same warning haptic — both are
+          // "something needs your attention" rather than a clean win.
+          await Haptics.notificationAsync(
+            Haptics.NotificationFeedbackType.Warning,
+          );
+        }
+      } catch {
+        // Older Android devices can throw on notificationAsync if the
+        // pattern isn't supported. Swallow — haptics is enhancement, not
+        // load-bearing.
+      }
+    };
+    void fire();
+  }, [data, scanId]);
+
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.loadingWrap}>
-        <ActivityIndicator color={colors.primary} />
-        <Text style={styles.loadingText}>Loading report…</Text>
+      <SafeAreaView style={styles.root} edges={['bottom']}>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          {/* Skeleton stack mirrors the real report shape: header card,
+              hero card, capture thumbnail, two rule sections. Lines up
+              row heights with the live screen so the layout doesn't pop
+              when data lands. */}
+          <Skeleton width="100%" height={120} radius={radius.md} />
+          <Skeleton width="100%" height={180} radius={radius.lg} />
+          <Skeleton width={120} height={22} radius={4} />
+          <Skeleton width="100%" height={140} radius={radius.md} />
+          <Skeleton width={120} height={22} radius={4} />
+          <Skeleton width="100%" height={72} radius={radius.md} />
+          <Skeleton width="100%" height={72} radius={radius.md} />
+        </ScrollView>
       </SafeAreaView>
     );
   }
 
   if (error || !data) {
     return (
-      <SafeAreaView style={styles.loadingWrap}>
-        <Text style={styles.loadingTitle}>Report unavailable</Text>
-        <Text style={styles.loadingText}>
-          We couldn't load this report. Check your connection and try again.
-        </Text>
-        <Button label="Retry" onPress={() => void refetch()} />
-        <Button
-          label="Back to home"
-          variant="ghost"
-          onPress={() => router.replace('/(app)/home')}
+      <SafeAreaView style={styles.errorWrap} edges={['bottom']}>
+        <ErrorState
+          title="Report unavailable"
+          description="We couldn't load this report. Check your connection and try again."
+          retry={() => void refetch()}
+          secondaryAction={{
+            label: 'Back to home',
+            onPress: () => router.replace('/(app)/home'),
+          }}
         />
       </SafeAreaView>
     );
@@ -606,7 +650,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   headerTitle: {
-    ...typography.title,
+    ...typography.titleMd,
     color: colors.text,
   },
   headerCaption: {
@@ -721,22 +765,11 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginTop: spacing.md,
   },
-  loadingWrap: {
+  errorWrap: {
     flex: 1,
     backgroundColor: colors.background,
     alignItems: 'center',
     justifyContent: 'center',
     padding: spacing.lg,
-    gap: spacing.md,
-  },
-  loadingTitle: {
-    ...typography.title,
-    color: colors.text,
-    textAlign: 'center',
-  },
-  loadingText: {
-    ...typography.body,
-    color: colors.textMuted,
-    textAlign: 'center',
   },
 });

@@ -22,7 +22,6 @@
 
 import React, { useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Linking,
   Modal,
@@ -38,7 +37,13 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
 
-import { BBoxOverlay, Button, StatusBadge } from '@src/components';
+import {
+  BBoxOverlay,
+  Button,
+  ErrorState,
+  Skeleton,
+  StatusBadge,
+} from '@src/components';
 import { apiClient } from '@src/api/client';
 import { useToast } from '@src/hooks/useToast';
 import { queryKeys } from '@src/state/queryClient';
@@ -83,22 +88,42 @@ export default function RuleDetailScreen(): React.ReactElement {
   );
 
   if (isLoading) {
+    // Skeleton mirrors the live rule layout: title row (heading + status
+    // pill), citation chip, four labeled section cards, and the bbox
+    // preview at the bottom. Sized so the layout doesn't pop on land.
     return (
-      <SafeAreaView style={styles.center}>
-        <ActivityIndicator color={colors.primary} />
-        <Text style={styles.muted}>Loading rule…</Text>
+      <SafeAreaView style={styles.root} edges={['bottom']}>
+        <ScrollView contentContainerStyle={styles.content}>
+          <View style={styles.skeletonHeaderRow}>
+            <Skeleton width="60%" height={24} radius={4} />
+            <Skeleton width={64} height={22} radius={radius.sm} />
+          </View>
+          <Skeleton width={140} height={16} radius={4} />
+          <Skeleton width="100%" height={88} radius={radius.md} />
+          <Skeleton width="100%" height={88} radius={radius.md} />
+          <Skeleton width="100%" height={140} radius={radius.md} />
+        </ScrollView>
       </SafeAreaView>
     );
   }
   if (error || !rule) {
     return (
       <SafeAreaView style={styles.center}>
-        <Text style={styles.muted}>
-          {error
-            ? "We couldn't load this rule. Try again from the report."
-            : `Rule ${ruleId} isn't in this report.`}
-        </Text>
-        <Button label="Back" variant="ghost" onPress={() => router.back()} />
+        {error ? (
+          <ErrorState
+            title="Rule unavailable"
+            description="We couldn't load this rule. Check your connection and try again."
+            retry={() => router.back()}
+            retryLabel="Back to report"
+          />
+        ) : (
+          <ErrorState
+            title="Rule not found"
+            description={`Rule ${ruleId} isn't in this report.`}
+            retry={() => router.back()}
+            retryLabel="Back"
+          />
+        )}
       </SafeAreaView>
     );
   }
@@ -209,6 +234,10 @@ export default function RuleDetailScreen(): React.ReactElement {
           </View>
         ) : null}
 
+        {/* Flag-as-incorrect — opens a modal sheet to collect a comment.
+            The Button primitive picks up the new `interaction` tokens
+            (pressed scale + opacity, disabled fade) so the touch feel
+            matches the rest of the app. */}
         <Button
           label="Flag as incorrect"
           variant="secondary"
@@ -404,8 +433,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: spacing.sm,
   },
+  skeletonHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
   title: {
-    ...typography.heading,
+    ...typography.headingLg,
     color: colors.text,
     flex: 1,
   },
@@ -437,15 +472,15 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   sectionTitle: {
-    ...typography.heading,
+    ...typography.headingSm,
     color: colors.text,
   },
   body: {
-    ...typography.body,
+    ...typography.bodyMd,
     color: colors.text,
   },
   muted: {
-    ...typography.body,
+    ...typography.bodyMd,
     color: colors.textMuted,
   },
   bboxCard: {
