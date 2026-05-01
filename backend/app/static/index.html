@@ -806,6 +806,20 @@
   /* framing keeps the existing amber corner color (default) */
   .cam-frame.framing::before { border-color: rgba(188, 139, 67, 0.55); }
 
+  /* `verifying` runs while the backend container-detection gate is in
+     flight (after the cheap heuristics fire but before we commit to a
+     real capture). Visually distinct from `framing` via a slow pulse so
+     the user knows we're waiting on something rather than just stalled. */
+  .cam-frame.verifying .corner { border-color: rgba(188, 139, 67, 0.85); }
+  .cam-frame.verifying::before {
+    border-color: rgba(188, 139, 67, 0.65);
+    animation: verifyPulse 0.9s ease-in-out infinite;
+  }
+  @keyframes verifyPulse {
+    0%, 100% { box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.30); }
+    50%      { box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.30), 0 0 18px rgba(188, 139, 67, 0.55) inset; }
+  }
+
   .cam-frame.ready .corner { border-color: #4ade8a; }
   .cam-frame.ready::before {
     border-color: rgba(74, 222, 138, 0.85);
@@ -1287,9 +1301,17 @@ const DETECT_LUM_MAX = 235;
 const DETECT_MOTION_THRESHOLD = 4.5;
 const DETECT_READY_FRAMES = 3;            // ~150 ms steady at 20 Hz
 const DETECT_AUTOFOCUS_GRACE_MS = 350;
+// How long the "no container" hint stays pinned after the backend gate
+// rejects the first-panel snapshot. Long enough for the user to read it
+// and re-aim; short enough that they aren't stuck if they recover fast.
+const DETECT_GATE_COOLDOWN_MS = 2500;
+// Max edge for the snapshot we POST to /v1/detect-container. The gate
+// only needs to recognize "is there a container in this frame?" — a
+// sub-megapixel JPEG is plenty and keeps round-trip latency sub-second.
+const DETECT_GATE_SNAPSHOT_MAX_EDGE = 720;
 
 let detectionRAF = null;
-let detectionState = "searching"; // "searching" | "framing" | "ready"
+let detectionState = "searching"; // "searching" | "framing" | "verifying" | "ready"
 let detectionStreak = 0;
 let detectionPrevFrame = null;
 let detectionLastTickAt = 0;
@@ -1298,10 +1320,16 @@ let detectCtx = null;
 let cameraReadyAt = 0;
 let capturePending = false;
 let autoCaptureScheduled = false;
+// Wall-clock (performance.now) deadline before the heuristics loop is
+// allowed to drive new state transitions or hint writes. Set whenever
+// the backend gate rejects a frame, so the rejection message is held
+// on screen long enough to read. 0 = no cooldown active.
+let gateCooldownUntil = 0;
 
 const HINT_TEXT = {
   searching: "Searching for label…",
   framing: "Hold steady…",
+  verifying: "Checking…",
   ready: "Got it",
 };
 
@@ -1309,7 +1337,7 @@ function setDetectionState(next) {
   if (next === detectionState) return;
   detectionState = next;
   const guide = $("camGuide");
-  guide.classList.remove("searching", "framing", "ready");
+  guide.classList.remove("searching", "framing", "verifying", "ready");
   guide.classList.add(next);
   $("camHint").textContent = HINT_TEXT[next];
 }
@@ -1426,6 +1454,11 @@ function analyzeDetectionFrame(curr, prev) {
 
 function handleDetectionResult({ labelLike, steady }, now) {
   if (capturePending || autoCaptureScheduled) return;
+  // The backend gate just rejected a frame — keep that hint pinned on
+  // screen and freeze state transitions so the user has time to read
+  // it and re-aim. The cheap heuristics keep computing in the
+  // background; we just suppress their UI side-effects.
+  if (now < gateCooldownUntil) return;
 
   if (!labelLike) {
     detectionStreak = 0;
@@ -1446,13 +1479,128 @@ function handleDetectionResult({ labelLike, steady }, now) {
     return;
   }
 
-  setDetectionState("ready");
   if (now - cameraReadyAt < DETECT_AUTOFOCUS_GRACE_MS) return;
 
   autoCaptureScheduled = true;
-  // Yield once so the "ready" paint lands before capturePhoto starts
-  // grabbing frames and tearing down the modal.
-  requestAnimationFrame(() => capturePhoto());
+  // Heuristics (variance / edges / motion) can be satisfied by a face
+  // in front of a wall, so the FIRST panel goes through the backend
+  // container-detection gate before we commit to a real capture. Once
+  // we've confirmed there's a bottle/can/box in frame, the remaining
+  // ¼-turn captures can rely on heuristics alone — the same container
+  // is in view, just rotated.
+  const isFirstPanel = state.panels.length === 0;
+  if (isFirstPanel) {
+    // Skip the green "ready" flash — bouncing ready→verifying when the
+    // gate is in flight reads like a glitch. Go straight to verifying.
+    setDetectionState("verifying");
+    requestAnimationFrame(() => confirmAndCapture());
+  } else {
+    setDetectionState("ready");
+    // Yield once so the "ready" paint lands before capturePhoto starts
+    // grabbing frames and tearing down the modal.
+    requestAnimationFrame(() => capturePhoto());
+  }
+}
+
+// Snapshot a low-res JPEG from the live preview for the
+// /v1/detect-container gate. Mirrors the canvas-fallback path of
+// `capturePhoto` (same front-camera mirror handling) but downscales
+// hard — the gate just needs to recognize "is there a container?",
+// not read fine print, so a sub-megapixel image keeps the upload +
+// LLM round trip well under a second.
+async function snapshotForDetection(video) {
+  const w = video.videoWidth;
+  const h = video.videoHeight;
+  if (!w || !h) return null;
+  const scale = Math.min(1, DETECT_GATE_SNAPSHOT_MAX_EDGE / Math.max(w, h));
+  const dw = Math.round(w * scale);
+  const dh = Math.round(h * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = dw;
+  canvas.height = dh;
+  const ctx = canvas.getContext("2d");
+  if (camFacing === "user") {
+    ctx.translate(dw, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(video, 0, 0, dw, dh);
+  return new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.85));
+}
+
+// POST a single image to the backend container-detection gate. Resolves
+// to the parsed JSON on a 2xx; rejects on any non-2xx. Callers should
+// treat any rejection as "couldn't pre-check" and fall through to the
+// next step — the gate is best-effort, not load-bearing.
+async function confirmContainerPresent(blob, filename) {
+  const fd = new FormData();
+  fd.append("image", blob, filename || "frame.jpg");
+  const res = await fetch("/v1/detect-container", { method: "POST", body: fd });
+  if (!res.ok) throw await buildVerifyError(res);
+  return res.json();
+}
+
+// Pin the rejection hint on screen for DETECT_GATE_COOLDOWN_MS without
+// the heuristics loop overwriting it on the next tick. We bypass
+// setDetectionState (which always rewrites the hint from HINT_TEXT)
+// and update the corner classes inline so the gray "searching" bracket
+// is what the user sees behind the rejection text.
+function showGateRejection(reason) {
+  const hint = $("camHint");
+  hint.textContent = reason
+    ? `Hmm — ${reason}`
+    : "Point the camera at a bottle, can, or box.";
+  detectionState = "searching";
+  const guide = $("camGuide");
+  guide.classList.remove("verifying", "ready", "framing");
+  guide.classList.add("searching");
+  detectionStreak = 0;
+  autoCaptureScheduled = false;
+  gateCooldownUntil = performance.now() + DETECT_GATE_COOLDOWN_MS;
+}
+
+async function confirmAndCapture() {
+  const v = $("camVideo");
+  if (!v.videoWidth || !v.videoHeight) {
+    autoCaptureScheduled = false;
+    return;
+  }
+  let blob = null;
+  try {
+    blob = await snapshotForDetection(v);
+  } catch (err) {
+    console.warn("snapshot for detection failed:", err);
+  }
+  // Snapshot failure is a local issue, not a "no container" verdict —
+  // fall through to the real capture and let /v1/verify do its thing.
+  if (!blob) {
+    capturePhoto();
+    return;
+  }
+  // The user can hit cancel during the in-flight LLM call. Bail out
+  // cleanly if the camera modal was closed while we were waiting.
+  if ($("camModal").hidden) {
+    autoCaptureScheduled = false;
+    return;
+  }
+  let result = null;
+  try {
+    result = await confirmContainerPresent(blob);
+  } catch (err) {
+    // 503 / network / parse failure → null. Best-effort: better to let
+    // the user reach /v1/verify than to silently block the whole flow
+    // when the gate is unreachable.
+    console.warn("detect-container gate failed:", err);
+  }
+  if ($("camModal").hidden) {
+    autoCaptureScheduled = false;
+    return;
+  }
+  if (result == null || result.detected) {
+    capturePhoto();
+    return;
+  }
+  showGateRejection(result.reason);
 }
 
 async function openCamera() {
@@ -1464,6 +1612,7 @@ async function openCamera() {
   $("camShutter").disabled = true;
   capturePending = false;
   autoCaptureScheduled = false;
+  gateCooldownUntil = 0;
   // Camera flow walks the user through four ¼-turns of the bottle
   // (front → right → back → left), auto-capturing each steady frame.
   // All four captures are POSTed to the multi-panel verify endpoint;
@@ -1788,6 +1937,38 @@ async function runVerification() {
   setStepState("capture", "done");
   setStepState("working", "active");
   setStepState("result", "");
+
+  // Single-image submissions (upload, paste, sample) didn't go through
+  // the camera-flow gate — pre-check the image before we commit to the
+  // much-more-expensive /v1/verify call so a selfie or a screenshot of
+  // a wall doesn't burn a full pipeline run. Camera-flow submissions
+  // (4 panels) already had panel 0 gated at capture time and skip
+  // this. Best-effort: any gate failure (503 / network) falls through
+  // to /v1/verify rather than block the user.
+  if (state.panels.length === 1) {
+    setProgressLabel("Checking image…", "Making sure there's a label to read.");
+    const front = state.panels[0];
+    let gate = null;
+    try {
+      gate = await confirmContainerPresent(front.blob, front.name || "frame.jpg");
+    } catch (err) {
+      console.warn("detect-container gate failed:", err);
+    }
+    if (gate && !gate.detected) {
+      // Bounce back to the scan view with the server's reason in the
+      // inline error region — same shape as the existing showScanError
+      // path so the user can pick up where they left off.
+      showView("scan");
+      revokePanelUrls();
+      showScanError(
+        gate.reason
+          ? `That doesn't look like a beverage label — ${gate.reason}.`
+          : "That image doesn't look like a beverage label. Try a clearer photo of the front of the can or bottle."
+      );
+      return;
+    }
+  }
+
   setProgressLabel(
     "Working…",
     "Reading the label and checking it against TTB rules."
