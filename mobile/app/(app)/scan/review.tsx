@@ -30,6 +30,7 @@ import { router } from 'expo-router';
 import { Button, Screen, SectionHeader } from '@src/components';
 import { apiClient } from '@src/api/client';
 import { describeError } from '@src/api/errors';
+import { useToast } from '@src/hooks/useToast';
 import { useScanStore } from '@src/state/scanStore';
 import { colors, radius, spacing, typography } from '@src/theme';
 
@@ -65,6 +66,7 @@ export default function ReviewScreen(): React.ReactElement {
   const [error, setError] = useState<ErrorState | null>(null);
   const [attempt, setAttempt] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
+  const { show: showToast } = useToast();
 
   const allReady =
     beverageType !== null && containerSizeMl !== null && panorama !== null;
@@ -129,6 +131,13 @@ export default function ReviewScreen(): React.ReactElement {
             : `${v.message} Tap to retry.`,
       });
       setPhase('error');
+      // Mirror the inline error to a top-of-screen toast so the user
+      // sees a consistent failure cue regardless of which screen the
+      // verify pipeline died on.
+      showToast({
+        variant: 'error',
+        message: "Couldn't reach the verifier. Tap to retry.",
+      });
     }
   }, [
     allReady,
@@ -137,6 +146,7 @@ export default function ReviewScreen(): React.ReactElement {
     isImported,
     panorama,
     setScanId,
+    showToast,
   ]);
 
   useEffect(() => {

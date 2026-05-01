@@ -40,6 +40,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { BBoxOverlay, Button, StatusBadge } from '@src/components';
 import { apiClient } from '@src/api/client';
+import { useToast } from '@src/hooks/useToast';
 import { queryKeys } from '@src/state/queryClient';
 import { useScanStore } from '@src/state/scanStore';
 import type { BBox, RuleResultDTO, RuleStatus } from '@src/api/types';
@@ -56,6 +57,7 @@ export default function RuleDetailScreen(): React.ReactElement {
       : (useScanStore.getState().scanId ?? '');
 
   const panorama = useScanStore((s) => s.panorama);
+  const { show: showToast } = useToast();
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.report(scanId),
@@ -113,11 +115,22 @@ export default function RuleDetailScreen(): React.ReactElement {
       });
       setFlagOpen(false);
       setFlagComment('');
+      // Inline acknowledgement stays for the screen-reader live region;
+      // the global toast surface gives sighted users a transient cue
+      // that doesn't push the rule body around.
       setFlagToast({ kind: 'ok', msg: 'Thanks — flagged for review.' });
+      showToast({
+        variant: 'success',
+        message: 'Thanks — flagged for review.',
+      });
     } catch (e) {
       setFlagToast({
         kind: 'err',
         msg: "Couldn't submit flag. Check connection and try again.",
+      });
+      showToast({
+        variant: 'error',
+        message: "Couldn't reach the verifier. Tap to retry.",
       });
     } finally {
       setFlagSubmitting(false);

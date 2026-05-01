@@ -11,7 +11,23 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "lint": "echo \"(lint stub) - configure eslint later\"",
-    "test": "node --require sucrase/register --test 'src/**/__tests__/**/*.test.ts'"
+    "test": "jest"
+  },
+  "jest": {
+    "preset": "jest-expo",
+    "transformIgnorePatterns": [
+      "node_modules/(?!((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|@shopify/react-native-skia|react-native-reanimated|@testing-library/.*))"
+    ],
+    "moduleNameMapper": {
+      "^@src/(.*)$": "<rootDir>/src/$1",
+      "^@app/(.*)$": "<rootDir>/app/$1",
+      "^@/(.*)$": "<rootDir>/$1"
+    },
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/ios/",
+      "/android/"
+    ]
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "1.23.1",
@@ -44,7 +60,12 @@
   },
   "devDependencies": {
     "@babel/core": "^7.24.7",
+    "@testing-library/react-native": "^12.9.0",
+    "@types/jest": "^29.5.14",
     "@types/react": "~18.2.79",
+    "jest": "^29.7.0",
+    "jest-expo": "~51.0.4",
+    "react-test-renderer": "^18.2.0",
     "typescript": "~5.3.3"
   }
 }

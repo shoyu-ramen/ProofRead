@@ -16,13 +16,8 @@
  *   (c) MANUAL_OVERRIDE_AFTER_MS in `ready` without trigger sets
  *       `manualOverrideAvailable`
  *
- * Runs via `node --import sucrase/register --test` — pure JS, no
- * React, no native deps. Wall-clock is mocked by passing explicit
- * `nowMs` values.
+ * Wall-clock is mocked by passing explicit `nowMs` values.
  */
-
-import { describe, test } from 'node:test';
-import { strict as assert } from 'node:assert';
 
 import {
   AUTO_CAPTURE_CONFIDENCE_GATE,
@@ -92,9 +87,9 @@ function defaultInputs(
 describe('evaluateAutoCaptureTick — (a) sustained-good signals', () => {
   test('does not trigger immediately on first good tick', () => {
     const result = tick(INITIAL_AUTO_CAPTURE_TIMER, 0, GOOD_SIGNALS);
-    assert.equal(result.candidate, true);
-    assert.equal(result.ready, false);
-    assert.equal(result.next.candidateSinceMs, 0);
+    expect(result.candidate).toBe(true);
+    expect(result.ready).toBe(false);
+    expect(result.next.candidateSinceMs).toBe(0);
   });
 
   test('triggers exactly at AUTO_CAPTURE_HOLD_MS', () => {
@@ -102,22 +97,22 @@ describe('evaluateAutoCaptureTick — (a) sustained-good signals', () => {
     const t0 = 1_000_000; // arbitrary base time
     let result = tick(state, t0, GOOD_SIGNALS);
     state = result.next;
-    assert.equal(result.ready, false);
+    expect(result.ready).toBe(false);
 
     // Halfway through the hold — still not ready.
     result = tick(state, t0 + 750, GOOD_SIGNALS);
     state = result.next;
-    assert.equal(result.ready, false);
+    expect(result.ready).toBe(false);
 
     // Just before the threshold — still not ready.
     result = tick(state, t0 + AUTO_CAPTURE_HOLD_MS - 1, GOOD_SIGNALS);
     state = result.next;
-    assert.equal(result.ready, false);
+    expect(result.ready).toBe(false);
 
     // At the threshold — now latched.
     result = tick(state, t0 + AUTO_CAPTURE_HOLD_MS, GOOD_SIGNALS);
     state = result.next;
-    assert.equal(result.ready, true, 'expected ready=true at exactly HOLD_MS');
+    expect(result.ready).toBe(true);
   });
 
   test('stays ready while predicate remains true', () => {
@@ -125,8 +120,8 @@ describe('evaluateAutoCaptureTick — (a) sustained-good signals', () => {
     state = tick(state, 0, GOOD_SIGNALS).next;
     state = tick(state, AUTO_CAPTURE_HOLD_MS, GOOD_SIGNALS).next;
     const longAfter = tick(state, AUTO_CAPTURE_HOLD_MS + 5000, GOOD_SIGNALS);
-    assert.equal(longAfter.ready, true);
-    assert.equal(longAfter.candidate, true);
+    expect(longAfter.ready).toBe(true);
+    expect(longAfter.candidate).toBe(true);
   });
 });
 
@@ -140,16 +135,16 @@ describe('evaluateAutoCaptureTick — (b) flicker resets timer', () => {
     // 750ms of sustained-good (halfway through the hold).
     state = tick(state, t0, GOOD_SIGNALS).next;
     state = tick(state, t0 + 750, GOOD_SIGNALS).next;
-    assert.equal(state.candidateSinceMs, t0);
+    expect(state.candidateSinceMs).toBe(t0);
 
     // Flicker at t0+750: one bad tick — predicate fails for an instant.
     state = tick(state, t0 + 750, BAD_SIGNALS).next;
-    assert.equal(state.candidateSinceMs, null);
+    expect(state.candidateSinceMs).toBe(null);
 
     // Resume good — but the candidateSince anchors to the resume time,
     // not the original t0.
     state = tick(state, t0 + 800, GOOD_SIGNALS).next;
-    assert.equal(state.candidateSinceMs, t0 + 800);
+    expect(state.candidateSinceMs).toBe(t0 + 800);
   });
 
   test('readiness only fires AUTO_CAPTURE_HOLD_MS after the post-flicker resume', () => {
@@ -168,7 +163,7 @@ describe('evaluateAutoCaptureTick — (b) flicker resets timer', () => {
     // resume time.
     state = tick(state, t0 + AUTO_CAPTURE_HOLD_MS + 1, GOOD_SIGNALS).next;
     let r = tick(state, t0 + AUTO_CAPTURE_HOLD_MS + 100, GOOD_SIGNALS);
-    assert.equal(r.ready, false, 'flicker should have prevented latch');
+    expect(r.ready).toBe(false);
 
     // Now wait the full hold from the resume.
     r = tick(
@@ -176,7 +171,7 @@ describe('evaluateAutoCaptureTick — (b) flicker resets timer', () => {
       t0 + AUTO_CAPTURE_HOLD_MS + 1 + AUTO_CAPTURE_HOLD_MS,
       GOOD_SIGNALS,
     );
-    assert.equal(r.ready, true);
+    expect(r.ready).toBe(true);
   });
 
   test('predicate falls when any single leg drops below the gate', () => {
@@ -186,7 +181,7 @@ describe('evaluateAutoCaptureTick — (b) flicker resets timer', () => {
       containerConfidence: AUTO_CAPTURE_CONFIDENCE_GATE,
       gripSteadiness: 1.0,
     });
-    assert.equal(r1.candidate, false);
+    expect(r1.candidate).toBe(false);
 
     // Grip steadiness drops below the 0.7 gate.
     const r2 = tick(INITIAL_AUTO_CAPTURE_TIMER, 0, {
@@ -194,7 +189,7 @@ describe('evaluateAutoCaptureTick — (b) flicker resets timer', () => {
       containerConfidence: 1.0,
       gripSteadiness: AUTO_CAPTURE_CONFIDENCE_GATE,
     });
-    assert.equal(r2.candidate, false);
+    expect(r2.candidate).toBe(false);
 
     // PreCheck not ready.
     const r3 = tick(INITIAL_AUTO_CAPTURE_TIMER, 0, {
@@ -202,7 +197,7 @@ describe('evaluateAutoCaptureTick — (b) flicker resets timer', () => {
       containerConfidence: 1.0,
       gripSteadiness: 1.0,
     });
-    assert.equal(r3.candidate, false);
+    expect(r3.candidate).toBe(false);
   });
 });
 
@@ -221,7 +216,7 @@ describe('evaluateAutoCaptureTick — (c) manual override fallback', () => {
       inReady: true,
       readyEnteredAtMs: t0,
     });
-    assert.equal(r.manualOverrideAvailable, false);
+    expect(r.manualOverrideAvailable).toBe(false);
   });
 
   test('latches override at exactly MANUAL_OVERRIDE_AFTER_MS in ready', () => {
@@ -237,7 +232,7 @@ describe('evaluateAutoCaptureTick — (c) manual override fallback', () => {
       inReady: true,
       readyEnteredAtMs: t0,
     });
-    assert.equal(r.manualOverrideAvailable, false);
+    expect(r.manualOverrideAvailable).toBe(false);
     state = r.next;
 
     // At the threshold — latch flips on.
@@ -245,7 +240,7 @@ describe('evaluateAutoCaptureTick — (c) manual override fallback', () => {
       inReady: true,
       readyEnteredAtMs: t0,
     });
-    assert.equal(r.manualOverrideAvailable, true);
+    expect(r.manualOverrideAvailable).toBe(true);
   });
 
   test('does not surface override outside `ready`', () => {
@@ -260,7 +255,7 @@ describe('evaluateAutoCaptureTick — (c) manual override fallback', () => {
       inReady: false,
       readyEnteredAtMs: null,
     });
-    assert.equal(r.manualOverrideAvailable, false);
+    expect(r.manualOverrideAvailable).toBe(false);
   });
 
   test('override is suppressed if auto-capture has already latched', () => {
@@ -283,8 +278,8 @@ describe('evaluateAutoCaptureTick — (c) manual override fallback', () => {
       inReady: true,
       readyEnteredAtMs: t0,
     });
-    assert.equal(r.ready, true);
-    assert.equal(r.manualOverrideAvailable, false);
+    expect(r.ready).toBe(true);
+    expect(r.manualOverrideAvailable).toBe(false);
   });
 
   test('override stays latched once set, even if signals improve', () => {
@@ -299,14 +294,14 @@ describe('evaluateAutoCaptureTick — (c) manual override fallback', () => {
       inReady: true,
       readyEnteredAtMs: t0,
     }).next;
-    assert.equal(state.manualOverrideLatched, true);
+    expect(state.manualOverrideLatched).toBe(true);
 
     // Signals improve — but the latch stays.
     const r = tick(state, t0 + MANUAL_OVERRIDE_AFTER_MS + 1000, GOOD_SIGNALS, {
       inReady: true,
       readyEnteredAtMs: t0,
     });
-    assert.equal(r.manualOverrideAvailable, true);
+    expect(r.manualOverrideAvailable).toBe(true);
   });
 });
 
@@ -320,7 +315,7 @@ describe('scanReducer — auto-trigger transition', () => {
       type: 'tick',
       inputs: defaultInputs({ bottleSteady: true }),
     });
-    assert.equal(state.kind, 'ready');
+    expect(state.kind).toBe('ready');
 
     // Now feed autoCaptureReady=true while NOT rotating and NOT
     // accumulating coverage. Pre-auto-trigger this would have stayed
@@ -332,8 +327,8 @@ describe('scanReducer — auto-trigger transition', () => {
         autoCaptureReady: true,
       }),
     });
-    assert.equal(state.kind, 'scanning');
-    assert.equal((state as { coverage: number }).coverage, 0);
+    expect(state.kind).toBe('scanning');
+    expect((state as { coverage: number }).coverage).toBe(0);
   });
 
   test('rotation path still works in parallel with auto-trigger', () => {
@@ -350,7 +345,7 @@ describe('scanReducer — auto-trigger transition', () => {
         autoCaptureReady: false,
       }),
     });
-    assert.equal(state.kind, 'scanning');
+    expect(state.kind).toBe('scanning');
   });
 
   test('manualStart drives `ready → scanning`', () => {
@@ -359,27 +354,27 @@ describe('scanReducer — auto-trigger transition', () => {
       type: 'tick',
       inputs: defaultInputs({ bottleSteady: true }),
     });
-    assert.equal(state.kind, 'ready');
+    expect(state.kind).toBe('ready');
     state = scanReducer(state, { type: 'manualStart' });
-    assert.equal(state.kind, 'scanning');
-    assert.equal((state as { coverage: number }).coverage, 0);
+    expect(state.kind).toBe('scanning');
+    expect((state as { coverage: number }).coverage).toBe(0);
   });
 
   test('manualStart from non-ready states is a no-op', () => {
     // From `aligning`.
     const aligning: ScanState = { kind: 'aligning' };
-    assert.deepEqual(scanReducer(aligning, { type: 'manualStart' }), aligning);
+    expect(scanReducer(aligning, { type: 'manualStart' })).toEqual(aligning);
 
     // From `scanning` already.
     const scanning: ScanState = { kind: 'scanning', coverage: 0.4 };
-    assert.deepEqual(scanReducer(scanning, { type: 'manualStart' }), scanning);
+    expect(scanReducer(scanning, { type: 'manualStart' })).toEqual(scanning);
 
     // From `complete`.
     const complete: ScanState = {
       kind: 'complete',
       panoramaUri: 'file://x.jpg',
     };
-    assert.deepEqual(scanReducer(complete, { type: 'manualStart' }), complete);
+    expect(scanReducer(complete, { type: 'manualStart' })).toEqual(complete);
   });
 
   test('autoCaptureReady ignored unless we are in `ready`', () => {
@@ -395,6 +390,6 @@ describe('scanReducer — auto-trigger transition', () => {
         autoCaptureReady: true,
       }),
     });
-    assert.equal(state.kind, 'aligning');
+    expect(state.kind).toBe('aligning');
   });
 });
