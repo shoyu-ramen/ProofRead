@@ -870,7 +870,7 @@ function ConfirmingOverlay({
             feed without occluding the silhouette underneath. */}
         <View pointerEvents="none" style={styles.confirmingSkeletonWrap}>
           <Skeleton
-            width={Math.min(previewWidth - spacing.xl * 2, 280)}
+            width={Math.max(0, Math.min(previewWidth - spacing.xl * 2, 280))}
             height={420}
             radius={scanGeometry.silhouetteCornerRadius}
             style={styles.confirmingSkeleton}

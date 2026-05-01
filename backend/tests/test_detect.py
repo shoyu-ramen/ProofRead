@@ -116,6 +116,26 @@ def test_detected_true_rejects_inverted_bbox():
         )
 
 
+def test_detected_true_rejects_zero_area_bbox():
+    """A degenerate bbox (zero width or zero height) carries no spatial
+    information — the validator must reject so the mobile overlay never
+    receives a stroke that collapses to a line."""
+    with pytest.raises(ValueError, match="bbox"):
+        ContainerDetection(
+            detected=True,
+            container_type="bottle",
+            bbox=(0.5, 0.1, 0.5, 0.9),  # x0 == x1
+            confidence=0.9,
+        )
+    with pytest.raises(ValueError, match="bbox"):
+        ContainerDetection(
+            detected=True,
+            container_type="bottle",
+            bbox=(0.1, 0.5, 0.9, 0.5),  # y0 == y1
+            confidence=0.9,
+        )
+
+
 def test_detected_true_accepts_full_frame_bbox():
     """A container that fills the frame is still a valid bbox at the
     boundaries (inclusive 0.0 / 1.0)."""
