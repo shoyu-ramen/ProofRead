@@ -91,6 +91,32 @@ EXTRACTOR_FIELDS = EXTRACTOR_BASE_FIELDS + tuple(
 )
 
 
+# Per-field minimum confidence floor — applied at the extractor BEFORE the
+# field reaches the rule engine. The default global floor
+# (`settings.low_confidence_threshold`, 0.6) treats a "partial read; some
+# characters uncertain" as usable evidence. That works for ABV/IBU/brand
+# where a partial read still carries signal, but it's wrong for proper-
+# noun-heavy fields where a "partial read" of a city/state/country is
+# *literally* a hallucinated location.
+#
+# Sonnet 4.6 in production was caught returning
+# `name_address = "BREWED & PACKAGED IN OREGON"` at 0.72 confidence on a
+# Three Notch'd (Virginia) can — the verb phrase was readable, the model
+# fabricated a plausible-sounding state to fill the tail. A 0.85 floor on
+# these two fields pushes such partial reads into `unreadable`, which
+# downgrades the matching rules to ADVISORY rather than serving a
+# confident wrong-pass (the SPEC §0.5 worst-case outcome).
+#
+# Other fields keep the global default — they're either already clamped
+# by the rule engine (alcohol_content / net_contents have their own
+# format checks) or low entropy enough that a partial read is genuinely
+# useful evidence.
+FIELD_CONFIDENCE_FLOORS: dict[str, float] = {
+    "name_address": 0.85,
+    "country_of_origin": 0.85,
+}
+
+
 def fields_for_beverage(beverage_type: str | None) -> tuple[str, ...]:
     """Return the ordered field list expected for a given beverage_type.
 
@@ -206,11 +232,36 @@ Field definitions (FORMAT GUIDANCE — do not copy any wording from this list):
                       verbatim. Typically begins with a present-tense
                       verb phrase: "Bottled by", "Brewed by", "Distilled
                       by", "Imported by", "Produced by".
+                      ANTI-FABRICATION RULE: the city / state / country
+                      portion of this statement is the single most
+                      hallucination-prone substring on a beverage label.
+                      "Brewed in Oregon" is a plausible-sounding default
+                      that you must NEVER substitute when the actual
+                      location text is glared, cropped, or rotated past
+                      legibility. If you can read the verb phrase
+                      ("BREWED & PACKAGED BY", "Brewed by") but the
+                      proper-noun tail (company name, city, state,
+                      country) is unreadable, return ONLY the readable
+                      fragment verbatim with confidence ≤0.5 and a note
+                      naming the missing portion (e.g. value="BREWED &
+                      PACKAGED BY", note="company name and location
+                      illegible"). Do NOT guess a state, a country, or a
+                      brewery name from typography, color, or visual
+                      style. A partial fragment is correct; a fabricated
+                      location is the worst possible answer.
 
   country_of_origin — ONLY if the label EXPLICITLY declares a country of
                       origin (e.g. "Product of <country>", "Imported
                       from <country>"). For domestic U.S. labels with no
                       such statement, set unreadable: true.
+                      ANTI-FABRICATION RULE: do NOT infer a country from
+                      the language of the label, the brand styling, the
+                      apparent origin of the producer, or any other
+                      contextual cue. Only return a value when the
+                      country name itself is printed and legible. If you
+                      can see "Product of" but the country name is
+                      unreadable, set unreadable: true rather than
+                      guessing.
 
   health_warning    — the full Government Warning paragraph verbatim,
                       INCLUDING the prefix exactly as it appears. If the
@@ -650,6 +701,13 @@ def _from_pydantic(result: VerifyLabelExtraction) -> VisionExtraction:
             confidence = max(0.0, min(1.0, float(fe.confidence)))
         except (TypeError, ValueError):
             confidence = 0.85
+        # Per-field anti-fabrication floor — see FIELD_CONFIDENCE_FLOORS.
+        # Drop the read into `unreadable` rather than letting a 0.7-confident
+        # location fragment reach the rule engine as a confident pass.
+        floor = FIELD_CONFIDENCE_FLOORS.get(name)
+        if floor is not None and confidence < floor:
+            unreadable.append(name)
+            continue
         fields[name] = ExtractedField(
             value=fe.value,
             bbox=fe.bbox,
@@ -728,6 +786,14 @@ def _parse_vision_response(text: str) -> VisionExtraction:
             confidence = float(confidence)
         except (TypeError, ValueError):
             confidence = 0.85
+        clamped_confidence = max(0.0, min(1.0, confidence))
+        # Per-field anti-fabrication floor — see FIELD_CONFIDENCE_FLOORS.
+        # Mirrors the same check in `_from_pydantic` so the Qwen fallback
+        # path enforces the same hallucination guard as the primary path.
+        floor = FIELD_CONFIDENCE_FLOORS.get(name)
+        if floor is not None and clamped_confidence < floor:
+            unreadable.append(name)
+            continue
         bbox = entry.get("bbox")
         bbox_tuple: tuple[int, int, int, int] | None = None
         if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
@@ -743,7 +809,7 @@ def _parse_vision_response(text: str) -> VisionExtraction:
         fields[name] = ExtractedField(
             value=str(value),
             bbox=bbox_tuple,
-            confidence=max(0.0, min(1.0, confidence)),
+            confidence=clamped_confidence,
             source_image_id="front",
         )
 

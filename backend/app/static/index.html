@@ -1193,6 +1193,44 @@ async function normalizeImage(source, { maxEdge = 2048, quality = 0.92 } = {}) {
   return { blob, width: w, height: h };
 }
 
+// Crop `blob` to the normalized bbox (top-left origin, 0..1) returned by
+// /v1/detect-container, padded by `padding` on each side. Returns null
+// when the bbox is unusable (out-of-range, zero-size after clamp, decode
+// failure) — callers fall back to the uncropped blob.
+async function cropToBbox(blob, bbox, { padding = BBOX_CROP_PADDING_FRAC, quality = 0.92 } = {}) {
+  if (!Array.isArray(bbox) || bbox.length !== 4) return null;
+  let [x0, y0, x1, y1] = bbox.map((v) => Number(v));
+  if (![x0, y0, x1, y1].every((v) => Number.isFinite(v))) return null;
+  const padX = (x1 - x0) * padding;
+  const padY = (y1 - y0) * padding;
+  x0 = Math.max(0, x0 - padX);
+  y0 = Math.max(0, y0 - padY);
+  x1 = Math.min(1, x1 + padX);
+  y1 = Math.min(1, y1 + padY);
+  if (!(x0 < x1 && y0 < y1)) return null;
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" });
+  } catch (err) {
+    console.info("cropToBbox: decode failed, falling back to uncropped:", err);
+    return null;
+  }
+  const sx = Math.round(x0 * bitmap.width);
+  const sy = Math.round(y0 * bitmap.height);
+  const sw = Math.max(1, Math.round((x1 - x0) * bitmap.width));
+  const sh = Math.max(1, Math.round((y1 - y0) * bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = sw;
+  canvas.height = sh;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+  bitmap.close();
+  const out = await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
+  if (!out) return null;
+  return { blob: out, width: sw, height: sh };
+}
+
 function showScanError(msg) {
   const e = $("scanError");
   e.hidden = false;
@@ -1277,6 +1315,22 @@ let autoCaptureScheduled = false;
 // the backend gate rejects a frame, so the rejection message is held
 // on screen long enough to read. 0 = no cooldown active.
 let gateCooldownUntil = 0;
+// Normalized bbox (x0, y0, x1, y1) returned by the most recent
+// /v1/detect-container hit. Captured at gate-pass time and consumed by
+// `capturePhoto()` to crop the high-res frame down to just the
+// container ROI before /v1/verify. Sonnet 4.6 in production was caught
+// hallucinating proper-noun substrings (e.g. "BREWED & PACKAGED IN
+// OREGON" on a Three Notch'd / VA can) when the label occupied <25 %
+// of a wide-context phone shot — cropping the can out of the kitchen
+// background eliminates the failure mode at its source. Cleared on
+// each capture so a stale bbox cannot bleed into a manual shutter or a
+// re-aim.
+let lastDetectedBbox = null;
+// Pad the model's bbox by this fraction of the bbox edge so we don't
+// slice off label text the bbox drew tight to. 8 % is enough to cover
+// the model's typical undercount on label edges while still cropping
+// out enough background to cut the hallucination class.
+const BBOX_CROP_PADDING_FRAC = 0.08;
 
 const HINT_TEXT = {
   searching: "Searching for label…",
@@ -1577,9 +1631,20 @@ async function confirmAndCapture() {
     return;
   }
   if (result.detected) {
+    // Stash the normalized bbox so capturePhoto() can crop the high-res
+    // frame down to just the container ROI. The bbox came off a
+    // sub-megapixel detection snapshot but the coordinates are
+    // normalized 0..1, so they map cleanly onto whatever resolution the
+    // ImageCapture / canvas-fallback path produces a few hundred ms
+    // later. We bias toward bbox > no-bbox: a slightly stale bbox still
+    // crops out 70 %+ of the kitchen background.
+    lastDetectedBbox = Array.isArray(result.bbox) && result.bbox.length === 4
+      ? result.bbox
+      : null;
     capturePhoto();
     return;
   }
+  lastDetectedBbox = null;
   showGateRejection(result.reason);
 }
 
@@ -1593,6 +1658,7 @@ async function openCamera() {
   capturePending = false;
   autoCaptureScheduled = false;
   gateCooldownUntil = 0;
+  lastDetectedBbox = null;
   // Camera flow captures a single front-face frame and posts it to
   // /v1/verify. An earlier iteration walked the user through four
   // ¼-turns and merged per-field by confidence — accurate, but ~10 s
@@ -1791,6 +1857,25 @@ async function capturePhoto() {
     startDetectionLoop();
     return;
   }
+
+  // Crop the high-res frame to the container bbox the gate just
+  // returned. Killing the surrounding kitchen / face / wall keeps Sonnet
+  // from hallucinating plausible boilerplate (state names, brewery
+  // names) when the actual label text is too small to read at the input
+  // resolution. Falls back silently to the uncropped blob if the bbox
+  // is missing (gate didn't run / no bbox returned) or the crop math
+  // produces a degenerate region — verify-side guards still catch any
+  // remaining bad reads.
+  const bboxForCrop = lastDetectedBbox;
+  lastDetectedBbox = null;
+  if (bboxForCrop) {
+    const cropped = await cropToBbox(blob, bboxForCrop).catch((err) => {
+      console.info("cropToBbox failed, falling back to uncropped:", err);
+      return null;
+    });
+    if (cropped) blob = cropped.blob;
+  }
+
   const name = `capture-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`;
   resetLiveDefaults();
   pushCapturedPanel(blob, name, "image/jpeg");
@@ -1803,6 +1888,7 @@ function closeCamera() {
   stopDetectionLoop();
   capturePending = false;
   autoCaptureScheduled = false;
+  lastDetectedBbox = null;
   $("camStage").classList.remove("capturing");
   stopStream();
   $("camModal").hidden = true;

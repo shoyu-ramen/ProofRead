@@ -176,6 +176,59 @@ def test_parse_vision_response_preserves_partial_alcohol_content_value():
     assert "net_contents" not in result.unreadable
 
 
+def test_per_field_floor_pushes_low_confidence_name_address_to_unreadable():
+    """Regression for the Three Notch'd → "BREWED & PACKAGED IN OREGON" @ 0.72
+    hallucination. Sonnet read the verb phrase, fabricated a plausible state
+    name, and returned the whole thing at sub-0.85 confidence. The default
+    rule-engine threshold (0.6) treated the read as a confident pass — the
+    UI showed the wrong state in green. The per-field floor on name_address
+    pushes that read into `unreadable` so the matching rule is downgraded
+    to advisory rather than serving a confident wrong-pass."""
+    raw = json.dumps(
+        {
+            "brand_name": {"value": "ANYTOWN ALE", "confidence": 0.95},
+            "name_address": {
+                "value": "BREWED & PACKAGED IN OREGON",
+                "confidence": 0.72,
+            },
+            "country_of_origin": {
+                "value": "Product of France",
+                "confidence": 0.7,
+            },
+        }
+    )
+    result = _parse_vision_response(raw)
+    assert "name_address" in result.unreadable
+    assert "name_address" not in result.fields
+    assert "country_of_origin" in result.unreadable
+    assert "country_of_origin" not in result.fields
+    # Other fields untouched — the floor is per-field, not global.
+    assert result.fields["brand_name"].value == "ANYTOWN ALE"
+
+
+def test_per_field_floor_allows_high_confidence_name_address():
+    """0.85+ on a proper-noun-heavy field is exactly the model's "I am
+    confident" threshold per the prompt — those reads must still surface as
+    extracted fields, not get over-aggressively pushed to unreadable."""
+    raw = json.dumps(
+        {
+            "name_address": {
+                "value": "Brewed by Three Notch'd Brewing Co., Charlottesville, VA",
+                "confidence": 0.92,
+            },
+            "country_of_origin": {
+                "value": "Product of France",
+                "confidence": 0.88,
+            },
+        }
+    )
+    result = _parse_vision_response(raw)
+    assert result.fields["name_address"].value.startswith("Brewed by Three Notch'd")
+    assert result.fields["country_of_origin"].value == "Product of France"
+    assert "name_address" not in result.unreadable
+    assert "country_of_origin" not in result.unreadable
+
+
 def test_parse_vision_response_recovers_json_with_trailing_prose():
     """Regression: Haiku occasionally appends qualifying commentary after
     the JSON object on degraded labels ("**Note:** the warning text was
