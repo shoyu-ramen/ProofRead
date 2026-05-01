@@ -413,6 +413,51 @@ class PersistedLabelCache:
                 total_hits=total_hits,
             )
 
+    async def top_hit_entries(
+        self, *, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Return the top-`limit` most-hit entries for admin inspection.
+
+        Each entry is shaped ``{"signature_prefix", "hit_count",
+        "last_seen_at"}`` — the prefix-only signature lets an operator
+        eyeball "this is the same label" without leaking the full
+        perceptual fingerprint of every cached row to whoever has the
+        admin token. Sorted by ``hit_count`` descending; ties broken
+        by ``last_seen_at`` (most recent first) so a hot recent entry
+        ranks above a cold historical one with the same hit count.
+        """
+        factory = self._factory()
+        async with factory() as session:
+            stmt = (
+                select(LabelCacheEntry)
+                .order_by(
+                    LabelCacheEntry.hit_count.desc(),
+                    LabelCacheEntry.last_seen_at.desc(),
+                )
+                .limit(limit)
+            )
+            rows = (await session.scalars(stmt)).all()
+            results: list[dict[str, Any]] = []
+            for row in rows:
+                # First 16 hex chars = first 64 bits = first panel's
+                # full dhash. That's enough for an operator to
+                # disambiguate two near-collision entries by eye while
+                # not leaking the entire perceptual fingerprint.
+                sig_prefix = (row.signature_hex or "")[:16]
+                last_seen = row.last_seen_at
+                results.append(
+                    {
+                        "signature_prefix": sig_prefix,
+                        "hit_count": int(row.hit_count or 0),
+                        "last_seen_at": (
+                            last_seen.isoformat()
+                            if last_seen is not None
+                            else None
+                        ),
+                    }
+                )
+            return results
+
 
 def _freeze_extraction(extraction: VisionExtraction) -> VisionExtraction:
     """Deep-copy each ExtractedField so a caller mutation post-upsert

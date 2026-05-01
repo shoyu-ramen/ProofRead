@@ -9,12 +9,61 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
-from app.api import scans, verify
+from app.api import admin, scans, verify
 from app.auth import _TEST_USER
 from app.db import dispose_engine, get_session_factory
 from app.models import Company, User
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_alembic_migrations_sync() -> None:
+    """Run ``alembic upgrade head`` against the configured DATABASE_URL.
+
+    Runs synchronously in a worker thread (called via
+    ``asyncio.to_thread`` from the lifespan) because Alembic's
+    ``command.upgrade`` is sync-only and spawns its own short-lived
+    engine. We bind the config to ``settings.database_url`` so the
+    migration uses the same URL the application will use post-startup.
+
+    Failures are caught by the caller's try/except — the lifespan must
+    not block ``/healthz`` from answering 200 just because the DB is
+    unreachable on a Railway demo deploy without a Postgres plugin.
+    The L3 cache and persistent enrichment paths each gate themselves
+    on the DB being reachable, so a missing migration only affects
+    those tiers.
+    """
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    from app.config import settings
+
+    # Locate alembic.ini relative to the backend package — works under
+    # both the local checkout (`backend/alembic.ini`) and the Railway
+    # image where /app is the backend root and alembic.ini sits in /app.
+    repo_root = Path(__file__).resolve().parent.parent
+    config_path = repo_root / "alembic.ini"
+    if not config_path.exists():
+        # Fallback for callers running from a different layout (e.g.
+        # `pytest` invoked from the worktree root) — let Alembic's
+        # default loader resolve the file from the cwd.
+        config = Config()
+    else:
+        config = Config(str(config_path))
+    # Force the alembic env.py to read this URL rather than re-importing
+    # `app.config.settings` — a test-time monkeypatch of the URL stays
+    # honored that way.
+    config.set_main_option("sqlalchemy.url", settings.database_url)
+    # `script_location` resolves relative to the ini's directory; if we
+    # had to fall back to a default Config above, point it at the right
+    # alembic dir explicitly so the migrations are still found.
+    if not config_path.exists():
+        config.set_main_option(
+            "script_location", str(repo_root / "alembic")
+        )
+    command.upgrade(config, "head")
 
 
 async def ensure_test_user() -> None:
@@ -139,6 +188,25 @@ async def lifespan(app: FastAPI):
     init_sentry()
     init_otel(app)
 
+    # Apply DB schema migrations before seeding or accepting traffic.
+    # Idempotent: ``alembic upgrade head`` is a no-op when the DB is
+    # already at the target revision, and tests that pre-create their
+    # own SQLite schema via ``Base.metadata.create_all`` short-circuit
+    # this because the alembic_version table they create matches.
+    # Failures (no DATABASE_URL, transient connection error) are
+    # swallowed for the same reason ``ensure_test_user`` is — Railway's
+    # demo deploy keeps ``/`` and ``/healthz`` working without Postgres
+    # configured. The persisted-cache + scans paths each fail open
+    # downstream when the schema isn't present.
+    try:
+        await asyncio.to_thread(_apply_alembic_migrations_sync)
+    except Exception:
+        logger.warning(
+            "Alembic migration step failed; persisted cache + scans "
+            "tier may be unavailable until DATABASE_URL is reachable.",
+            exc_info=True,
+        )
+
     try:
         await ensure_test_user()
     except Exception:
@@ -183,6 +251,7 @@ app.add_middleware(
 
 app.include_router(scans.router, prefix="/v1")
 app.include_router(verify.router, prefix="/v1")
+app.include_router(admin.router, prefix="/v1")
 
 
 _STATIC_DIR = Path(__file__).parent / "static"
