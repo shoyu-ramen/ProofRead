@@ -42,7 +42,7 @@ import asyncio
 import logging
 import re
 import time
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
@@ -94,6 +94,17 @@ _CONCURRENCY_LIMIT = 2
 # verify orchestrator may apply its own ceiling; this is the adapter's
 # self-honesty filter so we don't surface "fuzzy guess" hits to users.
 _CONFIDENCE_FLOOR = 0.4
+
+
+# Heuristic threshold for "the TTB site is down right now" — tripped
+# when this many consecutive HTTP/parse failures have happened with no
+# intervening success. Surfaced via the admin endpoint as
+# ``circuit_open`` so the on-call dashboard sees the state at a
+# glance. The adapter itself does NOT short-circuit when the flag is
+# set — a per-call attempt is cheap (single HTTP round-trip with a
+# 4 s timeout), and a wedged adapter that refuses to retry would
+# delay recovery once TTB came back.
+_CIRCUIT_OPEN_AFTER_ERRORS = 3
 
 
 # Confidence heuristics. Each tier is documented at the call site
@@ -157,6 +168,20 @@ class TTBColaAdapter(ExternalLookupAdapter):
         self._semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
         self._rate_lock = asyncio.Lock()
         self._last_request_at: float = 0.0
+        # Observability counters surfaced via the admin cache-health
+        # endpoint. ``_last_request_wall`` is wall-clock (datetime), kept
+        # alongside ``_last_request_at`` (monotonic, used by the rate
+        # limiter) so the dashboard sees a human-readable timestamp
+        # without breaking the rate-limiter's comparison contract. The
+        # circuit-open hint trips after `_CIRCUIT_OPEN_AFTER_ERRORS`
+        # consecutive failures and resets on the next success — gives
+        # operators a fast eyeball on "the TTB site is down right now"
+        # without imposing real flow control on the adapter (failures
+        # already fail-open per-call).
+        self._request_count = 0
+        self._error_count = 0
+        self._last_request_wall: datetime | None = None
+        self._consecutive_errors = 0
 
     async def lookup(
         self,
@@ -203,22 +228,26 @@ class TTBColaAdapter(ExternalLookupAdapter):
         try:
             async with self._semaphore:
                 await self._respect_rate_limit()
+                self._record_request_start()
                 rows = await self._search(
                     client=client,
                     brand=normalized_brand,
                     fanciful_name=fanciful_name,
                     class_code=class_code,
                 )
+                self._record_request_success()
         except (httpx.HTTPError, httpx.TimeoutException) as exc:
             # httpx.HTTPError is the parent of TimeoutException + most
             # network errors; we keep TimeoutException explicit for
             # readability and so the warning message is greppable.
+            self._record_request_failure()
             logger.warning("ttb_cola: HTTP failure: %s", exc)
             return None
         except (ValueError, KeyError, IndexError, AttributeError) as exc:
             # Defensive: any HTML schema drift bubbles up as one of
             # these. A None return is the right failure mode for a
             # heuristic enrichment layer.
+            self._record_request_failure()
             logger.warning("ttb_cola: parse failure: %s", exc)
             return None
         finally:
@@ -286,6 +315,50 @@ class TTBColaAdapter(ExternalLookupAdapter):
             if elapsed < _MIN_REQUEST_INTERVAL_S:
                 await asyncio.sleep(_MIN_REQUEST_INTERVAL_S - elapsed)
             self._last_request_at = time.monotonic()
+
+    def _record_request_start(self) -> None:
+        """Note that we are about to dispatch an HTTP request.
+
+        Bumps the lifetime request counter and stamps the wall-clock
+        timestamp surfaced via the admin endpoint. Called inside the
+        rate-limit + semaphore so concurrency is bounded already; a
+        plain attribute write under the GIL is sufficient.
+        """
+        self._request_count += 1
+        self._last_request_wall = datetime.now(UTC)
+
+    def _record_request_success(self) -> None:
+        """Reset the consecutive-error counter on a clean response."""
+        self._consecutive_errors = 0
+
+    def _record_request_failure(self) -> None:
+        """Bump the lifetime + consecutive-error counters."""
+        self._error_count += 1
+        self._consecutive_errors += 1
+
+    def stats(self) -> dict[str, Any]:
+        """Snapshot of adapter state for admin observability.
+
+        Returns ``{"enabled", "last_request_at", "request_count",
+        "error_count", "circuit_open"}`` — exactly the shape the admin
+        cache-health endpoint surfaces. ``last_request_at`` is ISO-8601
+        UTC (or ``None`` before the first request); ``circuit_open`` is
+        a heuristic on consecutive failures, NOT a hard breaker (the
+        adapter still attempts the next call so a recovered upstream is
+        picked up immediately).
+        """
+        return {
+            "enabled": settings.ttb_cola_lookup_enabled,
+            "last_request_at": (
+                self._last_request_wall.isoformat()
+                if self._last_request_wall is not None
+                else None
+            ),
+            "request_count": self._request_count,
+            "error_count": self._error_count,
+            "circuit_open": self._consecutive_errors
+            >= _CIRCUIT_OPEN_AFTER_ERRORS,
+        }
 
     async def _ensure_form_state(self, client: httpx.AsyncClient) -> None:
         """Fetch + cache the search form's hidden fields and action.

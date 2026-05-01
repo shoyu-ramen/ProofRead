@@ -164,6 +164,14 @@ class Settings(BaseSettings):
     # want to tighten the threshold to compensate.
     persisted_label_cache_hamming_threshold: int = 6
 
+    # Admin endpoint auth. The admin cache-health endpoint
+    # (``GET /v1/admin/cache-health``) requires this token in the
+    # ``X-Admin-Token`` request header. When unset the endpoint
+    # returns 503 (admin disabled) so a stray production deploy
+    # without the token configured cannot accidentally expose cache
+    # internals to anonymous callers.
+    admin_api_token: str | None = None
+
     # Telemetry. All three are optional — missing values mean the
     # corresponding init is a no-op and local dev / CI never sees a
     # remote callout. `environment` and `release` tag every event so

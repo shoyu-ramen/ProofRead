@@ -10,6 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY backend/pyproject.toml ./
 COPY backend/app ./app
+# Alembic config + migrations: required so the lifespan startup hook
+# can run `alembic upgrade head` against the configured DATABASE_URL.
+# The L3 perceptual cache + the scans flow both depend on the schema
+# being up to date; without these files the deploy boots with a
+# missing `label_cache` table and the persisted-cache tier silently
+# fails open.
+COPY backend/alembic.ini ./alembic.ini
+COPY backend/alembic ./alembic
 
 RUN pip install --no-cache-dir -e .
 
@@ -17,7 +25,10 @@ ENV PYTHONUNBUFFERED=1 \
     VISION_EXTRACTOR=claude \
     ANTHROPIC_MODEL=claude-sonnet-4-6 \
     ANTHROPIC_HEALTH_WARNING_MODEL=claude-haiku-4-5-20251001 \
-    ENABLE_HEALTH_WARNING_SECOND_PASS=true
+    ENABLE_HEALTH_WARNING_SECOND_PASS=true \
+    PERSISTED_LABEL_CACHE_ENABLED=true \
+    TTB_COLA_LOOKUP_ENABLED=true \
+    EXPLANATION_ENABLED=true
 
 EXPOSE 8080
 
