@@ -41,10 +41,17 @@ export const IN_SCAN_WARNING_UPPER = 300 / 360; // 0.8333
 export interface InScanWarningBannerProps {
   /**
    * Current scan state kind. The banner is only ever visible during
-   * `scanning` — pause / complete / failed states surface their own
-   * chrome and we don't want to fight them.
+   * `scanning` — pause / complete / failed / confirming states surface
+   * their own chrome and we don't want to fight them.
    */
-  state: 'aligning' | 'ready' | 'scanning' | 'paused' | 'complete' | 'failed';
+  state:
+    | 'aligning'
+    | 'ready'
+    | 'confirming'
+    | 'scanning'
+    | 'paused'
+    | 'complete'
+    | 'failed';
   /** 0..1 coverage from the tracker. */
   coverage: number;
   /**

@@ -28,10 +28,34 @@ export type FailReason =
 export type ScanStateKind =
   | 'aligning'
   | 'ready'
+  | 'confirming'
   | 'scanning'
   | 'paused'
   | 'complete'
   | 'failed';
+
+/**
+ * Sub-phase for the `confirming` state — the pre-capture gate inserted
+ * between `ready` and `scanning`. The unwrap screen takes a snapshot,
+ * POSTs `/v1/detect-container`, and renders the resulting bbox so the
+ * user gets to confirm what the system sees before committing to a
+ * 8–15s panorama capture.
+ *
+ *   - `detecting`: the snapshot has been taken (or is about to be);
+ *     waiting on the backend response.
+ *   - `detected`: backend located a container; render bbox + Start/Reshoot.
+ *   - `failed`: backend couldn't find a container; show ErrorState +
+ *     route the user back to `aligning` via `confirmRetry`.
+ */
+export type ConfirmingPhase = 'detecting' | 'detected' | 'failed';
+
+/**
+ * Container class echoed back from `POST /v1/detect-container`. Keep
+ * this in sync with `DetectContainerResponse.container_type` in
+ * `mobile/src/api/client.ts` — same union, copied here so the reducer
+ * doesn't have to import from `@src/api`.
+ */
+export type DetectedContainerType = 'bottle' | 'can' | 'box';
 
 /**
  * Pause-reason union — canonical here. ARCH §3 enumerated the original
@@ -57,6 +81,18 @@ export type PauseReason =
 export type ScanState =
   | { kind: 'aligning' }
   | { kind: 'ready' }
+  | {
+      kind: 'confirming';
+      phase: ConfirmingPhase;
+      /** File URI of the snapshot uploaded for detection. */
+      snapshotUri?: string;
+      /** Normalized [x0, y0, x1, y1] in 0..1 — present when phase==='detected'. */
+      bbox?: [number, number, number, number];
+      /** Container class returned by the backend; present when phase==='detected'. */
+      containerType?: DetectedContainerType;
+      /** Backend `reason` string for `phase==='failed'`. Used as ErrorState description. */
+      failureReason?: string;
+    }
   | { kind: 'scanning'; coverage: number }
   | { kind: 'paused'; coverage: number; reason: PauseReason }
   | { kind: 'complete'; panoramaUri: string }
@@ -99,12 +135,46 @@ export type ScanAction =
   /**
    * User tap on the manual override button (exposed once
    * `manualOverrideAvailable` flips true in `useScanStateMachine`).
-   * Forces a `ready → scanning` transition so the user can start
+   * Forces a `ready → confirming` transition so the user can start
    * capture even when the auto-capture predicate never sustains —
    * dim labels, harsh backgrounds, anything that keeps the heuristic
-   * confidence below the 0.7 gate.
+   * confidence below the 0.85 gate.
    */
-  | { type: 'manualStart' };
+  | { type: 'manualStart' }
+  /**
+   * Pre-capture gate — the unwrap screen has snapshotted a frame and
+   * is about to POST it to `/v1/detect-container`. Drives
+   * `ready → confirming{phase: 'detecting'}`. The auto-trigger path
+   * (1.5s sustain) and the manual-override path both funnel through
+   * this action.
+   */
+  | { type: 'requestConfirmation'; snapshotUri: string }
+  /**
+   * Backend response landed (success or failure). Drives
+   * `confirming{phase:'detecting'} → confirming{phase:'detected'|'failed'}`.
+   */
+  | {
+      type: 'detectionResolved';
+      result:
+        | {
+            detected: true;
+            bbox: [number, number, number, number];
+            containerType: DetectedContainerType;
+          }
+        | { detected: false; reason: string | null };
+    }
+  /**
+   * User tapped "Start scan" while in `confirming{phase:'detected'}`.
+   * Drives `confirming → scanning{coverage: 0}`.
+   */
+  | { type: 'confirmStart' }
+  /**
+   * User tapped "Reshoot" / "Retry" — either after a successful
+   * detection (changed their mind) or after a failed detection.
+   * Drives `confirming → aligning` and clears the snapshot so the
+   * next entry into `confirming` starts fresh.
+   */
+  | { type: 'confirmRetry' };
 
 export const INITIAL_SCAN_STATE: ScanState = { kind: 'aligning' };
 
@@ -132,8 +202,65 @@ export function scanReducer(state: ScanState, action: ScanAction): ScanState {
       // be a no-op (already scanning / paused / complete) or a regress
       // (aligning, no detection yet). The hook only surfaces the
       // button while in `ready` so this is a defensive guard.
+      //
+      // Pre-capture gate: manualStart no longer drops us straight into
+      // `scanning`. It funnels through the same `confirming` path as
+      // the auto-trigger so the user always sees the bbox confirm
+      // before capture begins. The hook is responsible for dispatching
+      // `requestConfirmation` once the snapshot URI is in hand; this
+      // case here is the no-op fallback if the hook ever dispatches a
+      // bare manualStart.
       if (state.kind !== 'ready') return state;
+      return state;
+    }
+    case 'requestConfirmation': {
+      // Only meaningful from `ready`. Anywhere else (aligning, already
+      // confirming, scanning, paused, complete, failed) is a no-op so
+      // a stale dispatch can't reorder the user's flow.
+      if (state.kind !== 'ready') return state;
+      return {
+        kind: 'confirming',
+        phase: 'detecting',
+        snapshotUri: action.snapshotUri,
+      };
+    }
+    case 'detectionResolved': {
+      // Only consume the result while we're in `confirming{detecting}`.
+      // A late response that lands after the user has retried (we'd
+      // already be in `aligning` or `confirming{detecting}` with a new
+      // snapshotUri) should not stomp the new state — the hook also
+      // guards via an inFlight ref but the reducer is defensive.
+      if (state.kind !== 'confirming') return state;
+      if (state.phase !== 'detecting') return state;
+      if (action.result.detected) {
+        return {
+          kind: 'confirming',
+          phase: 'detected',
+          snapshotUri: state.snapshotUri,
+          bbox: action.result.bbox,
+          containerType: action.result.containerType,
+        };
+      }
+      return {
+        kind: 'confirming',
+        phase: 'failed',
+        snapshotUri: state.snapshotUri,
+        failureReason: action.result.reason ?? undefined,
+      };
+    }
+    case 'confirmStart': {
+      // Only meaningful from `confirming{detected}` — we need a
+      // confirmed bbox before we commit to the capture pipeline.
+      if (state.kind !== 'confirming') return state;
+      if (state.phase !== 'detected') return state;
       return { kind: 'scanning', coverage: 0 };
+    }
+    case 'confirmRetry': {
+      // From any confirming sub-phase, drop back to `aligning` and let
+      // the steadiness integrator re-detect + re-arm. Drops the
+      // snapshot so the next entry into `confirming` starts fresh.
+      if (state.kind !== 'confirming') return state;
+      return { kind: 'aligning' };
     }
     case 'tick': {
       const {
@@ -174,12 +301,14 @@ export function scanReducer(state: ScanState, action: ScanAction): ScanState {
 
         case 'ready':
           // Drop back to aligning if we lose the bottle in the ready
-          // hold-window; otherwise fall into scanning the moment the
-          // user starts rotating *or* the auto-capture predicate has
-          // sustained long enough to fire on its own. The auto path
-          // lets the user just hold the bottle — no rotation kick
-          // required — and the rotation path remains as the canonical
-          // start gesture for users who like to drive it themselves.
+          // hold-window. Pre-capture gate: the auto-trigger
+          // (autoCaptureReady) and rotation paths no longer transition
+          // straight to `scanning` — the hook intercepts both and
+          // dispatches `requestConfirmation` to drop into the
+          // `confirming` gate. The reducer leaves the `ready → scanning`
+          // edge intact for legacy callers / tests; the hook simply
+          // never sets `rotating || coverage > 0 || autoCaptureReady`
+          // before it fires `requestConfirmation`.
           if (!bottleSteady) return { kind: 'aligning' };
           if (rotating || coverage > 0 || autoCaptureReady) {
             return { kind: 'scanning', coverage };
@@ -187,6 +316,17 @@ export function scanReducer(state: ScanState, action: ScanAction): ScanState {
           if (pauseReason) {
             return { kind: 'paused', coverage: 0, reason: pauseReason };
           }
+          return state;
+
+        case 'confirming':
+          // While the user is mid-confirmation, ticks must NOT boot
+          // them back to `aligning` — the snapshot is on its way to
+          // the backend or already showing a bbox the user is about
+          // to act on. lose-bottle / pauseReason are deliberately
+          // ignored here; coverage / rotation can't possibly advance
+          // because the capture pipeline isn't running. The state is
+          // driven by the explicit `confirmStart` / `confirmRetry` /
+          // `detectionResolved` actions instead.
           return state;
 
         case 'scanning':
@@ -243,6 +383,10 @@ export function coverageOf(state: ScanState): number {
       return state.coverage;
     case 'complete':
       return 1.0;
+    case 'confirming':
+    case 'aligning':
+    case 'ready':
+    case 'failed':
     default:
       return 0;
   }
@@ -254,8 +398,18 @@ export function coverageOf(state: ScanState): number {
  * Threshold for both `containerConfidence` and `gripSteadiness` before
  * the auto-capture predicate trips. Exported so the `useScanStateMachine`
  * hook can apply the same gate the tests assert on.
+ *
+ * Tightened from 0.7 → 0.85 alongside the pre-capture confirmation gate
+ * (the new `confirming` state). The thinking is defense-in-depth: the
+ * server-side `/v1/detect-container` is the authoritative gate, and
+ * this on-device threshold is a cheap pre-filter that keeps us from
+ * spamming snapshots up to the backend on low-confidence detections.
+ * Pair this with the `silhouette.class !== null` requirement enforced
+ * at the auto-capture predicate site (`useScanStateMachine`) so a
+ * silhouette that doesn't classify as bottle/can/box doesn't even
+ * trigger the snapshot.
  */
-export const AUTO_CAPTURE_CONFIDENCE_GATE = 0.7;
+export const AUTO_CAPTURE_CONFIDENCE_GATE = 0.85;
 /** Time the predicate must hold before `autoCaptureReady` latches. */
 export const AUTO_CAPTURE_HOLD_MS = 1500;
 /**
@@ -278,6 +432,13 @@ export interface AutoCaptureTickInputs {
   containerConfidence: number;
   /** Live grip-steadiness from the tracker (0..1). */
   gripSteadiness: number;
+  /**
+   * True iff `silhouette.class !== null` — the heuristic detector has
+   * classified the silhouette as a bottle or can. Defense-in-depth
+   * alongside the 0.85 confidence gate so an unclassified silhouette
+   * never fires a snapshot at the backend.
+   */
+  containerClassPresent: boolean;
   /**
    * Whether the state machine is currently in `ready`. Drives the
    * manual-override timer — outside `ready` the timer doesn't run.
@@ -355,6 +516,7 @@ export function evaluateAutoCaptureTick(
 ): AutoCaptureTickResult {
   const candidate =
     inputs.preCheckReady &&
+    inputs.containerClassPresent &&
     inputs.containerConfidence > AUTO_CAPTURE_CONFIDENCE_GATE &&
     inputs.gripSteadiness > AUTO_CAPTURE_CONFIDENCE_GATE;
 

@@ -38,18 +38,22 @@ interface SignalLevels {
   preCheckReady: boolean;
   containerConfidence: number;
   gripSteadiness: number;
+  containerClassPresent?: boolean;
 }
 
+// GOOD signals must clear the new 0.85 gate (was 0.7); 0.9 still does.
 const GOOD_SIGNALS: SignalLevels = {
   preCheckReady: true,
   containerConfidence: 0.9,
   gripSteadiness: 0.9,
+  containerClassPresent: true,
 };
 
 const BAD_SIGNALS: SignalLevels = {
   preCheckReady: false,
   containerConfidence: 0.0,
   gripSteadiness: 0.0,
+  containerClassPresent: false,
 };
 
 function tick(
@@ -63,6 +67,7 @@ function tick(
     preCheckReady: signals.preCheckReady,
     containerConfidence: signals.containerConfidence,
     gripSteadiness: signals.gripSteadiness,
+    containerClassPresent: signals.containerClassPresent ?? true,
     inReady: opts.inReady ?? true,
     readyEnteredAtMs:
       opts.readyEnteredAtMs ?? (opts.inReady === false ? null : 0),
@@ -175,7 +180,7 @@ describe('evaluateAutoCaptureTick — (b) flicker resets timer', () => {
   });
 
   test('predicate falls when any single leg drops below the gate', () => {
-    // Container confidence drops below the 0.7 gate.
+    // Container confidence at the gate (now 0.85) doesn't satisfy `>`.
     const r1 = tick(INITIAL_AUTO_CAPTURE_TIMER, 0, {
       preCheckReady: true,
       containerConfidence: AUTO_CAPTURE_CONFIDENCE_GATE,
@@ -183,7 +188,7 @@ describe('evaluateAutoCaptureTick — (b) flicker resets timer', () => {
     });
     expect(r1.candidate).toBe(false);
 
-    // Grip steadiness drops below the 0.7 gate.
+    // Grip steadiness at the gate doesn't satisfy `>`.
     const r2 = tick(INITIAL_AUTO_CAPTURE_TIMER, 0, {
       preCheckReady: true,
       containerConfidence: 1.0,
@@ -198,6 +203,19 @@ describe('evaluateAutoCaptureTick — (b) flicker resets timer', () => {
       gripSteadiness: 1.0,
     });
     expect(r3.candidate).toBe(false);
+  });
+
+  test('predicate falls when silhouette.class is null', () => {
+    // Defense in depth alongside the 0.85 confidence gate: an
+    // unclassified silhouette (heuristic couldn't land bottle/can)
+    // must NOT fire the snapshot, even with high confidence numbers.
+    const r = tick(INITIAL_AUTO_CAPTURE_TIMER, 0, {
+      preCheckReady: true,
+      containerConfidence: 1.0,
+      gripSteadiness: 1.0,
+      containerClassPresent: false,
+    });
+    expect(r.candidate).toBe(false);
   });
 });
 
@@ -348,7 +366,12 @@ describe('scanReducer — auto-trigger transition', () => {
     expect(state.kind).toBe('scanning');
   });
 
-  test('manualStart drives `ready → scanning`', () => {
+  test('manualStart is a no-op — confirming gate is driven by requestConfirmation', () => {
+    // Pre-capture gate: the hook dispatches requestConfirmation (with a
+    // snapshot URI) instead of manualStart. The reducer's manualStart
+    // case is now a no-op fallback — kept so a stale dispatch can't
+    // skip the bbox confirmation. The hook is responsible for the new
+    // flow; the reducer stays defensive.
     let state: ScanState = INITIAL_SCAN_STATE;
     state = scanReducer(state, {
       type: 'tick',
@@ -356,8 +379,7 @@ describe('scanReducer — auto-trigger transition', () => {
     });
     expect(state.kind).toBe('ready');
     state = scanReducer(state, { type: 'manualStart' });
-    expect(state.kind).toBe('scanning');
-    expect((state as { coverage: number }).coverage).toBe(0);
+    expect(state.kind).toBe('ready');
   });
 
   test('manualStart from non-ready states is a no-op', () => {
@@ -391,5 +413,224 @@ describe('scanReducer — auto-trigger transition', () => {
       }),
     });
     expect(state.kind).toBe('aligning');
+  });
+});
+
+// scanReducer — confirming gate (pre-capture confirmation) ---
+
+describe('scanReducer — confirming gate', () => {
+  function reachReady(): ScanState {
+    let state: ScanState = INITIAL_SCAN_STATE;
+    state = scanReducer(state, {
+      type: 'tick',
+      inputs: defaultInputs({ bottleSteady: true }),
+    });
+    return state;
+  }
+
+  test('requestConfirmation drives `ready → confirming{detecting}`', () => {
+    let state: ScanState = reachReady();
+    expect(state.kind).toBe('ready');
+    state = scanReducer(state, {
+      type: 'requestConfirmation',
+      snapshotUri: 'file:///tmp/snap.jpg',
+    });
+    expect(state.kind).toBe('confirming');
+    expect((state as { phase: string }).phase).toBe('detecting');
+    expect((state as { snapshotUri?: string }).snapshotUri).toBe(
+      'file:///tmp/snap.jpg',
+    );
+  });
+
+  test('requestConfirmation from non-ready states is a no-op', () => {
+    const aligning: ScanState = { kind: 'aligning' };
+    expect(
+      scanReducer(aligning, {
+        type: 'requestConfirmation',
+        snapshotUri: 'x',
+      }),
+    ).toEqual(aligning);
+
+    const scanning: ScanState = { kind: 'scanning', coverage: 0.4 };
+    expect(
+      scanReducer(scanning, {
+        type: 'requestConfirmation',
+        snapshotUri: 'x',
+      }),
+    ).toEqual(scanning);
+  });
+
+  test('detectionResolved with detected=true drives detecting → detected', () => {
+    let state: ScanState = reachReady();
+    state = scanReducer(state, {
+      type: 'requestConfirmation',
+      snapshotUri: 'file:///tmp/snap.jpg',
+    });
+    state = scanReducer(state, {
+      type: 'detectionResolved',
+      result: {
+        detected: true,
+        bbox: [0.1, 0.2, 0.8, 0.9],
+        containerType: 'bottle',
+      },
+    });
+    expect(state.kind).toBe('confirming');
+    expect((state as { phase: string }).phase).toBe('detected');
+    expect(
+      (state as { bbox?: [number, number, number, number] }).bbox,
+    ).toEqual([0.1, 0.2, 0.8, 0.9]);
+    expect((state as { containerType?: string }).containerType).toBe(
+      'bottle',
+    );
+  });
+
+  test('detectionResolved with detected=false drives detecting → failed', () => {
+    let state: ScanState = reachReady();
+    state = scanReducer(state, {
+      type: 'requestConfirmation',
+      snapshotUri: 'file:///tmp/snap.jpg',
+    });
+    state = scanReducer(state, {
+      type: 'detectionResolved',
+      result: { detected: false, reason: 'too dark' },
+    });
+    expect(state.kind).toBe('confirming');
+    expect((state as { phase: string }).phase).toBe('failed');
+    expect((state as { failureReason?: string }).failureReason).toBe(
+      'too dark',
+    );
+  });
+
+  test('detectionResolved is a no-op outside confirming{detecting}', () => {
+    // Already in confirming{detected} — late response should not stomp.
+    const detected: ScanState = {
+      kind: 'confirming',
+      phase: 'detected',
+      bbox: [0, 0, 1, 1],
+      containerType: 'bottle',
+    };
+    expect(
+      scanReducer(detected, {
+        type: 'detectionResolved',
+        result: { detected: false, reason: 'late' },
+      }),
+    ).toEqual(detected);
+
+    // From `aligning` (e.g. user already retried).
+    const aligning: ScanState = { kind: 'aligning' };
+    expect(
+      scanReducer(aligning, {
+        type: 'detectionResolved',
+        result: { detected: true, bbox: [0, 0, 1, 1], containerType: 'can' },
+      }),
+    ).toEqual(aligning);
+  });
+
+  test('confirmStart drives confirming{detected} → scanning{coverage:0}', () => {
+    const detected: ScanState = {
+      kind: 'confirming',
+      phase: 'detected',
+      bbox: [0.1, 0.2, 0.8, 0.9],
+      containerType: 'bottle',
+    };
+    const next = scanReducer(detected, { type: 'confirmStart' });
+    expect(next.kind).toBe('scanning');
+    expect((next as { coverage: number }).coverage).toBe(0);
+  });
+
+  test('confirmStart is a no-op outside confirming{detected}', () => {
+    const detecting: ScanState = {
+      kind: 'confirming',
+      phase: 'detecting',
+      snapshotUri: 'x',
+    };
+    expect(scanReducer(detecting, { type: 'confirmStart' })).toEqual(
+      detecting,
+    );
+
+    const failed: ScanState = {
+      kind: 'confirming',
+      phase: 'failed',
+      failureReason: 'no bottle',
+    };
+    expect(scanReducer(failed, { type: 'confirmStart' })).toEqual(failed);
+
+    const ready: ScanState = { kind: 'ready' };
+    expect(scanReducer(ready, { type: 'confirmStart' })).toEqual(ready);
+  });
+
+  test('confirmRetry drives any confirming sub-phase → aligning', () => {
+    const detecting: ScanState = {
+      kind: 'confirming',
+      phase: 'detecting',
+      snapshotUri: 'x',
+    };
+    expect(scanReducer(detecting, { type: 'confirmRetry' })).toEqual({
+      kind: 'aligning',
+    });
+
+    const detected: ScanState = {
+      kind: 'confirming',
+      phase: 'detected',
+      bbox: [0, 0, 1, 1],
+      containerType: 'bottle',
+    };
+    expect(scanReducer(detected, { type: 'confirmRetry' })).toEqual({
+      kind: 'aligning',
+    });
+
+    const failed: ScanState = {
+      kind: 'confirming',
+      phase: 'failed',
+      failureReason: 'x',
+    };
+    expect(scanReducer(failed, { type: 'confirmRetry' })).toEqual({
+      kind: 'aligning',
+    });
+  });
+
+  test('ticks while in confirming do NOT boot back to aligning', () => {
+    // While the user is mid-confirmation, lose-bottle / pauseReason
+    // should not interrupt — the snapshot is on its way to the backend
+    // or already showing a bbox the user is about to act on.
+    let state: ScanState = {
+      kind: 'confirming',
+      phase: 'detecting',
+      snapshotUri: 'x',
+    };
+    state = scanReducer(state, {
+      type: 'tick',
+      inputs: defaultInputs({
+        bottleSteady: false,
+        pauseReason: 'lost_bottle',
+      }),
+    });
+    expect(state.kind).toBe('confirming');
+    expect((state as { phase: string }).phase).toBe('detecting');
+
+    // Even with autoCaptureReady=true and rotation, ticks do not
+    // advance us out of confirming.
+    state = scanReducer(state, {
+      type: 'tick',
+      inputs: defaultInputs({
+        bottleSteady: true,
+        rotating: true,
+        autoCaptureReady: true,
+        coverage: 0.3,
+      }),
+    });
+    expect(state.kind).toBe('confirming');
+  });
+
+  test('cancel from confirming drops into failed{cancelled}', () => {
+    const state: ScanState = {
+      kind: 'confirming',
+      phase: 'detected',
+      bbox: [0, 0, 1, 1],
+      containerType: 'bottle',
+    };
+    const next = scanReducer(state, { type: 'cancel' });
+    expect(next.kind).toBe('failed');
+    expect((next as { reason: string }).reason).toBe('cancelled');
   });
 });
