@@ -22,6 +22,7 @@ EXPECTED_SPIRITS_RULES = {
     "spirits.name_address.presence",
     "spirits.country_of_origin.presence_if_imported",
     "spirits.health_warning.compliance",
+    "spirits.age_statement.format",
 }
 
 
@@ -49,6 +50,10 @@ def _full_context(application_overrides=None, field_overrides=None) -> Extractio
             value="Bottled by Old Tom Distilling Co., Bardstown, Kentucky"
         ),
         "health_warning": ExtractedField(value=CANONICAL_WARNING),
+        # Straight bourbon triggers the age-statement requirement under
+        # 27 CFR 5.40; declare a compliant value so this fixture remains
+        # the "happy path" baseline.
+        "age_statement": ExtractedField(value="Aged 4 Years"),
     }
     if field_overrides:
         for k, v in field_overrides.items():

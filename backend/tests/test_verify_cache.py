@@ -45,6 +45,9 @@ _PASS_FIXTURE = {
     "net_contents": "750 mL",
     "name_address": "Bottled by Old Tom Distilling Co., Bardstown, Kentucky",
     "health_warning": CANONICAL_WARNING,
+    # Straight whiskey requires an age statement (27 CFR 5.40); declare
+    # one so this fixture remains the "pass" baseline.
+    "age_statement": "Aged 4 Years",
 }
 
 _BOURBON_APPLICATION = {

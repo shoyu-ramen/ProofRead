@@ -1,0 +1,68 @@
+# Wine rule set — initial v1 covers the two label claims most often
+# attached to wine production: sulfite declaration (required when SO₂ ≥
+# 10 ppm, which covers nearly every U.S. wine) and the optional organic
+# certification claim.
+#
+# The seven base extracted fields (brand, class/type, alcohol, net
+# contents, name/address, country of origin, health warning) are
+# identical in shape to beer/spirits and validated by the same
+# extractor + cross-reference plumbing. This file adds the wine-only
+# checks that operate on the two new beverage-type-conditional fields
+# (`sulfite_declaration`, `organic_certification`).
+#
+# Rule_ids are versioned per-rule so cache invalidation is targeted —
+# adding `wine.sulfite.presence@1` does not bust the beer or spirits
+# cache.
+
+- id: wine.sulfite.presence
+  version: 1
+  beverage_types: [wine]
+  citation: https://www.ecfr.gov/current/title-27/chapter-I/subchapter-A/part-4/subpart-D/section-4.32
+  description: |
+    Sulfite declaration must be present on the label when total SO₂ is at
+    or above 10 ppm. The TTB requires the literal phrase "Contains
+    Sulfites" (or equivalent) in this case; it appears on virtually all
+    commercial U.S. wines.
+  severity: required
+  fix_suggestion: |
+    Add a sulfite declaration to the label, e.g. "Contains Sulfites" or
+    "CONTAINS SULFITES (USED AS A PRESERVATIVE)". The phrase must be
+    present whenever total SO₂ ≥ 10 ppm, which covers nearly every
+    commercial wine.
+  checks:
+    - type: presence
+      params:
+        field: sulfite_declaration
+    - type: regex
+      params:
+        field: sulfite_declaration
+        # Match "Contains Sulfites", "CONTAINS SULFITES", "Contains
+        # Sulfite", and the parenthetical preservative variant. Case-
+        # insensitive; the singular/plural variants are both legal.
+        pattern: 'contains\s+sulfites?'
+        flags: i
+
+- id: wine.organic.format
+  version: 1
+  beverage_types: [wine]
+  citation: https://www.ecfr.gov/current/title-7/subtitle-B/chapter-I/subchapter-M/part-205
+  description: |
+    Optional USDA organic claim. When present on the label, the claim
+    must use one of the recognised statements per 7 CFR 205. When the
+    field is null (no organic claim made) the rule is satisfied — it is
+    not a compliance failure to ship a non-organic wine.
+  severity: advisory
+  fix_suggestion: |
+    Acceptable organic statements include "USDA Organic", "Made with
+    Organic Grapes", "Organic", or a certifying-agent attribution
+    ("Certified Organic by [agent]"). Remove or correct the claim if it
+    does not fit one of these forms.
+  checks:
+    - type: regex
+      params:
+        field: organic_certification
+        # Optional: when the model didn't extract an organic claim, the
+        # check passes (no claim made → nothing to validate).
+        optional: true
+        pattern: 'usda\s*organic|made\s+with\s+organic\s+grapes|certified\s+organic|organic'
+        flags: i

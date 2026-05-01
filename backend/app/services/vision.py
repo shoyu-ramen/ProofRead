@@ -54,7 +54,19 @@ logger = logging.getLogger(__name__)
 
 # Fields the extractor is asked to return. Mirrors the keys the rule engine
 # (and producer_record cross-references) expect.
-EXTRACTOR_FIELDS = (
+#
+# The seven base fields are extracted on every label regardless of beverage
+# type. Three additional fields are beverage-type-conditional and only
+# requested when relevant:
+#   * `sulfite_declaration` (wine only) — 27 CFR 4.32 declaration when SO₂
+#     ≥ 10 ppm.
+#   * `organic_certification` (wine only) — 7 CFR 205 optional claim.
+#   * `age_statement` (spirits only) — 27 CFR 5.40 (required for some
+#     whiskey classes; advisory otherwise).
+# Asking the model for fields that don't apply (e.g. sulfites on a beer
+# panel) wastes output tokens and biases extraction toward false positives,
+# so the prompt + parser route fields per beverage_type.
+EXTRACTOR_BASE_FIELDS = (
     "brand_name",
     "class_type",
     "alcohol_content",
@@ -63,6 +75,33 @@ EXTRACTOR_FIELDS = (
     "country_of_origin",
     "health_warning",
 )
+
+EXTRACTOR_BEVERAGE_FIELDS: dict[str, tuple[str, ...]] = {
+    "wine": ("sulfite_declaration", "organic_certification"),
+    "spirits": ("age_statement",),
+    "beer": (),
+}
+
+# All fields the parser knows about, in extraction-prompt order. The parser
+# walks this tuple to consume any field the model returns; the per-beverage
+# allowed-set keeps a model from polluting an extraction with off-type
+# fields when it ignored the prompt's routing.
+EXTRACTOR_FIELDS = EXTRACTOR_BASE_FIELDS + tuple(
+    f for fields in EXTRACTOR_BEVERAGE_FIELDS.values() for f in fields
+)
+
+
+def fields_for_beverage(beverage_type: str | None) -> tuple[str, ...]:
+    """Return the ordered field list expected for a given beverage_type.
+
+    Falls back to the seven base fields when beverage_type is None or
+    unknown — the model still gets a coherent schema and the rule engine's
+    own filters handle anything off-spec.
+    """
+    if beverage_type is None:
+        return EXTRACTOR_BASE_FIELDS
+    extra = EXTRACTOR_BEVERAGE_FIELDS.get(beverage_type, ())
+    return EXTRACTOR_BASE_FIELDS + extra
 
 
 # Anti-leakage note: the previous version of this prompt embedded specific
@@ -204,6 +243,51 @@ Field definitions (FORMAT GUIDANCE — do not copy any wording from this list):
                       those notes for the obstruction cue and uses it
                       to refuse a confident "warning missing" verdict.
 
+Beverage-type-conditional fields (only requested for the matching
+beverage_type — see the per-request "Fields to extract" list in the
+user message below):
+
+  sulfite_declaration  — WINE ONLY (27 CFR 4.32). Verbatim sulfite
+                         declaration text. Required by TTB when total
+                         SO₂ ≥ 10 ppm; nearly all U.S. wines carry it.
+                         Format usually a short statement near the
+                         government warning or net-contents block.
+                           good:  "CONTAINS SULFITES"
+                                  "Contains sulfites"
+                                  "CONTAINS SULFITES (USED AS A
+                                   PRESERVATIVE)"
+                         If you cannot find a sulfite declaration on
+                         the label, set unreadable: true with value
+                         null. The rule engine treats absence as
+                         non-compliance — do NOT invent the phrase
+                         from a beverage that doesn't show it.
+
+  organic_certification — WINE ONLY (7 CFR 205). OPTIONAL field.
+                         Verbatim organic claim if present (USDA
+                         Organic seal text, "Made with Organic Grapes",
+                         etc.). Many wines have NO organic claim;
+                         that is the normal case. If the label does
+                         NOT carry an organic statement, set
+                         unreadable: true with value null — this is
+                         not a compliance failure, it just means the
+                         producer did not make an organic claim.
+                           good:  "USDA ORGANIC"
+                                  "Made with Organic Grapes"
+                                  "Certified Organic by [agent]"
+
+  age_statement         — SPIRITS ONLY (27 CFR 5.40). The age
+                         declaration if present (verbatim). Required
+                         for some whiskey classes (e.g. straight
+                         whiskey aged less than 4 years), advisory
+                         otherwise — the rule engine handles which
+                         applies based on the class_type you read.
+                         Capture the format INCLUDING the unit.
+                           good:  "Aged 4 Years"
+                                  "AGED 18 MONTHS"
+                                  "Aged a minimum of 6 years"
+                         If no age declaration appears on the label,
+                         set unreadable: true with value null.
+
 Confidence scale:
 
   1.0  — text is large, sharp, and unambiguous
@@ -238,8 +322,10 @@ class VerifyLabelExtraction(BaseModel):
     """Structured output of one verify-path label inspection.
 
     Mirrors `extractors/claude_vision.LabelExtraction` but trimmed to the
-    seven verify-path fields. Every field is always present; absent
-    fields come back with value=null and unreadable=true.
+    verify-path fields. The seven base fields are always present; the
+    three beverage-type-conditional fields (sulfite_declaration,
+    organic_certification, age_statement) are optional — populated only
+    when the requested beverage_type asks for them.
     """
 
     image_quality: Literal["good", "degraded", "unreadable"] = "good"
@@ -252,6 +338,13 @@ class VerifyLabelExtraction(BaseModel):
     name_address: _FieldOut = Field(default_factory=_FieldOut)
     country_of_origin: _FieldOut = Field(default_factory=_FieldOut)
     health_warning: _FieldOut = Field(default_factory=_FieldOut)
+    # Beverage-type-conditional fields. Default to None so a beer or
+    # spirits scan that didn't request `sulfite_declaration` doesn't
+    # surface it as an extracted field; the `_from_pydantic` walker
+    # skips None entries. Routing lives in `EXTRACTOR_BEVERAGE_FIELDS`.
+    sulfite_declaration: _FieldOut | None = None
+    organic_certification: _FieldOut | None = None
+    age_statement: _FieldOut | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +420,33 @@ def _format_claim_header(
     return "\n".join(parts) + "\n"
 
 
+def _format_fields_to_extract(beverage_type: str | None) -> str:
+    """Tell the model which beverage-type-conditional fields to populate.
+
+    The static system prompt describes ALL fields (cached for free), but
+    asking the model to extract `sulfite_declaration` from a beer panel
+    or `age_statement` from a wine panel wastes output tokens and biases
+    the extractor toward false positives. The per-request fields list
+    routes which conditional fields apply.
+    """
+    extra = EXTRACTOR_BEVERAGE_FIELDS.get(beverage_type or "", ())
+    lines = ["Fields to extract on this label (set unreadable: true if absent):"]
+    lines.extend(f"  - {f}" for f in EXTRACTOR_BASE_FIELDS)
+    if extra:
+        lines.append(
+            f"Beverage-type-specific fields ({beverage_type}) — "
+            "extract if present on the label, leave unreadable: true otherwise:"
+        )
+        lines.extend(f"  - {f}" for f in extra)
+    else:
+        lines.append(
+            "No beverage-type-specific fields apply to this scan; do NOT "
+            "emit `sulfite_declaration`, `organic_certification`, or "
+            "`age_statement` keys."
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _build_user_text(
     *,
     capture_quality: Any | None,
@@ -343,6 +463,7 @@ def _build_user_text(
             container_size_ml=container_size_ml,
             is_imported=is_imported,
         ),
+        _format_fields_to_extract(beverage_type),
         _format_producer_record(producer_record),
         format_capture_quality(capture_quality),
         (
@@ -512,7 +633,12 @@ def _from_pydantic(result: VerifyLabelExtraction) -> VisionExtraction:
     fields: dict[str, ExtractedField] = {}
     unreadable: list[str] = []
     for name in EXTRACTOR_FIELDS:
-        fe: _FieldOut = getattr(result, name)
+        fe: _FieldOut | None = getattr(result, name, None)
+        if fe is None:
+            # Beverage-type-conditional fields default to None when the
+            # extractor wasn't asked for them. Don't add them to either
+            # `fields` or `unreadable` — they're simply not on this scan.
+            continue
         if (
             fe.unreadable
             or fe.value is None

@@ -150,3 +150,35 @@
         field: health_warning
         canonical_ref: health_warning
         max_body_edit_distance: 5
+
+- id: spirits.age_statement.format
+  version: 1
+  beverage_types: [spirits]
+  citation: https://www.ecfr.gov/current/title-27/chapter-I/subchapter-A/part-5/subpart-D/section-5.40
+  # The rule's effective severity is decided inside the check itself
+  # based on `class_type`: when the label declares "Straight" + a
+  # whiskey designator (Bourbon, Rye, Whiskey, etc.), an age statement
+  # is REQUIRED for products under four years old (27 CFR 5.40), so
+  # missing/wrong format produces FAIL. For other spirits it is
+  # ADVISORY — extracted age statements are still format-checked, but a
+  # missing one does not fail the report. The rule is declared
+  # `required` here so the engine's REQUIRED-rule downgrade machinery
+  # remains in play; the check itself emits ADVISORY directly when the
+  # class doesn't trigger the requirement.
+  severity: required
+  description: |
+    Age statement format is validated when present, and required for
+    straight whiskey classes that need a TTB age declaration under
+    27 CFR 5.40.
+  fix_suggestion: |
+    Format the age statement as "Aged <number> Years" or "Aged <number>
+    Months" (e.g. "Aged 4 Years", "AGED 18 MONTHS"). Required for
+    straight whiskey under four years old; optional for other spirits.
+  checks:
+    - type: age_statement
+      params:
+        field: age_statement
+        class_type_field: class_type
+        # Recognised number-and-unit format. Case-insensitive.
+        pattern: 'aged\s+(?:a\s+minimum\s+of\s+)?\d+\s+(years?|months?)'
+        flags: i
