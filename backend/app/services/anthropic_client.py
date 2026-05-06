@@ -101,9 +101,57 @@ def call_with_resilience(callable_, *args: Any, **kwargs: Any) -> Any:
         raise ExtractorUnavailable(
             f"Vision extractor unavailable: {exc}"
         ) from exc
+    except (
+        anthropic.AuthenticationError,
+        anthropic.PermissionDeniedError,
+    ) as exc:
+        # 401/403 — key invalid, expired, or revoked. Environmental, not
+        # a request-shape bug; the fallback chain should pick up.
+        logger.warning("Anthropic auth failure (key invalid/revoked): %s", exc)
+        raise ExtractorUnavailable(
+            f"Vision extractor auth failed: {exc}"
+        ) from exc
+    except anthropic.BadRequestError as exc:
+        # 400 covers two unrelated cases:
+        #   (a) malformed request — a code bug; falling back would just
+        #       hit the same problem on the secondary, so re-raise to
+        #       surface the bug.
+        #   (b) "Your credit balance is too low to access the Anthropic
+        #       API" — environmental; the fallback should pick up so a
+        #       deploy with an out-of-funds key keeps serving traffic
+        #       via the local-model leg.
+        # Anthropic returns (b) as a 400 (not 402), so we match on the
+        # message to disambiguate.
+        if _is_billing_error(exc):
+            logger.warning("Anthropic billing failure (credit balance): %s", exc)
+            raise ExtractorUnavailable(
+                f"Vision extractor billing failed: {exc}"
+            ) from exc
+        logger.error("Anthropic 400 BadRequestError: %s", exc)
+        raise
     except anthropic.APIStatusError as exc:
-        # 4xx other than 408/409/429 — typically a request shape problem.
-        # Don't translate to ExtractorUnavailable; surface to the caller so
-        # we can fix the offending request rather than silently fall back.
+        # Other 4xx (404 NotFoundError, 422 UnprocessableEntityError, …)
+        # are typically request-shape bugs. Surface so we fix them rather
+        # than silently fall back.
         logger.error("Anthropic API status error %s: %s", exc.status_code, exc)
         raise
+
+
+_BILLING_KEYWORDS = ("credit balance", "billing", "insufficient credit")
+
+
+def _is_billing_error(exc: Any) -> bool:
+    """True when a 400 BadRequestError is actually a billing/credit issue.
+
+    Inspects both the message and the response body — Anthropic's wording
+    has shifted between releases ("credit balance is too low" vs.
+    "insufficient credit") so we match on a small keyword set rather than
+    a single fixed string.
+    """
+    haystack = str(exc).lower()
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            haystack = (haystack + " " + str(err.get("message", "") or "")).lower()
+    return any(k in haystack for k in _BILLING_KEYWORDS)

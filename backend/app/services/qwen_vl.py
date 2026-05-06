@@ -38,14 +38,26 @@ DEFAULT_QWEN_TIMEOUT_S = 30.0
 
 # Qwen / OpenAI-compatible servers don't honour Anthropic's structured-output
 # binding, so spell the JSON contract out in the prompt instead. The base
-# SYSTEM_PROMPT already says "ONLY a JSON object", which is enough for
-# Qwen3-VL-Instruct in our local tests. Trailing reminder ensures the
-# model emits the new top-level fields too.
-JSON_OUTPUT_REMINDER = (
-    "Return ONLY a JSON object with the seven label fields plus the top-level "
-    "image_quality, image_quality_notes, and beverage_type_observed fields. "
-    "No Markdown fences, no prose."
-)
+# SYSTEM_PROMPT names the per-field keys (value/confidence/unreadable/note)
+# but smaller open-weight models — Nemotron-Nano-VL among them — read the
+# schema loosely and return bare strings for each field. Spelling the
+# object shape out with an example here keeps those models on the
+# canonical schema; the parser also tolerates bare strings as a defence.
+JSON_OUTPUT_REMINDER = """Return ONLY a JSON object — no Markdown fences, no prose. \
+Use this exact shape, with each label field as a nested object (NOT a bare string):
+
+{
+  "image_quality": "good",
+  "image_quality_notes": "...",
+  "beverage_type_observed": "beer" | "wine" | "spirits" | "unknown",
+  "brand_name":        {"value": "...", "confidence": 0.95},
+  "class_type":        {"value": "...", "confidence": 0.92},
+  "alcohol_content":   {"value": "...", "confidence": 0.96},
+  "net_contents":      {"value": "...", "confidence": 0.95},
+  "name_address":      {"value": "...", "confidence": 0.90},
+  "country_of_origin": {"value": null,  "confidence": 0.0, "unreadable": true},
+  "health_warning":    {"value": "...", "confidence": 0.94}
+}"""
 
 
 class QwenVLExtractor:

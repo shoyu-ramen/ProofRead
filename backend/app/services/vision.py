@@ -772,6 +772,17 @@ def _parse_vision_response(text: str) -> VisionExtraction:
 
     for name in EXTRACTOR_FIELDS:
         entry = data.get(name)
+        # Smaller open-weight VLMs (e.g. Nemotron-Nano-VL on OpenRouter)
+        # sometimes return each field as a bare string rather than the
+        # {value, confidence, ...} object the prompt asks for. Wrap into
+        # the canonical shape so the rest of the path is uniform; the
+        # default 0.85 confidence applied here matches the same default
+        # the dict-shape branch uses below when `confidence` is absent.
+        if isinstance(entry, str):
+            if not entry.strip():
+                unreadable.append(name)
+                continue
+            entry = {"value": entry, "confidence": 0.85}
         if not isinstance(entry, dict):
             continue
         if entry.get("unreadable"):

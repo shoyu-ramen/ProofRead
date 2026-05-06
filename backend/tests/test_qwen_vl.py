@@ -238,6 +238,43 @@ def test_verify_qwen_constructor_requires_base_url(monkeypatch):
         verify_qwen_mod.QwenVLExtractor()
 
 
+def test_verify_qwen_tolerates_bare_string_field_values(monkeypatch):
+    """Some open-weight VLMs (e.g. nvidia/nemotron-nano-12b-v2-vl on
+    OpenRouter) emit each field as a bare string rather than the
+    {value, confidence, unreadable} object the prompt asks for. The
+    parser must wrap bare strings into the canonical shape so the
+    fallback path stays usable on those models — without this, the
+    response would be schema-correct JSON yet land with zero fields
+    extracted."""
+    bare_payload = json.dumps(
+        {
+            "brand_name": "OLD TOM DISTILLERY",
+            "class_type": "Kentucky Straight Bourbon Whiskey",
+            "alcohol_content": "45% Alc./Vol.",
+            "net_contents": "750 mL",
+            "name_address": "Bottled by Old Tom Distilling Co., Bardstown, KY",
+            "country_of_origin": "",  # empty string → unreadable
+            "health_warning": CANONICAL_WARNING,
+            "image_quality": "good",
+            "beverage_type_observed": "spirits",
+        }
+    )
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: A002
+        return _FakeResponse(payload=_wrap_choices(bare_payload))
+
+    monkeypatch.setattr(verify_qwen_mod.httpx, "post", fake_post)
+    monkeypatch.setattr(settings, "qwen_vl_base_url", "http://localhost:8000/v1")
+
+    extractor = verify_qwen_mod.QwenVLExtractor()
+    result = extractor.extract(_png_bytes())
+    assert result.fields["brand_name"].value == "OLD TOM DISTILLERY"
+    assert result.fields["health_warning"].value == CANONICAL_WARNING
+    # Empty bare string lands in unreadable, not in fields.
+    assert "country_of_origin" in result.unreadable
+    assert "country_of_origin" not in result.fields
+
+
 def test_verify_qwen_handles_multimodal_content_list(monkeypatch):
     """Some servers return content as [{type, text}, ...] parts."""
 

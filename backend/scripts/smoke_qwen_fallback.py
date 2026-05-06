@@ -85,6 +85,13 @@ def main(argv: list[str]) -> int:
     print("  fields:")
     for name, field in result.fields.items():
         print(f"    {name:18s} value={field.value!r:60s} conf={field.confidence}")
+    if not result.fields:
+        # No fields parsed → likely the model returned a non-conforming
+        # JSON shape. Surface raw_response so the operator can diagnose.
+        print()
+        print("  raw_response (truncated, 1500 chars):")
+        snippet = (result.raw_response or "")[:1500]
+        print("    " + snippet.replace("\n", "\n    "))
 
     expected = {
         "brand_name",

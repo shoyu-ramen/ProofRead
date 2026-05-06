@@ -88,26 +88,23 @@ class _FakeRequest:
         self.url = "https://api.anthropic.com/v1/messages"
 
 
-def _raise(exc_cls):
+def _raise(exc_cls, *, message: str = "boom", body: dict | None = None):
     request = _FakeRequest()
     if exc_cls is anthropic.APIConnectionError:
         return exc_cls(request=request)
     if exc_cls is anthropic.APITimeoutError:
         return exc_cls(request=request)
-    body = {"error": {"message": "boom"}}
-    if exc_cls is anthropic.RateLimitError:
-        return anthropic.RateLimitError(
-            message="rate limited", response=_FakeResponse(429), body=body
-        )
-    if exc_cls is anthropic.InternalServerError:
-        return anthropic.InternalServerError(
-            message="upstream blew up", response=_FakeResponse(500), body=body
-        )
-    if exc_cls is anthropic.BadRequestError:
-        return anthropic.BadRequestError(
-            message="bad request", response=_FakeResponse(400), body=body
-        )
-    raise AssertionError(f"unhandled exc_cls {exc_cls}")
+    body = body if body is not None else {"error": {"message": message}}
+    status = {
+        anthropic.RateLimitError: 429,
+        anthropic.InternalServerError: 500,
+        anthropic.BadRequestError: 400,
+        anthropic.AuthenticationError: 401,
+        anthropic.PermissionDeniedError: 403,
+    }.get(exc_cls)
+    if status is None:
+        raise AssertionError(f"unhandled exc_cls {exc_cls}")
+    return exc_cls(message=message, response=_FakeResponse(status), body=body)
 
 
 class _FakeResponse:
@@ -138,11 +135,74 @@ def test_call_with_resilience_translates_transient_errors(exc_cls):
 
 
 def test_call_with_resilience_does_not_swallow_4xx_request_errors():
-    """A 400 (or other non-transient client error) is a request-shape bug we
-    want to fail loud on, not silently fall back."""
+    """A 400 caused by a malformed request (non-billing) is a code bug we
+    want to fail loud on, not silently fall back to a backup that would
+    hit the same problem."""
 
     def _boom(**kwargs):
-        raise _raise(anthropic.BadRequestError)
+        raise _raise(anthropic.BadRequestError, message="messages.0: invalid")
 
     with pytest.raises(anthropic.APIStatusError):
+        call_with_resilience(_boom)
+
+
+@pytest.mark.parametrize(
+    "billing_message",
+    [
+        "Your credit balance is too low to access the Anthropic API.",
+        "credit balance is too low",
+        "insufficient credit on this account",
+        "Billing error: please update your payment method",
+    ],
+)
+def test_call_with_resilience_translates_billing_errors_to_extractor_unavailable(
+    billing_message,
+):
+    """Anthropic returns out-of-funds as a 400 BadRequestError. Without
+    translation, the chain wouldn't fall through to the local-model leg,
+    so a deploy with an out-of-funds key would 500 instead of degrading
+    gracefully."""
+
+    def _boom(**kwargs):
+        raise _raise(anthropic.BadRequestError, message=billing_message)
+
+    with pytest.raises(ExtractorUnavailable):
+        call_with_resilience(_boom)
+
+
+def test_call_with_resilience_inspects_body_for_billing_keyword():
+    """Some SDK versions surface only the body's error.message rather than
+    embedding it in the exception's stringification — the helper has to
+    look at both."""
+
+    def _boom(**kwargs):
+        raise _raise(
+            anthropic.BadRequestError,
+            message="bad request",
+            body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Your credit balance is too low.",
+                }
+            },
+        )
+
+    with pytest.raises(ExtractorUnavailable):
+        call_with_resilience(_boom)
+
+
+@pytest.mark.parametrize(
+    "exc_cls",
+    [anthropic.AuthenticationError, anthropic.PermissionDeniedError],
+)
+def test_call_with_resilience_translates_auth_errors_to_extractor_unavailable(
+    exc_cls,
+):
+    """An invalid/expired/revoked key is environmental, not a code bug —
+    the fallback should fire so the rest of the deploy keeps serving."""
+
+    def _boom(**kwargs):
+        raise _raise(exc_cls, message="invalid x-api-key")
+
+    with pytest.raises(ExtractorUnavailable):
         call_with_resilience(_boom)

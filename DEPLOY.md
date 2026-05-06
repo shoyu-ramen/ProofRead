@@ -66,12 +66,23 @@ Enable it on Railway by setting all four variables together:
 |---|---|---|
 | `ENABLE_QWEN_FALLBACK` | `true` | Master switch. Both this and `QWEN_VL_BASE_URL` must be set or the chain is skipped. |
 | `QWEN_VL_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible chat-completions root (no trailing `/chat/completions`). |
-| `QWEN_VL_MODEL` | `qwen/qwen3-vl-235b-a22b-instruct` | Provider-specific model slug. Must support image input. |
+| `QWEN_VL_MODEL` | `nvidia/nemotron-nano-12b-v2-vl:free` | Provider-specific model slug. Must support image input. |
 | `QWEN_VL_API_KEY` | `sk-or-…` | Bearer token sent as `Authorization: Bearer …`. Optional for keyless local servers. |
 | `QWEN_VL_TIMEOUT_S` | `30.0` (default) | Bump to `90`+ for cold-start local Ollama; keep low for hosted endpoints. |
 
-The current production deploy uses OpenRouter's hosted Qwen3-VL — no
-self-hosted GPU required.
+The current production deploy uses OpenRouter's free Nemotron-Nano-12B-VL
+slug — zero token cost, ~3 s typical latency, OCR-good enough on the
+bundled labels. Other useful options:
+
+- `qwen/qwen3-vl-235b-a22b-instruct` — paid, highest accuracy.
+- `baidu/qianfan-ocr-fast:free` — purpose-built OCR, fastest.
+- `google/gemma-4-31b-it:free` — best free instruction-following.
+
+Smaller open-weight VLMs sometimes return each field as a bare string
+instead of the `{value, confidence}` object the prompt asks for. The
+parser at `backend/app/services/vision.py:_parse_vision_response`
+tolerates both shapes (defaulting bare strings to confidence 0.85),
+so swapping models is free of surprise breakage.
 
 ### Verifying the fallback
 
