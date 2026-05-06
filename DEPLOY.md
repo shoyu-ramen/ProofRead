@@ -50,6 +50,45 @@ The image bakes in:
 
 Override via Railway Variables.
 
+## Local-model fallback (Qwen3-VL)
+
+When the Anthropic call raises `ExtractorUnavailable` (rate limit, network
+blip, upstream outage), the verify *and* scan extractors fall through to a
+second backend that speaks the OpenAI-compatible chat-completions API —
+vLLM, Ollama, LM Studio, or any hosted provider that mimics that surface
+(OpenRouter, DashScope). The chain lives in
+`backend/app/services/vision_chain.py`; failure semantics are `503
+vision_unavailable` only when *every* link is down.
+
+Enable it on Railway by setting all four variables together:
+
+| Name | Example | Notes |
+|---|---|---|
+| `ENABLE_QWEN_FALLBACK` | `true` | Master switch. Both this and `QWEN_VL_BASE_URL` must be set or the chain is skipped. |
+| `QWEN_VL_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible chat-completions root (no trailing `/chat/completions`). |
+| `QWEN_VL_MODEL` | `qwen/qwen3-vl-235b-a22b-instruct` | Provider-specific model slug. Must support image input. |
+| `QWEN_VL_API_KEY` | `sk-or-…` | Bearer token sent as `Authorization: Bearer …`. Optional for keyless local servers. |
+| `QWEN_VL_TIMEOUT_S` | `30.0` (default) | Bump to `90`+ for cold-start local Ollama; keep low for hosted endpoints. |
+
+The current production deploy uses OpenRouter's hosted Qwen3-VL — no
+self-hosted GPU required.
+
+### Verifying the fallback
+
+The fallback only fires when Claude is down, so a normal `/v1/verify`
+call won't exercise it. Use the dedicated smoke test, which exercises
+*only* the Qwen leg with the live Railway env vars:
+
+```bash
+railway run -- python backend/scripts/smoke_qwen_fallback.py \
+    artwork/labels/01_pass_old_tom_distillery.png
+```
+
+Expected: `PASS: Qwen3-VL fallback returned a structured extraction.`
+(prints redacted config, then the seven label fields). Costs a few cents
+per run on a hosted provider; exits non-zero on any failure so it's
+CI-friendly.
+
 ## Gotchas
 
 **No `DATABASE_URL`.** `app/main.py`'s lifespan swallows DB connection
@@ -95,7 +134,9 @@ railway open
 
 - **Build fails on `pip install`:** Python version mismatch.
 - **`/v1/verify` returns 503 `vision_unavailable`:** `ANTHROPIC_API_KEY`
-  unset or typo'd.
+  unset or typo'd. If the Qwen fallback is configured, this 503 means
+  *both* backends were down — check `QWEN_VL_BASE_URL` reachability and
+  `QWEN_VL_API_KEY` validity (run the smoke test above).
 - **`/` returns the placeholder:** `app/static/` excluded by mistake; check
   `.dockerignore`.
 - **Health check fails:** Check Railway logs; usually missing system libs
