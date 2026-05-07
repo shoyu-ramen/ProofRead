@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "model_provider": "synth_from_truth",
+  "fields": {
+    "brand_name": {
+      "value": "CALVERT BREWING",
+      "bbox": null,
+      "confidence": 0.99,
+      "source_image_id": "front"
+    },
+    "class_type": {
+      "value": "German Style Pilsner",
+      "bbox": null,
+      "confidence": 0.99,
+      "source_image_id": "front"
+    },
+    "alcohol_content": {
+      "value": "5.23% ALC./VOL",
+      "bbox": null,
+      "confidence": 0.99,
+      "source_image_id": "front"
+    },
+    "net_contents": {
+      "value": "1 PINT",
+      "bbox": null,
+      "confidence": 0.99,
+      "source_image_id": "front"
+    },
+    "name_address": {
+      "value": "BREWED AND CANNED BY CALVERT BREWING COMPANY, UPPER MARLBORO, MD.",
+      "bbox": null,
+      "confidence": 0.99,
+      "source_image_id": "front"
+    },
+    "country_of_origin": {
+      "value": null,
+      "bbox": null,
+      "confidence": 0.0,
+      "source_image_id": null
+    },
+    "health_warning": {
+      "value": "GOVERNMENT WARNING: (1) According to the Surgeon General, women should not drink alcoholic beverages during pregnancy because of the risk of birth defects. (2) Consumption of alcoholic beverages impairs your ability to drive a car or operate machinery, and may cause health problems.",
+      "bbox": null,
+      "confidence": 0.99,
+      "source_image_id": "back"
+    }
+  },
+  "unreadable_fields": [],
+  "application": {
+    "image_quality": "good",
+    "image_quality_notes": "synth_from_truth stub: capture quality assumed good for plumbing validation only. Real recordings carry the live model's verdict.",
+    "model_provider": "synth_from_truth",
+    "beverage_type_observed": "beer",
+    "model_observations": null
+  },
+  "abv_pct": 5.23,
+  "raw_ocr_texts": {}
+}
