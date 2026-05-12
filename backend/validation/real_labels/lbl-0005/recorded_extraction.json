@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
-  "model_provider": "claude-haiku-4-5-20251001",
+  "model_provider": "claude-opus-4-7",
   "fields": {
     "brand_name": {
       "value": "7TH STATE",
       "bbox": [
         210,
         30,
-        440,
+        330,
         400
       ],
-      "confidence": 0.95,
+      "confidence": 0.97,
       "source_image_id": "front"
     },
     "class_type": {
       "value": "GOLDEN LAGER",
       "bbox": [
-        210,
+        215,
         300,
-        330,
+        290,
         140
       ],
-      "confidence": 0.96,
+      "confidence": 0.97,
       "source_image_id": "front"
     },
     "alcohol_content": {
@@ -40,42 +40,42 @@
       "bbox": [
         210,
         550,
-        250,
+        260,
         35
       ],
-      "confidence": 0.97,
+      "confidence": 0.96,
       "source_image_id": "front"
     },
     "name_address": {
       "value": "Brewed and canned by Calvert Brewing Company, Upper Marlboro, MD",
       "bbox": [
-        0,
-        0,
-        120,
-        720
+        100,
+        20,
+        40,
+        560
       ],
-      "confidence": 0.9,
+      "confidence": 0.92,
       "source_image_id": "front"
     },
     "health_warning": {
       "value": "GOVERNMENT WARNING: (1) According to the Surgeon General, women should not drink alcoholic beverages during pregnancy because of the risk of birth defects. (2) Consumption of alcoholic beverages impairs your ability to drive a car or operate machinery, and may cause health problems.",
       "bbox": [
-        0,
-        0,
-        90,
-        720
+        10,
+        20,
+        80,
+        560
       ],
-      "confidence": 0.88,
+      "confidence": 0.9,
       "source_image_id": "front"
     }
   },
   "unreadable_fields": [],
   "application": {
     "image_quality": "good",
-    "image_quality_notes": "Clear flat artwork submission; all text legible.",
-    "model_provider": "claude-haiku-4-5-20251001",
+    "image_quality_notes": "Clear flat artwork; all text legible though government warning is rotated 90\u00b0.",
+    "model_provider": "claude-opus-4-7",
     "beverage_type_observed": "beer",
-    "model_observations": "Certified Independent Craft (Brewers Association) seal present on front. UPC barcode on left edge. Front and back images supplied are identical."
+    "model_observations": "Certified Independent Craft (Brewers Association) seal present on front. UPC barcode 0 40232 35992 7 in lower left. Front and back surfaces appear to be the same artwork."
   },
   "abv_pct": 4.99,
   "raw_ocr_texts": {}

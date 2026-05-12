@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "model_provider": "claude-haiku-4-5-20251001",
+  "model_provider": "claude-opus-4-7",
   "fields": {
     "brand_name": {
       "value": "CALVERT BREWING COMPANY",
       "bbox": [
-        267,
-        432,
-        395,
-        75
+        260,
+        438,
+        420,
+        70
       ],
       "confidence": 0.95,
       "source_image_id": "front"
@@ -16,20 +16,20 @@
     "class_type": {
       "value": "GOLDEN LAGER 7TH STATE",
       "bbox": [
-        266,
-        67,
-        425,
-        300
+        260,
+        60,
+        300,
+        290
       ],
-      "confidence": 0.9,
+      "confidence": 0.88,
       "source_image_id": "front"
     },
     "alcohol_content": {
       "value": "4.99% ALC./VOL.",
       "bbox": [
-        277,
-        326,
-        153,
+        280,
+        325,
+        150,
         20
       ],
       "confidence": 0.95,
@@ -38,10 +38,10 @@
     "net_contents": {
       "value": "12 FL. OZ.",
       "bbox": [
-        296,
-        381,
+        290,
+        385,
         110,
-        22
+        20
       ],
       "confidence": 0.95,
       "source_image_id": "front"
@@ -49,10 +49,10 @@
     "name_address": {
       "value": "Brewed and canned by Calvert Brewing Company, Upper Marlboro, MD.",
       "bbox": [
-        7,
-        377,
+        0,
+        240,
         30,
-        180
+        130
       ],
       "confidence": 0.9,
       "source_image_id": "front"
@@ -60,22 +60,22 @@
     "health_warning": {
       "value": "GOVERNMENT WARNING: (1) According to the Surgeon General, women should not drink alcoholic beverages during pregnancy because of the risk of birth defects. (2) Consumption of alcoholic beverages impairs your ability to drive a car or operate machinery, and may cause health problems.",
       "bbox": [
-        7,
-        15,
+        0,
+        10,
         30,
         360
       ],
-      "confidence": 0.88,
+      "confidence": 0.9,
       "source_image_id": "front"
     }
   },
   "unreadable_fields": [],
   "application": {
     "image_quality": "good",
-    "image_quality_notes": "Label is a flat artwork render; all text legible though the government warning is rotated 90\u00b0 along the left edge.",
-    "model_provider": "claude-haiku-4-5-20251001",
+    "image_quality_notes": "Label is a flat artwork rendering, clearly legible across all text elements.",
+    "model_provider": "claude-opus-4-7",
     "beverage_type_observed": "beer",
-    "model_observations": "Independent Craft Brewers Association seal present on front. UPC barcode 0 40232 33907 3 visible on left edge. Front and back surfaces appear identical."
+    "model_observations": "Front and back surfaces submitted appear identical. Includes Brewers Association 'Independent Craft' seal. UPC barcode 040232339073 visible on left side."
   },
   "abv_pct": 4.99,
   "raw_ocr_texts": {}

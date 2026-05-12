@@ -2,7 +2,7 @@
 
 Generated 2026-05-12 by `validation/scripts/measure_corpus.py`. Replay-mode against committed `recorded_extraction.json` + `recorded_detect_container.json` payloads — zero $ per run.
 
-Extraction provenance: claude-haiku-4-5-20251001: 6, synth_from_truth: 2.
+Extraction provenance: claude-opus-4-7: 6, synth_from_truth: 2.
 
 ## Composition
 

@@ -1,36 +1,36 @@
 {
   "schema_version": 1,
-  "model_provider": "claude-haiku-4-5-20251001",
+  "model_provider": "claude-opus-4-7",
   "fields": {
     "brand_name": {
-      "value": "Calvert Brewing Company",
+      "value": "CALVERT BREWING COMPANY",
       "bbox": [
-        395,
-        591,
-        632,
-        82
+        400,
+        595,
+        635,
+        80
       ],
-      "confidence": 0.94,
+      "confidence": 0.95,
       "source_image_id": "front"
     },
     "class_type": {
       "value": "M\u00c4RZEN STYLE LAGER",
       "bbox": [
-        410,
-        308,
-        425,
+        400,
+        310,
+        490,
         90
       ],
-      "confidence": 0.95,
+      "confidence": 0.96,
       "source_image_id": "front"
     },
     "alcohol_content": {
       "value": "5.5% ALC./VOL.",
       "bbox": [
-        435,
-        455,
-        265,
-        32
+        420,
+        460,
+        290,
+        35
       ],
       "confidence": 0.97,
       "source_image_id": "front"
@@ -38,12 +38,12 @@
     "net_contents": {
       "value": "12 FL. OZ.",
       "bbox": [
-        455,
+        460,
         535,
-        180,
+        210,
         30
       ],
-      "confidence": 0.97,
+      "confidence": 0.96,
       "source_image_id": "front"
     },
     "name_address": {
@@ -51,7 +51,7 @@
       "bbox": [
         0,
         0,
-        55,
+        50,
         710
       ],
       "confidence": 0.92,
@@ -60,7 +60,7 @@
     "health_warning": {
       "value": "GOVERNMENT WARNING: (1) According to the Surgeon General, women should not drink alcoholic beverages during pregnancy because of the risk of birth defects. (2) Consumption of alcoholic beverages impairs your ability to drive a car or operate machinery, and may cause health problems.",
       "bbox": [
-        60,
+        55,
         0,
         55,
         710
@@ -73,9 +73,9 @@
   "application": {
     "image_quality": "good",
     "image_quality_notes": "Flat label artwork, all text legible.",
-    "model_provider": "claude-haiku-4-5-20251001",
+    "model_provider": "claude-opus-4-7",
     "beverage_type_observed": "beer",
-    "model_observations": "Label also displays 'Autumn Oktoberfest' as the brand/product name in Gothic script at top; Certified Independent Craft Brewers Association seal present; UPC barcode 0 40232 22777 6 on left edge; owl illustration on right."
+    "model_observations": "Label is a flat unwrapped artwork showing front design with wrap-around left edge containing producer name/address and government warning. Certified Independent Craft Brewers Association seal present. UPC barcode 040232227776 visible at lower left."
   },
   "abv_pct": 5.5,
   "raw_ocr_texts": {}

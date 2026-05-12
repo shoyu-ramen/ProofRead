@@ -1,35 +1,35 @@
 {
   "schema_version": 1,
-  "model_provider": "claude-haiku-4-5-20251001",
+  "model_provider": "claude-opus-4-7",
   "fields": {
     "brand_name": {
       "value": "Conservative Dad's ULTRA RIGHT",
       "bbox": [
-        1052,
-        176,
-        710,
-        1185
+        1010,
+        180,
+        750,
+        1280
       ],
-      "confidence": 0.95,
+      "confidence": 0.92,
       "source_image_id": "front"
     },
     "class_type": {
       "value": "100% WOKE-FREE AMERICAN BEER",
       "bbox": [
-        1530,
-        170,
-        120,
-        1180
+        1430,
+        180,
+        180,
+        1280
       ],
-      "confidence": 0.92,
+      "confidence": 0.9,
       "source_image_id": "front"
     },
     "alcohol_content": {
       "value": "ALC. BY VOL. 4.8%",
       "bbox": [
-        1280,
-        1380,
-        500,
+        1170,
+        1530,
+        540,
         40
       ],
       "confidence": 0.97,
@@ -38,9 +38,9 @@
     "net_contents": {
       "value": "12 FL. OZ.",
       "bbox": [
-        1050,
-        1380,
-        220,
+        1000,
+        1530,
+        180,
         40
       ],
       "confidence": 0.97,
@@ -49,10 +49,10 @@
     "name_address": {
       "value": "BREWED & CANNED BY BIG KETTLE BREWING IN LAWRENCEVILLE, GA",
       "bbox": [
-        256,
-        40,
+        260,
+        50,
         60,
-        1200
+        1100
       ],
       "confidence": 0.94,
       "source_image_id": "front"
@@ -60,10 +60,10 @@
     "country_of_origin": {
       "value": "MADE IN USA",
       "bbox": [
-        2360,
-        1280,
+        2480,
+        1430,
         260,
-        100
+        120
       ],
       "confidence": 0.95,
       "source_image_id": "front"
@@ -71,10 +71,10 @@
     "health_warning": {
       "value": "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD NOT DRINK ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF BIRTH DEFECTS. (2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR ABILITY TO DRIVE A CAR OR OPERATE MACHINERY, AND MAY CAUSE HEALTH PROBLEMS.",
       "bbox": [
-        140,
-        330,
-        120,
-        940
+        170,
+        290,
+        60,
+        900
       ],
       "confidence": 0.9,
       "source_image_id": "front"
@@ -83,10 +83,10 @@
   "unreadable_fields": [],
   "application": {
     "image_quality": "good",
-    "image_quality_notes": "Flat artwork label, all text legible.",
-    "model_provider": "claude-haiku-4-5-20251001",
+    "image_quality_notes": "Flat label artwork, clear and legible across all surfaces.",
+    "model_provider": "claude-opus-4-7",
     "beverage_type_observed": "beer",
-    "model_observations": "Label is presented as a flat unrolled can wrap; same artwork shown for front and back surfaces. Includes UPC barcode, IA $.05 redemption value, recycle symbol, and marketing text/URL UltraRightBeer.com."
+    "model_observations": "Label is a flat artwork file (not a photo of a can); front and back images supplied are identical. Includes TM mark, recycle symbol, IA $.05 redemption value, barcode, and tagline quote on right side."
   },
   "abv_pct": 4.8,
   "raw_ocr_texts": {}

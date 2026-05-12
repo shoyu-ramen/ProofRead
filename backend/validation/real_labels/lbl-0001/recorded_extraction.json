@@ -1,66 +1,66 @@
 {
   "schema_version": 1,
-  "model_provider": "claude-haiku-4-5-20251001",
+  "model_provider": "claude-opus-4-7",
   "fields": {
     "brand_name": {
       "value": "Barka Boom",
       "bbox": [
-        267,
-        313,
-        820,
-        710
+        270,
+        330,
+        830,
+        640
       ],
-      "confidence": 0.86,
+      "confidence": 0.9,
       "source_image_id": "front"
     },
     "class_type": {
       "value": "OKTOBERFEST LAGER",
       "bbox": [
         420,
-        1190,
-        810,
+        1240,
+        830,
         60
       ],
-      "confidence": 0.95,
+      "confidence": 0.97,
       "source_image_id": "front"
     },
     "alcohol_content": {
       "value": "6.8% ALC/VOL",
       "bbox": [
-        430,
-        1490,
+        540,
+        1560,
         360,
-        30
+        40
       ],
-      "confidence": 0.97,
+      "confidence": 0.98,
       "source_image_id": "front"
     },
     "net_contents": {
       "value": "16 FL OZ",
       "bbox": [
-        830,
-        1490,
-        180,
-        30
+        920,
+        1560,
+        240,
+        40
       ],
-      "confidence": 0.97,
+      "confidence": 0.98,
       "source_image_id": "front"
     },
     "name_address": {
       "value": "BREWED & PACKAGED IN LIVINGSTON MANOR, NY  672 OLD ROUTE 17 LIVINGSTON MANOR, NY 12758",
       "bbox": [
-        2050,
-        120,
+        2080,
+        140,
         60,
-        720
+        640
       ],
-      "confidence": 0.92,
+      "confidence": 0.93,
       "source_image_id": "front"
     },
     "health_warning": {
       "value": "GOVERNMENT WARNING: (1) According to the Surgeon General, women should not drink alcoholic beverages during pregnancy because of the risk of birth defects. (2) Consumption of alcoholic beverages impairs your ability to drive a car or operate machinery, and may cause health problems.",
       "bbox": [
-        2120,
+        2150,
         120,
         90,
         900
@@ -72,10 +72,10 @@
   "unreadable_fields": [],
   "application": {
     "image_quality": "good",
-    "image_quality_notes": "Flat artwork file, clear and legible across all elements.",
-    "model_provider": "claude-haiku-4-5-20251001",
+    "image_quality_notes": "Flat artwork file, clearly legible across all elements.",
+    "model_provider": "claude-opus-4-7",
     "beverage_type_observed": "beer",
-    "model_observations": "Front and back surfaces submitted appear identical (same artwork). Label also shows 'Catskill Brewery', tagline 'Honest, Hard Working Beer', 'Never Turn Off The Light', Certified Independent Craft seal, 'Think NY, Drink NY' beer seal, UPC 8 64067 00033 1, and catskillbrewery.com URL."
+    "model_observations": "Catskill Brewery branding printed vertically; Certified Independent Craft seal and 'Think NY, Drink NY' beer mark present; UPC barcode at lower right; tagline 'Honest, Hard Working Beer' and 'Never Turn Off The Light'."
   },
   "abv_pct": 6.8,
   "raw_ocr_texts": {}

@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "model_provider": "claude-haiku-4-5-20251001",
+  "model_provider": "claude-opus-4-7",
   "fields": {
     "brand_name": {
       "value": "CALVERT BREWING",
       "bbox": [
         750,
-        570,
-        310,
+        580,
+        300,
         80
       ],
       "confidence": 0.97,
@@ -27,31 +27,31 @@
     "alcohol_content": {
       "value": "5.23% ALC./VOL.",
       "bbox": [
-        75,
-        200,
+        78,
+        180,
         30,
-        260
+        330
       ],
-      "confidence": 0.94,
+      "confidence": 0.95,
       "source_image_id": "front"
     },
     "net_contents": {
       "value": "1 PINT",
       "bbox": [
-        75,
-        90,
+        78,
+        100,
         30,
-        40
+        80
       ],
-      "confidence": 0.92,
+      "confidence": 0.93,
       "source_image_id": "front"
     },
     "name_address": {
       "value": "BREWED AND CANNED BY CALVERT BREWING COMPANY, UPPER MARLBORO, MD.",
       "bbox": [
         10,
-        10,
         40,
+        30,
         500
       ],
       "confidence": 0.95,
@@ -61,7 +61,7 @@
       "value": "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD NOT DRINK ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF BIRTH DEFECTS. (2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR ABILITY TO DRIVE A CAR OR OPERATE MACHINERY, AND MAY CAUSE HEALTH PROBLEMS.",
       "bbox": [
         40,
-        10,
+        40,
         40,
         500
       ],
@@ -72,10 +72,10 @@
   "unreadable_fields": [],
   "application": {
     "image_quality": "good",
-    "image_quality_notes": "Clear flat label artwork, all text legible including vertical sidebar text.",
-    "model_provider": "claude-haiku-4-5-20251001",
+    "image_quality_notes": "Clear vector-style label artwork with legible text on both surfaces.",
+    "model_provider": "claude-opus-4-7",
     "beverage_type_observed": "beer",
-    "model_observations": "Front and back surfaces submitted appear identical. Label also notes 'GERMAN STYLE PILSNER WITH STYRIAN FOX HOPS' in the sidebar. Barcode 051497220525 present."
+    "model_observations": "Front and back images supplied are identical. Label is a flat printed design with cornflower illustration; no foil/embossing. UPC 0 51497 22052 5 present."
   },
   "abv_pct": 5.23,
   "raw_ocr_texts": {}
