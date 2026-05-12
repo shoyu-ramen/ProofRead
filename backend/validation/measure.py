@@ -20,9 +20,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
+from app.rules.engine import RuleEngine
+from app.rules.loader import load_rules
+from app.rules.types import RuleResult
 from app.services.ocr import OCRBlock, OCRProvider, OCRResult
 from app.services.pipeline import ScanInput, VisionExtractor, process_scan
 from validation.corpus import CorpusItem, corpus_summary, generate_corpus
@@ -168,11 +172,45 @@ def _score_one(
             score.tn += 1
 
 
+def _evaluate_via_replay(
+    item: Any,
+    vision: VisionExtractor,
+) -> list[RuleResult]:
+    """Wine/spirits replay path — extractor → application thread → engine.
+
+    `process_scan` rejects non-beer with NotImplementedError; this path
+    runs the rule engine directly on a replayed extraction. Skips the
+    sensor pre-check (the recording carries the model's own image_quality
+    verdict) and the OCR fallback (irrelevant in replay mode).
+
+    Threads the truth file's `application` payload into
+    `ctx.application["producer_record"]` because every spirits cross-
+    reference rule reads from there (`app/rules/checks.py:123`); without
+    it, those rules see no record and produce ADVISORY rather than the
+    intended pass/fail signal.
+    """
+    rules = load_rules(beverage_type=item.beverage_type)
+    images = {"front": item.front_png, "back": item.back_png}
+    ctx = vision.extract(
+        beverage_type=item.beverage_type,
+        container_size_ml=item.label_spec.container_size_ml,
+        images=images,
+        is_imported=item.label_spec.is_imported,
+    )
+    application_payload = getattr(item, "application", None) or {}
+    if application_payload:
+        ctx.application["producer_record"] = dict(application_payload)
+    engine = RuleEngine(rules)
+    return engine.evaluate(ctx)
+
+
 def measure(
     items: Iterable[CorpusItem],
     *,
     ocr_provider: OCRProvider | None = None,
     vision_extractor: VisionExtractor | None = None,
+    vision_extractor_factory: Callable[[Any], VisionExtractor] | None = None,
+    skip_capture_quality: bool = False,
 ) -> HarnessReport:
     """Run each corpus item through `process_scan` and aggregate scores.
 
@@ -182,6 +220,20 @@ def measure(
     fresh `PerfectMockOCRProvider` whose text is rebound per-item to the
     synthesizer's recorded ground-truth text.
 
+    Replay mode: pass `vision_extractor_factory=fn` where `fn(item)`
+    returns a `VisionExtractor` bound to that item's recorded extraction.
+    The factory is the per-item analogue of `vision_extractor` and lets
+    the harness consume the real-photo corpus' `recorded_extraction.json`
+    files without ever calling a vision model. Mutually exclusive with
+    `vision_extractor`.
+
+    `skip_capture_quality=True` bypasses the sensor pre-flight in
+    `process_scan`. Use it for replay-mode runs where the recorded
+    extraction already accounts for capture quality (the live recorder
+    captured the model's verdict at recording time); re-running the
+    pre-check would double-down on degradation signals and shift
+    rule outcomes versus what the recorded extraction implies.
+
     Args:
         items: corpus iterable.
         ocr_provider: real OCR provider (Google Vision, future Claude OCR,
@@ -189,9 +241,20 @@ def measure(
             vision extractor is supplied, `PerfectMockOCRProvider` is used.
         vision_extractor: a `VisionExtractor` implementing the protocol in
             `app.services.pipeline` (e.g. `ClaudeVisionExtractor`).
+        vision_extractor_factory: per-item extractor builder for replay-mode.
+        skip_capture_quality: bypass the sensor pre-flight (replay-mode default).
     """
     items = list(items)
-    use_perfect = ocr_provider is None and vision_extractor is None
+    if vision_extractor is not None and vision_extractor_factory is not None:
+        raise ValueError(
+            "Pass either `vision_extractor` or `vision_extractor_factory`, "
+            "not both."
+        )
+    use_perfect = (
+        ocr_provider is None
+        and vision_extractor is None
+        and vision_extractor_factory is None
+    )
     perfect = PerfectMockOCRProvider() if use_perfect else None
 
     scores: dict[str, RuleScore] = {}
@@ -203,18 +266,43 @@ def measure(
             assert perfect is not None
             ocr = perfect.for_item(item.ocr_text)
             vision = None
+        elif vision_extractor_factory is not None:
+            ocr = ocr_provider
+            vision = vision_extractor_factory(item)
         else:
             ocr = ocr_provider
             vision = vision_extractor
 
-        scan = ScanInput(
-            beverage_type="beer",
-            container_size_ml=item.label_spec.container_size_ml,
-            images={"front": item.front_png, "back": item.back_png},
-            is_imported=item.label_spec.is_imported,
-        )
-        report = process_scan(scan, ocr=ocr, vision=vision)
-        _score_one(item, report.rule_results, scores)
+        # Beverage type drives routing: beer goes through the existing
+        # `process_scan` path (capture-quality plumbing + OCR fallback);
+        # wine/spirits route through a lean replay-only path because
+        # `process_scan` is beer-only by design and the eval harness
+        # doesn't need the OCR fallback or the extra ScanReport
+        # assembly. Synthetic `CorpusItem`s don't carry beverage_type
+        # — they default to beer, which preserves the existing tests.
+        beverage = getattr(item, "beverage_type", "beer")
+        if beverage == "beer":
+            scan = ScanInput(
+                beverage_type="beer",
+                container_size_ml=item.label_spec.container_size_ml,
+                images={"front": item.front_png, "back": item.back_png},
+                is_imported=item.label_spec.is_imported,
+            )
+            report = process_scan(
+                scan,
+                ocr=ocr,
+                vision=vision,
+                skip_capture_quality=skip_capture_quality,
+            )
+            rule_results = report.rule_results
+        else:
+            if vision is None:
+                raise ValueError(
+                    f"item {item.id!r}: beverage {beverage!r} requires a "
+                    "vision extractor — wine/spirits OCR fallback isn't wired"
+                )
+            rule_results = _evaluate_via_replay(item, vision)
+        _score_one(item, rule_results, scores)
 
     # Overall = micro-average across rules (sum TP/FP/FN/TN, then ratio).
     total_tp = sum(s.tp for s in scores.values())
