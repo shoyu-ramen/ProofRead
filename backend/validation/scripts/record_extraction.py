@@ -211,6 +211,7 @@ def _anthropic_record(
     natively handles multi-image input and returns an
     `ExtractionContext` directly — no merge needed.
     """
+    from app.config import settings
     from app.services.extractors.claude_vision import (
         ClaudeVisionExtractor,
         ProducerRecord,
@@ -252,13 +253,13 @@ def _anthropic_record(
     }
     return {
         "schema_version": 1,
-        "model_provider": "claude_opus_4_7",
+        "model_provider": settings.anthropic_model,
         "fields": fields_serialised,
         "unreadable_fields": list(ctx.unreadable_fields),
         "application": {
             "image_quality": ctx.application.get("image_quality", "good"),
             "image_quality_notes": ctx.application.get("image_quality_notes"),
-            "model_provider": "claude_opus_4_7",
+            "model_provider": settings.anthropic_model,
             "beverage_type_observed": ctx.application.get(
                 "beverage_type_observed"
             ),
