@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "model_provider": "claude-haiku-4-5-20251001",
+  "image": "front.jpg",
+  "detection": {
+    "detected": true,
+    "container_type": "can",
+    "bbox": [
+      0.0,
+      0.0,
+      1.0,
+      1.0
+    ],
+    "confidence": 0.95,
+    "reason": null,
+    "brand_name": "Genessee Cream Ale Ultra Rag",
+    "net_contents": "12 FL. OZ. | ALC. BY VOL. 4.8%"
+  }
+}
