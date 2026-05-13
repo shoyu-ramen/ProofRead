@@ -405,6 +405,12 @@ def _composition(items: list[RealCorpusItem]) -> dict[str, Any]:
 
 _ADVISORY_RULE_IDS = {"beer.health_warning.size"}
 
+# Float epsilon for the diff section — anything within this is reported
+# as "no movement" (a "—" cell) rather than a noisy +0.000 / -0.000.
+# Replay-mode runs are deterministic so movement below this floor is
+# always floating-point accumulator noise, never real signal.
+_DIFF_EPSILON = 5e-4
+
 
 def _format_rule_table(scores: dict[str, RuleScore]) -> list[str]:
     lines = [
@@ -516,7 +522,312 @@ def _render_detect_container_section(score: DetectContainerScore) -> list[str]:
     return lines
 
 
-def render_markdown(breakdown: CorpusBreakdown) -> str:
+# ---------------------------------------------------------------------------
+# Per-item drill-down
+# ---------------------------------------------------------------------------
+
+
+def _per_item_rows(
+    items: list[RealCorpusItem],
+    breakdown: CorpusBreakdown,
+) -> list[dict[str, Any]]:
+    """Reverse-index aggregate disagreements into per-item rows.
+
+    Each item's row carries the count of applicable (non-advisory) rules
+    for its beverage, the list of rule_ids the harness disagreed with the
+    annotator on, and a sortable failure count. Items with zero failures
+    still appear so the table doubles as a roster of what's in the corpus.
+    """
+    by_item_failures: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+    for rule_id, score in breakdown.overall_rule_scores.items():
+        if rule_id in _ADVISORY_RULE_IDS:
+            continue
+        for item_id, pred, exp in score.disagreements:
+            by_item_failures[item_id].append((rule_id, pred, exp))
+
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        bev_rules = RULE_IDS_BY_BEVERAGE.get(item.beverage_type, frozenset())
+        applicable = sorted(bev_rules - _ADVISORY_RULE_IDS)
+        fails = by_item_failures.get(item.id, [])
+        rows.append(
+            {
+                "id": item.id,
+                "beverage": item.beverage_type,
+                "source_kind": item.source_kind,
+                "split": item.split,
+                "rules_applicable": len(applicable),
+                "failure_count": len(fails),
+                "failing_rules": [rid for rid, _, _ in fails],
+            }
+        )
+    return rows
+
+
+def _render_per_item_section(rows: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    lines.append("## Per-item")
+    lines.append("")
+    if not rows:
+        lines.append("*(no items)*")
+        lines.append("")
+        return lines
+    lines.append(
+        "Drill-down by corpus item. `Fails / Eval` is the count of rule "
+        "disagreements (FP+FN+wrong-NA) out of applicable non-advisory "
+        "rules for that beverage. Sorted by failure count, then `id`."
+    )
+    lines.append("")
+    lines.append("| Item | Beverage | Source | Split | Fails / Eval | Failing rules |")
+    lines.append("|---|---|---|---|---|---|")
+    # Sort: most failures first, then by id. Makes the table a triage list.
+    for row in sorted(rows, key=lambda r: (-r["failure_count"], r["id"])):
+        failing = (
+            ", ".join(f"`{r}`" for r in row["failing_rules"])
+            if row["failing_rules"]
+            else "—"
+        )
+        lines.append(
+            f"| `{row['id']}` | {row['beverage']} | {row['source_kind']} "
+            f"| {row['split']} | {row['failure_count']} / "
+            f"{row['rules_applicable']} | {failing} |"
+        )
+    lines.append("")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Coverage gaps
+# ---------------------------------------------------------------------------
+
+
+def _coverage_gaps(
+    items: list[RealCorpusItem],
+    breakdown: CorpusBreakdown,
+) -> list[dict[str, Any]]:
+    """Rules with zero corpus support, per beverage represented in `items`.
+
+    A rule with support=0 scores 1.000 by definition (the harness floors
+    P/R at 1.0 when denominators are zero). That's misleading without
+    context — the rule could be a regression waiting to happen, just
+    unmeasured. This surfaces the gap so corpus growth can be targeted.
+
+    Reasons a rule lands here:
+      * Every item in the corpus is `na` for it (e.g. country-of-origin
+        on a domestic-only corpus).
+      * The rule has annotations but every prediction matched and was
+        non-`pass` (vanishingly rare).
+      * The corpus just doesn't exercise it yet.
+
+    Only beverages actually present in `items` are reported — listing
+    spirits gaps when the corpus has zero spirits items is noise.
+    """
+    beverages_present = {it.beverage_type for it in items}
+    items_per_bev = Counter(it.beverage_type for it in items)
+    gaps: list[dict[str, Any]] = []
+    for bev in sorted(beverages_present):
+        for rule_id in sorted(RULE_IDS_BY_BEVERAGE[bev]):
+            if rule_id in _ADVISORY_RULE_IDS:
+                continue
+            score = breakdown.overall_rule_scores.get(rule_id)
+            support = score.support if score else 0
+            if support > 0:
+                continue
+            gaps.append(
+                {
+                    "beverage": bev,
+                    "rule": rule_id,
+                    "na_count": score.na_count if score else 0,
+                    "items_in_beverage": items_per_bev[bev],
+                }
+            )
+    return gaps
+
+
+def _render_coverage_gaps_section(gaps: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    lines.append("## Coverage gaps")
+    lines.append("")
+    if not gaps:
+        lines.append(
+            "*(no gaps — every rule applicable to a represented beverage "
+            "has at least one pass/fail data point)*"
+        )
+        lines.append("")
+        return lines
+    lines.append(
+        "Rules with **zero non-NA support** in this corpus. They score "
+        "`1.000` by convention (the harness floors P/R when "
+        "denominators are zero), but that's a vacuous pass — corpus "
+        "growth should target these first."
+    )
+    lines.append("")
+    lines.append("| Beverage | Rule | NA items | Items in beverage |")
+    lines.append("|---|---|---|---|")
+    for gap in gaps:
+        lines.append(
+            f"| {gap['beverage']} | `{gap['rule']}` | {gap['na_count']} "
+            f"| {gap['items_in_beverage']} |"
+        )
+    lines.append("")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Regression diff vs committed baseline
+# ---------------------------------------------------------------------------
+
+
+def _load_baseline(path: Path) -> dict[str, Any]:
+    """Parse a baseline JSON produced by `render_json` on an earlier run.
+
+    Raises `ValueError` on malformed payloads so an operator running
+    `--diff` against the wrong file gets a clear error instead of a
+    silent empty diff.
+    """
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"baseline at {path} is not valid JSON; "
+            "regenerate with `measure_corpus.py --json --out <path>`"
+        ) from exc
+    if "overall" not in payload or "rules" not in payload:
+        raise ValueError(
+            f"baseline at {path} missing `overall`/`rules`; "
+            "is it a measure_corpus.py --json snapshot?"
+        )
+    return payload
+
+
+def _fmt_delta(current: float, baseline: float) -> str:
+    delta = current - baseline
+    if abs(delta) < _DIFF_EPSILON:
+        return "—"
+    return f"+{delta:.3f}" if delta > 0 else f"{delta:.3f}"
+
+
+def _render_diff_section(
+    breakdown: CorpusBreakdown,
+    detect_score: "DetectContainerScore",
+    baseline: dict[str, Any],
+    baseline_path: Path,
+) -> list[str]:
+    """Markdown section summarising deltas vs a baseline JSON snapshot."""
+    lines: list[str] = []
+    lines.append(f"## Regression diff vs `{baseline_path.name}`")
+    lines.append("")
+    generated_at = baseline.get("generated_at", "unknown")
+    lines.append(f"Baseline generated {generated_at}.")
+    lines.append("")
+
+    # --- Overall metrics ---
+    overall_b = baseline.get("overall", {})
+    lines.append("### Overall")
+    lines.append("")
+    lines.append("| Metric | Baseline | Current | Δ |")
+    lines.append("|---|---|---|---|")
+    for metric, current in (
+        ("precision", breakdown.overall_precision),
+        ("recall", breakdown.overall_recall),
+        ("f1", breakdown.overall_f1),
+    ):
+        b = float(overall_b.get(metric, 0.0))
+        lines.append(
+            f"| {metric.capitalize()} | {b:.3f} | {current:.3f} "
+            f"| {_fmt_delta(current, b)} |"
+        )
+    lines.append("")
+
+    # --- Per-rule movement (F1 is the headline; any movement listed) ---
+    rules_b = baseline.get("rules", {})
+    moved: list[tuple[str, float | None, float | None]] = []
+    rule_ids = set(rules_b) | set(breakdown.overall_rule_scores)
+    for rule_id in sorted(rule_ids):
+        if rule_id in _ADVISORY_RULE_IDS:
+            continue
+        b_entry = rules_b.get(rule_id)
+        c_entry = breakdown.overall_rule_scores.get(rule_id)
+        b_f1 = float(b_entry["f1"]) if b_entry else None
+        c_f1 = c_entry.f1 if c_entry else None
+        if b_f1 is None and c_f1 is None:
+            continue
+        if (
+            b_f1 is not None
+            and c_f1 is not None
+            and abs(c_f1 - b_f1) < _DIFF_EPSILON
+        ):
+            continue
+        moved.append((rule_id, b_f1, c_f1))
+
+    lines.append("### Per-rule movement (F1)")
+    lines.append("")
+    if not moved:
+        lines.append("*(no rules moved vs baseline)*")
+        lines.append("")
+    else:
+        lines.append("| Rule | Baseline F1 | Current F1 | Δ | Direction |")
+        lines.append("|---|---|---|---|---|")
+        for rid, b_f1, c_f1 in moved:
+            if b_f1 is None:
+                direction = "new rule"
+                delta_str = "—"
+                b_str, c_str = "—", f"{c_f1:.3f}"
+            elif c_f1 is None:
+                direction = "rule removed"
+                delta_str = "—"
+                b_str, c_str = f"{b_f1:.3f}", "—"
+            else:
+                delta = c_f1 - b_f1
+                direction = "↑ improved" if delta > 0 else "↓ regressed"
+                delta_str = (
+                    f"+{delta:.3f}" if delta > 0 else f"{delta:.3f}"
+                )
+                b_str, c_str = f"{b_f1:.3f}", f"{c_f1:.3f}"
+            lines.append(
+                f"| `{rid}` | {b_str} | {c_str} | {delta_str} | {direction} |"
+            )
+        lines.append("")
+
+    # --- Detect-container deltas ---
+    detect_b = baseline.get("detect_container") or {}
+    if detect_b:
+        lines.append("### Label detection")
+        lines.append("")
+        lines.append("| Metric | Baseline | Current | Δ |")
+        lines.append("|---|---|---|---|")
+        for label, key, current in (
+            ("Detection rate", "detection_rate", detect_score.detection_rate),
+            (
+                "Container-type accuracy",
+                "container_type_accuracy",
+                detect_score.container_type_accuracy,
+            ),
+            ("Brand match rate", "brand_match_rate", detect_score.brand_match_rate),
+            (
+                "Net-contents match rate",
+                "net_contents_match_rate",
+                detect_score.net_contents_match_rate,
+            ),
+        ):
+            if key not in detect_b:
+                continue
+            b = float(detect_b[key])
+            lines.append(
+                f"| {label} | {b:.3f} | {current:.3f} "
+                f"| {_fmt_delta(current, b)} |"
+            )
+        lines.append("")
+
+    return lines
+
+
+def render_markdown(
+    breakdown: CorpusBreakdown,
+    *,
+    baseline: dict[str, Any] | None = None,
+    baseline_path: Path | None = None,
+) -> str:
     items = breakdown.items
     comp = _composition(items)
     lines: list[str] = []
@@ -601,6 +912,18 @@ def render_markdown(breakdown: CorpusBreakdown) -> str:
     detect_score = score_detect_container(items)
     lines.extend(_render_detect_container_section(detect_score))
 
+    # Regression diff vs baseline JSON snapshot. Renders only when the
+    # caller passed `baseline` / `baseline_path` (i.e. user ran with
+    # `--diff`). Positioned near the top of the addenda so "what moved?"
+    # is the first question answered.
+    if baseline is not None and baseline_path is not None:
+        lines.extend(
+            _render_diff_section(breakdown, detect_score, baseline, baseline_path)
+        )
+
+    # Per-item drill-down — triage view of which item dragged metrics.
+    lines.extend(_render_per_item_section(_per_item_rows(items, breakdown)))
+
     # Disagreement explorer — first stop for the "what moved?" question.
     disagreements = []
     for rule_id, score in breakdown.overall_rule_scores.items():
@@ -621,6 +944,9 @@ def render_markdown(breakdown: CorpusBreakdown) -> str:
         lines.append("")
         lines.append("*(none)*")
         lines.append("")
+
+    # Coverage gaps — addendum listing rules with zero corpus support.
+    lines.extend(_render_coverage_gaps_section(_coverage_gaps(items, breakdown)))
 
     return "\n".join(lines)
 
@@ -671,6 +997,8 @@ def render_json(breakdown: CorpusBreakdown) -> str:
                 rid: _rule_score_to_dict(s)
                 for rid, s in breakdown.overall_rule_scores.items()
             },
+            "per_item": _per_item_rows(breakdown.items, breakdown),
+            "coverage_gaps": _coverage_gaps(breakdown.items, breakdown),
         },
         indent=2,
     )
@@ -765,6 +1093,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Write the report to a file instead of stdout.",
     )
+    parser.add_argument(
+        "--diff",
+        type=Path,
+        default=None,
+        metavar="BASELINE.json",
+        help=(
+            "Compare this run against a baseline JSON snapshot "
+            "(produced by `measure_corpus.py --json --out ...`) and "
+            "include a 'Regression diff' section in the markdown "
+            "report. Ignored when `--json` is set."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -786,7 +1126,26 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     breakdown = aggregate(items)
-    text = render_json(breakdown) if args.json else render_markdown(breakdown)
+    baseline: dict[str, Any] | None = None
+    if args.diff is not None:
+        if not args.diff.exists():
+            print(
+                f"--diff baseline not found at {args.diff}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            baseline = _load_baseline(args.diff)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
+    if args.json:
+        text = render_json(breakdown)
+    else:
+        text = render_markdown(
+            breakdown, baseline=baseline, baseline_path=args.diff
+        )
     if args.out:
         args.out.write_text(text + ("\n" if not text.endswith("\n") else ""))
         print(f"wrote {args.out}", file=sys.stderr)

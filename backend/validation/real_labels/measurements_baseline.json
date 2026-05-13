@@ -1,0 +1,790 @@
+{
+  "generated_at": "2026-05-13T19:09:50.355799+00:00",
+  "composition": {
+    "total": 8,
+    "by_beverage": {
+      "beer": 6,
+      "wine": 1,
+      "spirits": 1
+    },
+    "by_source": {
+      "beer": {
+        "cola_artwork": 6
+      },
+      "wine": {
+        "cola_artwork": 1
+      },
+      "spirits": {
+        "cola_artwork": 1
+      }
+    },
+    "by_split": {
+      "beer": {
+        "test": 6
+      },
+      "wine": {
+        "test": 1
+      },
+      "spirits": {
+        "test": 1
+      }
+    }
+  },
+  "overall": {
+    "precision": 1.0,
+    "recall": 0.9347826086956522,
+    "f1": 0.9662921348314606,
+    "items": 8
+  },
+  "detect_container": {
+    "items_evaluated": 6,
+    "detection_rate": 1.0,
+    "container_type_accuracy": 1.0,
+    "brand_match_rate": 0.6666666666666666,
+    "net_contents_match_rate": 0.6666666666666666,
+    "skipped_no_recording": [],
+    "skipped_placeholder": [
+      "lbl-9001",
+      "lbl-9002"
+    ],
+    "per_item": [
+      {
+        "id": "lbl-0001",
+        "detected": true,
+        "container_type": "bottle",
+        "container_type_ok": null,
+        "brand_actual": "Barka Boom",
+        "brand_expected": "BARKABOOM",
+        "brand_ok": true,
+        "net_actual": "16 FL OZ",
+        "net_expected": "16 FL OZ",
+        "net_ok": true
+      },
+      {
+        "id": "lbl-0002",
+        "detected": true,
+        "container_type": "can",
+        "container_type_ok": null,
+        "brand_actual": "Genessee Cream Ale Ultra Rag",
+        "brand_expected": "ULTRA RIGHT",
+        "brand_ok": false,
+        "net_actual": "12 FL. OZ. | ALC. BY VOL. 4.8%",
+        "net_expected": "12 FL OZ",
+        "net_ok": false
+      },
+      {
+        "id": "lbl-0003",
+        "detected": true,
+        "container_type": "bottle",
+        "container_type_ok": null,
+        "brand_actual": "Calvert Brewing",
+        "brand_expected": "CALVERT BREWING",
+        "brand_ok": true,
+        "net_actual": null,
+        "net_expected": "1 PINT",
+        "net_ok": false
+      },
+      {
+        "id": "lbl-0004",
+        "detected": true,
+        "container_type": "bottle",
+        "container_type_ok": null,
+        "brand_actual": "Calvert Brewing Company",
+        "brand_expected": "CALVERT BREWING COMPANY",
+        "brand_ok": true,
+        "net_actual": "12 FL OZ",
+        "net_expected": "12 FL. OZ.",
+        "net_ok": true
+      },
+      {
+        "id": "lbl-0005",
+        "detected": true,
+        "container_type": "bottle",
+        "container_type_ok": null,
+        "brand_actual": "Calvert Brewing Company",
+        "brand_expected": "7TH STATE",
+        "brand_ok": false,
+        "net_actual": "1 PINT/16 FL OZ.",
+        "net_expected": "1 PINT/16 FL. OZ.",
+        "net_ok": true
+      },
+      {
+        "id": "lbl-0006",
+        "detected": true,
+        "container_type": "bottle",
+        "container_type_ok": null,
+        "brand_actual": "Calvert Brewing Company",
+        "brand_expected": "CALVERT BREWING",
+        "brand_ok": true,
+        "net_actual": "12 FL OZ",
+        "net_expected": "12 FL. OZ.",
+        "net_ok": true
+      }
+    ]
+  },
+  "by_beverage": {
+    "beer": {
+      "overall": {
+        "precision": 1.0,
+        "recall": 0.9166666666666666,
+        "f1": 0.9565217391304348
+      },
+      "rules": {
+        "beer.brand_name.presence": {
+          "support": 6,
+          "tp": 6,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "beer.class_type.presence": {
+          "support": 6,
+          "tp": 6,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "beer.alcohol_content.format": {
+          "support": 6,
+          "tp": 6,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "beer.net_contents.presence": {
+          "support": 6,
+          "tp": 5,
+          "fp": 0,
+          "fn": 1,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 0.8333333333333334,
+          "f1": 0.9090909090909091,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": [
+            {
+              "item": "lbl-0003",
+              "predicted": "fail",
+              "expected": "pass"
+            }
+          ]
+        },
+        "beer.name_address.presence": {
+          "support": 6,
+          "tp": 6,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "beer.country_of_origin.presence_if_imported": {
+          "support": 0,
+          "tp": 0,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 6,
+          "disagreements": [
+            {
+              "item": "lbl-0002",
+              "predicted": "pass",
+              "expected": "na"
+            }
+          ]
+        },
+        "beer.health_warning.exact_text": {
+          "support": 6,
+          "tp": 4,
+          "fp": 0,
+          "fn": 2,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 0.6666666666666666,
+          "f1": 0.8,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": [
+            {
+              "item": "lbl-0002",
+              "predicted": "fail",
+              "expected": "pass"
+            },
+            {
+              "item": "lbl-0003",
+              "predicted": "fail",
+              "expected": "pass"
+            }
+          ]
+        },
+        "beer.health_warning.size": {
+          "support": 0,
+          "tp": 0,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 6,
+          "na_count": 0,
+          "disagreements": []
+        }
+      }
+    },
+    "wine": {
+      "overall": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "rules": {
+        "wine.sulfite.presence": {
+          "support": 1,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "wine.organic.format": {
+          "support": 1,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        }
+      }
+    },
+    "spirits": {
+      "overall": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "rules": {
+        "spirits.brand_name.matches_application": {
+          "support": 1,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "spirits.class_type.matches_application": {
+          "support": 1,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "spirits.alcohol_content.format": {
+          "support": 1,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "spirits.alcohol_content.matches_application": {
+          "support": 1,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "spirits.net_contents.matches_application": {
+          "support": 1,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "spirits.name_address.presence": {
+          "support": 1,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "spirits.country_of_origin.presence_if_imported": {
+          "support": 0,
+          "tp": 0,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 1,
+          "disagreements": []
+        },
+        "spirits.health_warning.compliance": {
+          "support": 1,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        },
+        "spirits.age_statement.format": {
+          "support": 1,
+          "tp": 1,
+          "fp": 0,
+          "fn": 0,
+          "tn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "advisory_count": 0,
+          "na_count": 0,
+          "disagreements": []
+        }
+      }
+    }
+  },
+  "rules": {
+    "beer.brand_name.presence": {
+      "support": 6,
+      "tp": 6,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "beer.class_type.presence": {
+      "support": 6,
+      "tp": 6,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "beer.alcohol_content.format": {
+      "support": 6,
+      "tp": 6,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "beer.net_contents.presence": {
+      "support": 6,
+      "tp": 5,
+      "fp": 0,
+      "fn": 1,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 0.8333333333333334,
+      "f1": 0.9090909090909091,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": [
+        {
+          "item": "lbl-0003",
+          "predicted": "fail",
+          "expected": "pass"
+        }
+      ]
+    },
+    "beer.name_address.presence": {
+      "support": 6,
+      "tp": 6,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "beer.country_of_origin.presence_if_imported": {
+      "support": 0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 6,
+      "disagreements": [
+        {
+          "item": "lbl-0002",
+          "predicted": "pass",
+          "expected": "na"
+        }
+      ]
+    },
+    "beer.health_warning.exact_text": {
+      "support": 6,
+      "tp": 4,
+      "fp": 0,
+      "fn": 2,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 0.6666666666666666,
+      "f1": 0.8,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": [
+        {
+          "item": "lbl-0002",
+          "predicted": "fail",
+          "expected": "pass"
+        },
+        {
+          "item": "lbl-0003",
+          "predicted": "fail",
+          "expected": "pass"
+        }
+      ]
+    },
+    "beer.health_warning.size": {
+      "support": 0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 6,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "wine.sulfite.presence": {
+      "support": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "wine.organic.format": {
+      "support": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "spirits.brand_name.matches_application": {
+      "support": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "spirits.class_type.matches_application": {
+      "support": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "spirits.alcohol_content.format": {
+      "support": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "spirits.alcohol_content.matches_application": {
+      "support": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "spirits.net_contents.matches_application": {
+      "support": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "spirits.name_address.presence": {
+      "support": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "spirits.country_of_origin.presence_if_imported": {
+      "support": 0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 1,
+      "disagreements": []
+    },
+    "spirits.health_warning.compliance": {
+      "support": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    },
+    "spirits.age_statement.format": {
+      "support": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0,
+      "tn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "advisory_count": 0,
+      "na_count": 0,
+      "disagreements": []
+    }
+  },
+  "per_item": [
+    {
+      "id": "lbl-0001",
+      "beverage": "beer",
+      "source_kind": "cola_artwork",
+      "split": "test",
+      "rules_applicable": 7,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
+      "id": "lbl-0002",
+      "beverage": "beer",
+      "source_kind": "cola_artwork",
+      "split": "test",
+      "rules_applicable": 7,
+      "failure_count": 2,
+      "failing_rules": [
+        "beer.country_of_origin.presence_if_imported",
+        "beer.health_warning.exact_text"
+      ]
+    },
+    {
+      "id": "lbl-0003",
+      "beverage": "beer",
+      "source_kind": "cola_artwork",
+      "split": "test",
+      "rules_applicable": 7,
+      "failure_count": 2,
+      "failing_rules": [
+        "beer.net_contents.presence",
+        "beer.health_warning.exact_text"
+      ]
+    },
+    {
+      "id": "lbl-0004",
+      "beverage": "beer",
+      "source_kind": "cola_artwork",
+      "split": "test",
+      "rules_applicable": 7,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
+      "id": "lbl-0005",
+      "beverage": "beer",
+      "source_kind": "cola_artwork",
+      "split": "test",
+      "rules_applicable": 7,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
+      "id": "lbl-0006",
+      "beverage": "beer",
+      "source_kind": "cola_artwork",
+      "split": "test",
+      "rules_applicable": 7,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
+      "id": "lbl-9001",
+      "beverage": "wine",
+      "source_kind": "cola_artwork",
+      "split": "test",
+      "rules_applicable": 2,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
+      "id": "lbl-9002",
+      "beverage": "spirits",
+      "source_kind": "cola_artwork",
+      "split": "test",
+      "rules_applicable": 9,
+      "failure_count": 0,
+      "failing_rules": []
+    }
+  ],
+  "coverage_gaps": [
+    {
+      "beverage": "beer",
+      "rule": "beer.country_of_origin.presence_if_imported",
+      "na_count": 6,
+      "items_in_beverage": 6
+    },
+    {
+      "beverage": "spirits",
+      "rule": "spirits.country_of_origin.presence_if_imported",
+      "na_count": 1,
+      "items_in_beverage": 1
+    }
+  ]
+}
