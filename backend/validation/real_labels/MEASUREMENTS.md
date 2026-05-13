@@ -1,6 +1,6 @@
 # ProofRead corpus measurements
 
-Generated 2026-05-12 by `validation/scripts/measure_corpus.py`. Replay-mode against committed `recorded_extraction.json` + `recorded_detect_container.json` payloads — zero $ per run.
+Generated 2026-05-13 by `validation/scripts/measure_corpus.py`. Replay-mode against committed `recorded_extraction.json` + `recorded_detect_container.json` payloads — zero $ per run.
 
 Extraction provenance: claude-opus-4-7: 6, synth_from_truth: 2.
 
@@ -108,6 +108,21 @@ Scored against `recorded_detect_container.json` (single-frame /v1/detect-contain
 | `lbl-0005` | ✓ | `bottle` | ✗ `Calvert Brewing Company` | ✓ `1 PINT/16 FL OZ.` |
 | `lbl-0006` | ✓ | `bottle` | ✓ `Calvert Brewing Company` | ✓ `12 FL OZ` |
 
+## Per-item
+
+Drill-down by corpus item. `Fails / Eval` is the count of rule disagreements (FP+FN+wrong-NA) out of applicable non-advisory rules for that beverage. Sorted by failure count, then `id`.
+
+| Item | Beverage | Source | Split | Fails / Eval | Failing rules |
+|---|---|---|---|---|---|
+| `lbl-0002` | beer | cola_artwork | test | 2 / 7 | `beer.country_of_origin.presence_if_imported`, `beer.health_warning.exact_text` |
+| `lbl-0003` | beer | cola_artwork | test | 2 / 7 | `beer.net_contents.presence`, `beer.health_warning.exact_text` |
+| `lbl-0001` | beer | cola_artwork | test | 0 / 7 | — |
+| `lbl-0004` | beer | cola_artwork | test | 0 / 7 | — |
+| `lbl-0005` | beer | cola_artwork | test | 0 / 7 | — |
+| `lbl-0006` | beer | cola_artwork | test | 0 / 7 | — |
+| `lbl-9001` | wine | cola_artwork | test | 0 / 2 | — |
+| `lbl-9002` | spirits | cola_artwork | test | 0 / 9 | — |
+
 ## Disagreements
 
 | Rule | Item | Predicted | Expected |
@@ -116,3 +131,12 @@ Scored against `recorded_detect_container.json` (single-frame /v1/detect-contain
 | `beer.country_of_origin.presence_if_imported` | `lbl-0002` | pass | na |
 | `beer.health_warning.exact_text` | `lbl-0002` | fail | pass |
 | `beer.health_warning.exact_text` | `lbl-0003` | fail | pass |
+
+## Coverage gaps
+
+Rules with **zero non-NA support** in this corpus. They score `1.000` by convention (the harness floors P/R when denominators are zero), but that's a vacuous pass — corpus growth should target these first.
+
+| Beverage | Rule | NA items | Items in beverage |
+|---|---|---|---|
+| beer | `beer.country_of_origin.presence_if_imported` | 6 | 6 |
+| spirits | `spirits.country_of_origin.presence_if_imported` | 1 | 1 |

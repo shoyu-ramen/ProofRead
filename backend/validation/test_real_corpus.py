@@ -20,6 +20,7 @@ items are recorded with the local Qwen3-VL extractor.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -352,6 +353,162 @@ def test_detect_container_floors(whole_corpus):
         )
 
     assert not failed, "detect-container floors breached:\n  " + "\n  ".join(failed)
+
+
+# ----------------------------------------------------------------------------
+# Regression gate vs committed baseline snapshot
+# ----------------------------------------------------------------------------
+
+
+# Slack we allow on each metric before the gate fails. Replay-mode runs
+# are deterministic so the only legitimate sub-tolerance noise is
+# floating-point accumulator drift; the tolerance just keeps the gate
+# from firing on cosmetic differences. A real regression (a rule pack
+# change, an extraction edit, a corpus item swap) moves metrics by
+# whole percentage points and will trip this comfortably.
+_BASELINE_TOLERANCE = 0.005
+
+
+def _baseline_path() -> Path:
+    return Path(__file__).resolve().parent / "real_labels" / "measurements_baseline.json"
+
+
+@pytest.mark.real_corpus
+def test_corpus_does_not_regress_vs_baseline():
+    """Replay-mode run must clear every metric in `measurements_baseline.json`.
+
+    Compares:
+      * Whole-corpus precision / recall / F1.
+      * Per-rule precision / recall / F1 for every rule the baseline
+        carries (rules new to the current run are ignored — they're an
+        improvement, not a regression).
+      * Detect-container detection / brand / net-contents rates.
+
+    When a regression is intentional (rule pack edit, new corpus item,
+    rerecorded extraction), regenerate the baseline with:
+
+        python -m validation.scripts.measure_corpus --include-fixtures \\
+          --json --out validation/real_labels/measurements_baseline.json
+
+    The fixtures flag must match how the baseline was originally generated
+    — leaving it off would compare a 6-item run against an 8-item baseline.
+    """
+    baseline_path = _baseline_path()
+    if not baseline_path.exists():
+        pytest.skip(
+            f"no baseline at {baseline_path}; "
+            "run `python -m validation.scripts.measure_corpus --include-fixtures "
+            "--json --out validation/real_labels/measurements_baseline.json` to seed"
+        )
+
+    # Lazy imports — keeps top-of-module clean and lets the script's
+    # private helpers move without breaking unrelated tests.
+    from validation.scripts.measure_corpus import (
+        _FIXTURES,
+        _REAL_LABELS,
+        aggregate,
+        score_detect_container,
+    )
+
+    baseline = json.loads(baseline_path.read_text())
+    items = load_corpus(root=_REAL_LABELS, require_recording=True) + load_corpus(
+        root=_FIXTURES, require_recording=True
+    )
+    if not items:
+        pytest.skip("no corpus items with recordings; nothing to gate against")
+    breakdown = aggregate(items)
+
+    failures: list[str] = []
+
+    # Whole-corpus micro-averaged metrics.
+    overall_b = baseline["overall"]
+    for metric, current in (
+        ("precision", breakdown.overall_precision),
+        ("recall", breakdown.overall_recall),
+        ("f1", breakdown.overall_f1),
+    ):
+        b = float(overall_b[metric])
+        if current < b - _BASELINE_TOLERANCE:
+            failures.append(
+                f"overall {metric}: {current:.3f} < baseline {b:.3f} "
+                f"(tolerance {_BASELINE_TOLERANCE})"
+            )
+
+    # Per-rule metrics — iterate the baseline so rules new to the
+    # current run don't trip the gate (they're improvements).
+    rules_b = baseline.get("rules", {})
+    for rule_id, b_score in rules_b.items():
+        current_score = breakdown.overall_rule_scores.get(rule_id)
+        if current_score is None:
+            failures.append(
+                f"{rule_id}: present in baseline but missing from current run"
+            )
+            continue
+        for metric, current_val in (
+            ("precision", current_score.precision),
+            ("recall", current_score.recall),
+            ("f1", current_score.f1),
+        ):
+            b_val = float(b_score[metric])
+            if current_val < b_val - _BASELINE_TOLERANCE:
+                failures.append(
+                    f"{rule_id} {metric}: {current_val:.3f} < baseline "
+                    f"{b_val:.3f}"
+                )
+
+    # Detect-container metrics. Only gate when the baseline actually
+    # carries a recorded score for the metric (denominator-zero metrics
+    # default to 1.0 in the score dataclass; a baseline of 1.0 with
+    # zero support is meaningless).
+    detect_b = baseline.get("detect_container") or {}
+    if detect_b and detect_b.get("items_evaluated", 0) > 0:
+        detect_current = score_detect_container(items)
+        for label, key, current_val, support_attr in (
+            (
+                "detection_rate",
+                "detection_rate",
+                detect_current.detection_rate,
+                "items_evaluated",
+            ),
+            (
+                "container_type_accuracy",
+                "container_type_accuracy",
+                detect_current.container_type_accuracy,
+                "container_type_evaluated",
+            ),
+            (
+                "brand_match_rate",
+                "brand_match_rate",
+                detect_current.brand_match_rate,
+                "brand_evaluated",
+            ),
+            (
+                "net_contents_match_rate",
+                "net_contents_match_rate",
+                detect_current.net_contents_match_rate,
+                "net_contents_evaluated",
+            ),
+        ):
+            # Skip metrics whose current run has zero support — that's
+            # the vacuous 1.0 floor and comparing it would be noise.
+            if getattr(detect_current, support_attr) == 0:
+                continue
+            if key not in detect_b:
+                continue
+            b_val = float(detect_b[key])
+            if current_val < b_val - _BASELINE_TOLERANCE:
+                failures.append(
+                    f"detect_container.{label}: {current_val:.3f} < "
+                    f"baseline {b_val:.3f}"
+                )
+
+    assert not failures, (
+        "regression vs measurements_baseline.json:\n  "
+        + "\n  ".join(failures)
+        + "\n\nIf the regression is intentional, regenerate the baseline:\n"
+        "  python -m validation.scripts.measure_corpus --include-fixtures "
+        "--json --out validation/real_labels/measurements_baseline.json"
+    )
 
 
 @pytest.mark.real_corpus

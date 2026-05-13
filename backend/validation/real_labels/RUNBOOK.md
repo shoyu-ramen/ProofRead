@@ -164,7 +164,47 @@ gate. Commit the entire `lbl-XXXX/` directory **plus** the new
 
 ---
 
-## 7. Synth augmentations (later)
+## 7. Regenerating the regression baseline
+
+`MEASUREMENTS.md` is the human-readable snapshot; `measurements_baseline.json`
+next to it is the machine-readable form the CI gate compares against.
+Both are regenerated from the same command pair — keep them in sync.
+
+```bash
+# Markdown (human-readable, lives in the PR description / review)
+python -m validation.scripts.measure_corpus --include-fixtures \
+    --out validation/real_labels/MEASUREMENTS.md
+
+# JSON snapshot (machine-readable, read by the CI regression gate)
+python -m validation.scripts.measure_corpus --include-fixtures --json \
+    --out validation/real_labels/measurements_baseline.json
+```
+
+When regenerating, you're declaring "this is the new floor." Common
+legitimate reasons:
+
+* A new corpus item landed and shifted micro-averages.
+* A rule pack edit changed how some rule scores against truth.
+* An extraction was rerecorded with a newer model.
+
+When the CI gate (`test_corpus_does_not_regress_vs_baseline`) trips on
+something **you didn't intend**, don't regenerate the baseline — root-cause
+the regression first. The gate is the only thing standing between a silent
+model/rule-pack regression and a release.
+
+For a diff against the committed baseline without regenerating:
+
+```bash
+python -m validation.scripts.measure_corpus --include-fixtures \
+    --diff validation/real_labels/measurements_baseline.json
+```
+
+The `--include-fixtures` flag must match how the baseline was originally
+generated — leaving it off compares a 6-item run against an 8-item baseline.
+
+---
+
+## 8. Synth augmentations (later)
 
 Once a Wikimedia photo is in the corpus, `synth_augment.py` (lands day 7)
 will derive degraded variants under `lbl-XXXX/augmented/` so the corpus
