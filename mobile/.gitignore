@@ -39,3 +39,6 @@ yarn-error.*
 .DS_Store
 *.pem
 *.tsbuildinfo
+
+# Test coverage output (jest --coverage)
+coverage/

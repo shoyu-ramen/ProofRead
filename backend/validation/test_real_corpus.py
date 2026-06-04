@@ -262,7 +262,7 @@ def test_corpus_wide_per_rule_floors(whole_corpus):
     tighten in a separate commit when the corpus has grown enough that
     the higher number is trustworthy.
     """
-    from validation.scripts.measure_corpus import aggregate, _ADVISORY_RULE_IDS
+    from validation.scripts.measure_corpus import _ADVISORY_RULE_IDS, aggregate
 
     breakdown = aggregate(whole_corpus)
     failed: list[str] = []

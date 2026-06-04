@@ -26,7 +26,7 @@ import threading
 from typing import Any, Literal
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.config import settings
 from app.rules.engine import RuleEngine
@@ -34,7 +34,6 @@ from app.rules.loader import load_rules
 from app.rules.types import CheckOutcome, ExtractionContext
 from app.services.anthropic_client import ExtractorUnavailable
 from app.services.container_check import (
-    ContainerDetection,
     detect_container,
 )
 from app.services.persisted_cache import (
@@ -201,7 +200,14 @@ def _is_imported_from_extraction_fields(
     cleaned = value.strip().lower()
     if not cleaned:
         return False
-    return cleaned not in {"usa", "u.s.a.", "us", "u.s.", "united states", "united states of america"}
+    return cleaned not in {
+        "usa",
+        "u.s.a.",
+        "us",
+        "u.s.",
+        "united states",
+        "united states of america",
+    }
 
 
 def _extract_field_value(fields: dict[str, Any], name: str) -> str | None:

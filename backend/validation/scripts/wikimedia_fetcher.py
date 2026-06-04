@@ -29,14 +29,12 @@ fill `truth.json`, then `record_extraction.py` to write the recording.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 import urllib.parse
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any
 
 import httpx
 

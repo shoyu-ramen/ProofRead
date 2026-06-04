@@ -17,10 +17,9 @@ exclusion can all be exercised without standing up Postgres.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -331,7 +330,7 @@ async def test_happy_path_writes_files_and_manifest(
     summary = await run_export(
         output_dir=output_dir,
         image_loader=_stub_image_loader,
-        now=datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC),
     )
 
     assert summary["status"] == "ok"
@@ -372,7 +371,7 @@ async def test_pii_exclusion_user_id_never_written(
     await run_export(
         output_dir=output_dir,
         image_loader=_stub_image_loader,
-        now=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        now=datetime(2026, 5, 1, tzinfo=UTC),
     )
 
     user_id_str = str(_TEST_USER.id)
@@ -413,7 +412,7 @@ async def test_idempotency_second_run_is_noop(
     first = await run_export(
         output_dir=output_dir,
         image_loader=_stub_image_loader,
-        now=datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC),
     )
     assert first["status"] == "ok"
     assert first["quality_rows"] == 1
@@ -424,7 +423,7 @@ async def test_idempotency_second_run_is_noop(
     second = await run_export(
         output_dir=output_dir,
         image_loader=_stub_image_loader,
-        now=datetime(2026, 5, 2, 12, 0, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC),
     )
     assert second["status"] == "noop"
     assert second["quality_rows"] == 0
@@ -452,7 +451,7 @@ async def test_deterministic_split_assignment(
     await run_export(
         output_dir=output_dir,
         image_loader=_stub_image_loader,
-        now=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        now=datetime(2026, 5, 1, tzinfo=UTC),
     )
 
     qc_dir = output_dir / "v20260501" / "quality_classifier"
@@ -481,13 +480,13 @@ async def test_dates_are_truncated_to_day_precision(
     await _seed_scan(
         user_id=_TEST_USER.id,
         field_confidences=[("brand_name", 0.95), ("health_warning", 0.91)],
-        created_at=datetime(2026, 4, 1, 14, 33, 7, tzinfo=timezone.utc),
+        created_at=datetime(2026, 4, 1, 14, 33, 7, tzinfo=UTC),
     )
 
     await run_export(
         output_dir=output_dir,
         image_loader=_stub_image_loader,
-        now=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        now=datetime(2026, 5, 1, tzinfo=UTC),
     )
 
     qc_dir = output_dir / "v20260501" / "quality_classifier"
@@ -531,7 +530,7 @@ async def test_first_frame_signals_export(
     await run_export(
         output_dir=output_dir,
         image_loader=_stub_image_loader,
-        now=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        now=datetime(2026, 5, 1, tzinfo=UTC),
     )
 
     ff_dir = output_dir / "v20260501" / "first_frame_signals"
@@ -568,7 +567,7 @@ async def test_dry_run_skips_sensor_recompute(
     await run_export(
         output_dir=output_dir,
         image_loader=_stub_image_loader,
-        now=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        now=datetime(2026, 5, 1, tzinfo=UTC),
         skip_sensor_recompute=True,
     )
 
@@ -591,7 +590,7 @@ async def test_no_data_run_returns_noop_without_writing(
     summary = await run_export(
         output_dir=output_dir,
         image_loader=_stub_image_loader,
-        now=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        now=datetime(2026, 5, 1, tzinfo=UTC),
     )
     assert summary["status"] == "noop"
     assert not (output_dir / "v20260501").exists()

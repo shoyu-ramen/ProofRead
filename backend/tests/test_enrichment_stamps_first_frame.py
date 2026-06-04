@@ -17,7 +17,6 @@ SQLite-backed L3 cache.
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
 
 from app.config import settings
 from app.db import configure_engine, dispose_engine, get_session_factory
