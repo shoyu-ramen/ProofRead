@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.auth import _TEST_USER
 from app.config import settings
 from app.db import (
     configure_engine,
@@ -25,7 +26,6 @@ from app.db import (
 )
 from app.main import _prewarm_prompt_cache, app, ensure_test_user
 from app.models import Base, User
-from app.auth import _TEST_USER
 
 
 def test_lifespan_startup_and_shutdown(db_setup, temp_storage, monkeypatch):

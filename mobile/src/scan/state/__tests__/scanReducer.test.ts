@@ -208,6 +208,21 @@ describe('scanReducer — tick transitions', () => {
       }
     });
 
+    test('a start condition takes precedence over a pauseReason in the same tick', () => {
+      // Precedence is intentional and load-bearing for the UI: the reducer
+      // checks the start conditions (rotating / coverage / autoCaptureReady)
+      // BEFORE pauseReason, so when both arrive together we begin capture
+      // rather than flashing a pause overlay. (Sourcery suggested asserting
+      // `paused` here, but that contradicts the implementation order — this
+      // test pins the actual behavior so a future reorder is caught.)
+      expect(
+        scanReducer(
+          { kind: 'ready' },
+          tick({ bottleSteady: true, rotating: true, pauseReason: 'glare' }),
+        ),
+      ).toEqual({ kind: 'scanning', coverage: 0 });
+    });
+
     test('a pause reason while steady-but-idle routes to paused', () => {
       expect(
         scanReducer({ kind: 'ready' }, tick({ bottleSteady: true, pauseReason: 'glare' })),
