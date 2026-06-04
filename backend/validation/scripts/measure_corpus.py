@@ -38,9 +38,10 @@ import json
 import re
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from validation.measure import HarnessReport, RuleScore, measure
 from validation.real_corpus import (
@@ -298,9 +299,9 @@ def score_detect_container(items: Iterable[RealCorpusItem]) -> DetectContainerSc
         if detected:
             score.detected_true += 1
 
-        truth_payload = {
+        truth_payload = {  # noqa: F841  — unused; kept for future scoring work
             "capture_conditions": item.capture_conditions,
-            "label_spec": item.application,  # not used; kept for future
+            "label_spec": item.application,
         }
         surface = (
             (item.capture_conditions or {}).get("surface") or ""
@@ -709,7 +710,7 @@ def _fmt_delta(current: float, baseline: float) -> str:
 
 def _render_diff_section(
     breakdown: CorpusBreakdown,
-    detect_score: "DetectContainerScore",
+    detect_score: DetectContainerScore,
     baseline: dict[str, Any],
     baseline_path: Path,
 ) -> list[str]:

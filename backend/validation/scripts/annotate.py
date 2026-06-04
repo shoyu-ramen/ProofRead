@@ -23,11 +23,11 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import shutil
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from validation.real_corpus import RULE_IDS_BY_BEVERAGE
 from validation.scripts.validate_truth import lint_item

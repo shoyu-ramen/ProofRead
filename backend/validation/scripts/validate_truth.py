@@ -291,7 +291,10 @@ def _check_loader_round_trips(
     cleanly without crashing on missing fields.
     """
     try:
-        item = load_item(item_dir)
+        # Called for its validating side effect — it raises on a bad
+        # truth.json. The parsed dict the caller wants is re-read from
+        # disk below, so the return value here is intentionally unused.
+        load_item(item_dir)
     except TruthSchemaError as exc:
         findings.err(f"loader rejected truth.json: {exc}")
         return None
