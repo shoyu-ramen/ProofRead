@@ -57,6 +57,16 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
 
+[tool.coverage.run]
+# Starlette's TestClient drives the ASGI app from an anyio worker thread,
+# so every async route handler executes off the main thread. coverage.py
+# only traces the main thread unless told otherwise — without this the
+# API layer reads ~35 points low (e.g. app/api/scans.py measured 52% when
+# its endpoints are actually exercised end-to-end at ~87%). "greenlet"
+# covers SQLAlchemy's async greenlet bridge for good measure.
+concurrency = ["thread", "greenlet"]
+source = ["app"]
+
 [tool.mypy]
 python_version = "3.12"
 
