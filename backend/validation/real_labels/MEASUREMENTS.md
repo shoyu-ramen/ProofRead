@@ -1,6 +1,6 @@
 # ProofRead corpus measurements
 
-Generated 2026-05-13 by `validation/scripts/measure_corpus.py`. Replay-mode against committed `recorded_extraction.json` + `recorded_detect_container.json` payloads — zero $ per run.
+Generated 2026-06-11 by `validation/scripts/measure_corpus.py`. Replay-mode against committed `recorded_extraction.json` + `recorded_detect_container.json` payloads — zero $ per run.
 
 Extraction provenance: claude-opus-4-7: 6, synth_from_truth: 2.
 
@@ -17,19 +17,19 @@ Extraction provenance: claude-opus-4-7: 6, synth_from_truth: 2.
 
 - Items evaluated: **8**
 - Micro-averaged precision: **1.000**
-- Micro-averaged recall:    **0.935**
-- Micro-averaged F1:        **0.966**
+- Micro-averaged recall:    **1.000**
+- Micro-averaged F1:        **1.000**
 
 | Rule | Support | TP | FP | FN | TN | Precision | Recall | F1 | Disagreements |
 |---|---|---|---|---|---|---|---|---|---|
 | `beer.alcohol_content.format` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
 | `beer.brand_name.presence` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
 | `beer.class_type.presence` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
-| `beer.country_of_origin.presence_if_imported` | 0 | 0 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 | lbl-0002 |
-| `beer.health_warning.exact_text` | 6 | 4 | 0 | 2 | 0 | 1.000 | 0.667 | 0.800 | lbl-0002, lbl-0003 |
+| `beer.country_of_origin.presence_if_imported` | 0 | 0 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
+| `beer.health_warning.exact_text` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
 | `beer.health_warning.size` | (advisory: 6) | — | — | — | — | — | — | — | — |
 | `beer.name_address.presence` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
-| `beer.net_contents.presence` | 6 | 5 | 0 | 1 | 0 | 1.000 | 0.833 | 0.909 | lbl-0003 |
+| `beer.net_contents.presence` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
 | `spirits.age_statement.format` | 1 | 1 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
 | `spirits.alcohol_content.format` | 1 | 1 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
 | `spirits.alcohol_content.matches_application` | 1 | 1 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
@@ -45,19 +45,19 @@ Extraction provenance: claude-opus-4-7: 6, synth_from_truth: 2.
 ## Beer (6 items)
 
 - Overall precision: **1.000**
-- Overall recall:    **0.917**
-- Overall F1:        **0.957**
+- Overall recall:    **1.000**
+- Overall F1:        **1.000**
 
 | Rule | Support | TP | FP | FN | TN | Precision | Recall | F1 | Disagreements |
 |---|---|---|---|---|---|---|---|---|---|
 | `beer.alcohol_content.format` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
 | `beer.brand_name.presence` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
 | `beer.class_type.presence` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
-| `beer.country_of_origin.presence_if_imported` | 0 | 0 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 | lbl-0002 |
-| `beer.health_warning.exact_text` | 6 | 4 | 0 | 2 | 0 | 1.000 | 0.667 | 0.800 | lbl-0002, lbl-0003 |
+| `beer.country_of_origin.presence_if_imported` | 0 | 0 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
+| `beer.health_warning.exact_text` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
 | `beer.health_warning.size` | (advisory: 6) | — | — | — | — | — | — | — | — |
 | `beer.name_address.presence` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
-| `beer.net_contents.presence` | 6 | 5 | 0 | 1 | 0 | 1.000 | 0.833 | 0.909 | lbl-0003 |
+| `beer.net_contents.presence` | 6 | 6 | 0 | 0 | 0 | 1.000 | 1.000 | 1.000 |  |
 
 ## Wine (1 items)
 
@@ -114,9 +114,9 @@ Drill-down by corpus item. `Fails / Eval` is the count of rule disagreements (FP
 
 | Item | Beverage | Source | Split | Fails / Eval | Failing rules |
 |---|---|---|---|---|---|
-| `lbl-0002` | beer | cola_artwork | test | 2 / 7 | `beer.country_of_origin.presence_if_imported`, `beer.health_warning.exact_text` |
-| `lbl-0003` | beer | cola_artwork | test | 2 / 7 | `beer.net_contents.presence`, `beer.health_warning.exact_text` |
 | `lbl-0001` | beer | cola_artwork | test | 0 / 7 | — |
+| `lbl-0002` | beer | cola_artwork | test | 0 / 7 | — |
+| `lbl-0003` | beer | cola_artwork | test | 0 / 7 | — |
 | `lbl-0004` | beer | cola_artwork | test | 0 / 7 | — |
 | `lbl-0005` | beer | cola_artwork | test | 0 / 7 | — |
 | `lbl-0006` | beer | cola_artwork | test | 0 / 7 | — |
@@ -125,12 +125,7 @@ Drill-down by corpus item. `Fails / Eval` is the count of rule disagreements (FP
 
 ## Disagreements
 
-| Rule | Item | Predicted | Expected |
-|---|---|---|---|
-| `beer.net_contents.presence` | `lbl-0003` | fail | pass |
-| `beer.country_of_origin.presence_if_imported` | `lbl-0002` | pass | na |
-| `beer.health_warning.exact_text` | `lbl-0002` | fail | pass |
-| `beer.health_warning.exact_text` | `lbl-0003` | fail | pass |
+*(none)*
 
 ## Coverage gaps
 

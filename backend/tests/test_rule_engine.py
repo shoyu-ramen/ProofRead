@@ -44,14 +44,54 @@ def test_health_warning_passes_on_canonical(canonical_warning):
     assert result.citation == "27 CFR 16.21"
 
 
-def test_health_warning_fails_on_substituted_character(canonical_warning):
+def test_health_warning_warns_on_substituted_characters(canonical_warning):
+    """Small typos (≤ tolerance) downgrade to WARN — review, not auto-fail.
+
+    Rule v2 semantics: an OCR-scale delta in the body is a judgment
+    call for the reviewer, not a confident FAIL. "Surgeon" → "Sergent"
+    is edit distance 3, inside the tolerance of 5.
+    """
     engine = RuleEngine([_rule("beer.health_warning.exact_text")])
     typo = canonical_warning.replace("Surgeon", "Sergent")
     ctx = _ctx({"health_warning": ExtractedField(value=typo)})
     [result] = engine.evaluate(ctx)
-    assert result.status == CheckOutcome.FAIL
+    assert result.status == CheckOutcome.WARN
     assert result.expected is not None
-    assert "edit distance" in (result.finding or "")
+    assert "differs from the required statement" in (result.finding or "")
+
+
+def test_health_warning_fails_on_large_body_difference(canonical_warning):
+    """Deltas beyond the tolerance are still a hard FAIL."""
+    engine = RuleEngine([_rule("beer.health_warning.exact_text")])
+    mangled = canonical_warning.replace(
+        "women should not drink alcoholic beverages", "do not drink"
+    )
+    ctx = _ctx({"health_warning": ExtractedField(value=mangled)})
+    [result] = engine.evaluate(ctx)
+    assert result.status == CheckOutcome.FAIL
+
+
+def test_health_warning_passes_on_all_caps_rendering(canonical_warning):
+    """An ALL-CAPS rendering of the statement is §16.21-compliant.
+
+    Regression test for the real-corpus lbl-0002/lbl-0003 false
+    negatives: those labels print the entire warning in capitals and
+    rule v1's case-sensitive exact match failed them.
+    """
+    engine = RuleEngine([_rule("beer.health_warning.exact_text")])
+    ctx = _ctx({"health_warning": ExtractedField(value=canonical_warning.upper())})
+    [result] = engine.evaluate(ctx)
+    assert result.status == CheckOutcome.PASS
+
+
+def test_health_warning_fails_on_title_case_prefix(canonical_warning):
+    """The "GOVERNMENT WARNING:" prefix must be capitals — title case fails."""
+    engine = RuleEngine([_rule("beer.health_warning.exact_text")])
+    title = canonical_warning.replace("GOVERNMENT WARNING:", "Government Warning:")
+    ctx = _ctx({"health_warning": ExtractedField(value=title)})
+    [result] = engine.evaluate(ctx)
+    assert result.status == CheckOutcome.FAIL
+    assert "capitals" in (result.finding or "")
 
 
 def test_health_warning_fails_when_missing():
@@ -143,6 +183,49 @@ def test_is_imported_unchanged_when_user_claimed_imported():
     assert _CLAIM_RULE_ID not in rule_ids
 
 
+@pytest.mark.parametrize(
+    "domestic_statement",
+    [
+        "MADE IN USA",
+        "PRODUCT OF U.S.A.",
+        "Brewed in the United States",
+        "PRODUCT OF THE UNITED STATES OF AMERICA",
+    ],
+)
+def test_is_imported_not_flipped_on_domestic_origin_statement(domestic_statement):
+    """A domestic origin statement is not an import declaration.
+
+    Regression test for real-corpus lbl-0002: the model extracted
+    "MADE IN USA" into `country_of_origin`, the old inference flipped
+    `is_imported` to True, and the country-of-origin rule fired on a
+    domestic label (predicted PASS where the annotator marked NA).
+    """
+    engine = RuleEngine([_rule("beer.country_of_origin.presence_if_imported")])
+    ctx = _ctx(
+        {"country_of_origin": ExtractedField(value=domestic_statement)},
+        is_imported=False,
+    )
+    results = engine.evaluate(ctx)
+    statuses = {r.rule_id: r.status for r in results}
+
+    # The rule stays NA and no divergence advisory is emitted.
+    assert statuses["beer.country_of_origin.presence_if_imported"] == CheckOutcome.NA
+    assert _CLAIM_RULE_ID not in statuses
+
+
+def test_is_imported_still_flips_on_foreign_origin_statement():
+    """Phrasing variants of a foreign origin must keep flipping the claim."""
+    engine = RuleEngine([_rule("beer.country_of_origin.presence_if_imported")])
+    ctx = _ctx(
+        {"country_of_origin": ExtractedField(value="MADE IN MUNICH, GERMANY")},
+        is_imported=False,
+    )
+    results = engine.evaluate(ctx)
+    statuses = {r.rule_id: r.status for r in results}
+    assert statuses["beer.country_of_origin.presence_if_imported"] == CheckOutcome.PASS
+    assert statuses.get(_CLAIM_RULE_ID) == CheckOutcome.ADVISORY
+
+
 def test_is_imported_unchanged_when_country_field_empty():
     """No country on the label and user claimed domestic — leave as-is."""
     engine = RuleEngine([_rule("beer.country_of_origin.presence_if_imported")])
@@ -229,7 +312,7 @@ def test_rule_versioning_round_trips():
     engine = RuleEngine([_rule("beer.health_warning.exact_text")])
     ctx = _ctx({})
     [result] = engine.evaluate(ctx)
-    assert result.rule_version == 1
+    assert result.rule_version == 2
 
 
 # --- safe expression evaluator (replaces eval() in _eval_expr) ---
@@ -319,7 +402,22 @@ def test_canonical_health_warning_file_matches_fixture(canonical_warning):
 
 def test_net_contents_passes_with_recognised_units():
     engine = RuleEngine([_rule("beer.net_contents.presence")])
-    for value in ("12 FL OZ", "355 mL", "12 fl. oz", "1 L", "16 fluid ounces"):
+    for value in (
+        "12 FL OZ",
+        "355 mL",
+        "12 fl. oz",
+        "1 L",
+        "16 fluid ounces",
+        # 27 CFR 7.65(b) US customary units — regression for real-corpus
+        # lbl-0003, whose "1 PINT" was rejected by rule v2's unit list.
+        "1 PINT",
+        "1 PINT/16 FL OZ.",
+        "2 pints",
+        "1 QT",
+        "1 quart",
+        "0.5 GAL",
+        "1 gallon",
+    ):
         ctx = _ctx({"net_contents": ExtractedField(value=value)})
         [result] = engine.evaluate(ctx)
         assert result.status == CheckOutcome.PASS, f"Expected PASS for {value!r}: {result.finding}"

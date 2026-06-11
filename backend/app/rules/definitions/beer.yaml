@@ -54,15 +54,15 @@
         optional: true
 
 - id: beer.net_contents.presence
-  version: 2
+  version: 3
   beverage_types: [beer]
   citation: 27 CFR 7.65
   description: Net contents statement must be present and use a recognised unit
   severity: required
   fix_suggestion: |
     Add a net contents statement that pairs a number with a TTB-recognised
-    unit (e.g. "12 FL OZ" or "355 mL"). Spelled-out numbers and unitless
-    figures are not accepted.
+    unit (e.g. "12 FL OZ", "1 PINT" or "355 mL"). Spelled-out numbers and
+    unitless figures are not accepted.
   checks:
     - type: presence
       params:
@@ -71,8 +71,10 @@
       params:
         field: net_contents
         # Mirrors NET_CONTENTS_RE in app/services/extractors/beer.py — keep
-        # in sync if you broaden the unit list.
-        pattern: '\d+(\.\d+)?\s*(ml|fl\.?\s*oz|fluid\s+ounces?|liters?|litres?|l)\b'
+        # in sync if you broaden the unit list. 27 CFR 7.65(b) states malt
+        # beverage net contents in fluid ounces, pints, quarts and gallons;
+        # metric equivalents are permitted alongside.
+        pattern: '\d+(\.\d+)?\s*(ml|fl\.?\s*oz|fluid\s+ounces?|liters?|litres?|l|pints?|pt|quarts?|qt|gallons?|gal)\b'
         flags: i
 
 - id: beer.name_address.presence
@@ -101,7 +103,12 @@
         field: country_of_origin
 
 - id: beer.health_warning.exact_text
-  version: 1
+  # v2: migrated from a case-sensitive exact_text match to the same
+  # warning_compliance check spirits uses. §16.21 requires only the
+  # "GOVERNMENT WARNING:" prefix in capitals; an ALL-CAPS rendering of
+  # the body is legally acceptable and must not fail. Body deltas within
+  # the edit-distance tolerance surface as WARN (review), larger as FAIL.
+  version: 2
   beverage_types: [beer]
   citation: 27 CFR 16.21
   description: Government Health Warning Statement must appear with exact statutory text
@@ -113,12 +120,14 @@
     birth defects. (2) Consumption of alcoholic beverages impairs your
     ability to drive a car or operate machinery, and may cause health
     problems."
+    The "GOVERNMENT WARNING:" prefix must appear verbatim in capitals;
+    title case (e.g. "Government Warning:") is not acceptable.
   checks:
-    - type: exact_text
+    - type: warning_compliance
       params:
         field: health_warning
         canonical_ref: health_warning
-        max_edit_distance: 0
+        max_body_edit_distance: 5
 
 - id: beer.health_warning.size
   version: 1
