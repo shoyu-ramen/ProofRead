@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "id": "lbl-0013",
+  "beverage_type": "beer",
+  "container_size_ml": 330,
+  "is_imported": true,
+  "source_kind": "wikimedia_commons",
+  "split": "train",
+  "capture_conditions": {
+    "lighting": "outdoor_bright",
+    "surface": "wet_condensation",
+    "container": "330ml_bottle",
+    "device": "Wikimedia upload (Nicholas Gemini, CC BY-SA 4.0)",
+    "notes": "Handheld beachside shot, low sun, condensation on the glass, thumb occludes part of the painted label; front/back duplicates of one frame. European bottling: '33 cl/330 ml e', 'Alc./Alk. 4,5% vol.' (comma decimal), 'BREWED UNDER LICENCE FROM CERVECERIA MODELO, S. DE R.L. DE C.V.' names a company but NO country-of-origin statement is visible anywhere -> with is_imported=true the COO rule is a genuine FAIL: first fail-branch support for beer COO. No English class/type designation is printed ('LA CERVEZA MAS FINA' is a slogan, not a class statement) -> class_type FAILs. No US Government Warning on this bottling -> exact_text FAILs."
+  },
+  "ground_truth": {
+    "beer.brand_name.presence": "pass",
+    "beer.class_type.presence": "fail",
+    "beer.alcohol_content.format": "pass",
+    "beer.net_contents.presence": "pass",
+    "beer.name_address.presence": "pass",
+    "beer.country_of_origin.presence_if_imported": "fail",
+    "beer.health_warning.exact_text": "fail",
+    "beer.health_warning.size": "advisory"
+  },
+  "label_spec": {
+    "brand": "Corona Extra",
+    "class_type": null,
+    "abv": "Alc./Alk. 4,5% vol.",
+    "net_contents": "33 cl/330 ml",
+    "name_address": "BREWED UNDER LICENCE FROM CERVECERÍA MODELO, S. DE R.L. DE C.V.",
+    "health_warning_text": null,
+    "country": null
+  },
+  "application": {},
+  "gold_extracted_fields": {
+    "brand_name": {
+      "value": "Corona Extra"
+    },
+    "class_type": {
+      "value": null,
+      "unreadable": false
+    },
+    "alcohol_content": {
+      "value": "Alc./Alk. 4,5% vol."
+    },
+    "net_contents": {
+      "value": "33 cl/330 ml"
+    },
+    "name_address": {
+      "value": "BREWED UNDER LICENCE FROM CERVECERÍA MODELO, S. DE R.L. DE C.V."
+    },
+    "country_of_origin": {
+      "value": null,
+      "unreadable": false
+    },
+    "health_warning": {
+      "value": null,
+      "unreadable": false
+    }
+  },
+  "annotator": "rosskuehl@gmail.com",
+  "annotated_at": "2026-06-11",
+  "two_annotator_check": false
+}

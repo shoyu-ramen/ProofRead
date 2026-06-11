@@ -164,31 +164,138 @@ def _merge_panel_extractions(
 # ---------------------------------------------------------------------------
 
 
+class _OllamaNativeExtractor:
+    """Qwen3-VL via Ollama's native /api/chat — recording-only transport.
+
+    Ollama's OpenAI-compat endpoint has been observed (2026-06) to
+    silently drop the image from multimodal requests (usage reports a
+    text-only prompt; the model then fabricates a label blind — the
+    QwenVLExtractor guard refuses those) and to reject any payload
+    carrying a `temperature` key. The native API takes raw base64 in
+    an `images` array — a different parse path that processes the
+    image reliably — and honours `options.num_ctx` / `temperature`.
+
+    Same prompts and parser as QwenVLExtractor, so recordings are
+    prompt-identical to the production fallback; only the transport
+    differs.
+    """
+
+    def __init__(self) -> None:
+        from app.config import settings
+
+        base = (settings.qwen_vl_base_url or "").rstrip("/")
+        if not base:
+            from app.services.anthropic_client import ExtractorUnavailable
+
+            raise ExtractorUnavailable("QWEN_VL_BASE_URL is not configured")
+        # http://host:11434/v1 -> http://host:11434/api/chat
+        self._url = base.removesuffix("/v1") + "/api/chat"
+        self._model = settings.qwen_vl_model
+        # Switching context size forces Ollama to reload the runner —
+        # cold reload + 16k-ctx prefill can exceed the configured
+        # request timeout, so give the native transport extra headroom.
+        self._timeout = max(float(settings.qwen_vl_timeout_s or 0), 300.0)
+
+    def extract(self, image_bytes: bytes, media_type: str = "image/jpeg", **ctx: Any):
+        import base64
+
+        import httpx
+
+        from app.services.anthropic_client import ExtractorUnavailable
+        from app.services.qwen_vl import (
+            JSON_OUTPUT_REMINDER,
+            QWEN_SYSTEM_PROMPT,
+            _build_user_text,
+            _parse_vision_response,
+            _shrink_image,
+        )
+
+        image_bytes, _ = _shrink_image(image_bytes, media_type)
+        user_text = _build_user_text(
+            capture_quality=ctx.get("capture_quality"),
+            producer_record=ctx.get("producer_record"),
+            beverage_type=ctx.get("beverage_type"),
+            container_size_ml=ctx.get("container_size_ml"),
+            is_imported=ctx.get("is_imported", False),
+        )
+        payload = {
+            "model": self._model,
+            "stream": False,
+            "format": "json",
+            "options": {"num_ctx": 16384, "temperature": 0.0},
+            "messages": [
+                {"role": "system", "content": QWEN_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"{user_text}\n\n{JSON_OUTPUT_REMINDER}",
+                    "images": [base64.standard_b64encode(image_bytes).decode()],
+                },
+            ],
+        }
+        try:
+            r = httpx.post(self._url, json=payload, timeout=self._timeout)
+            r.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ExtractorUnavailable(
+                f"Ollama native API unavailable at {self._url}: {exc}"
+            ) from exc
+        data = r.json()
+        # Native equivalent of the OpenAI-path image guard: a prompt
+        # evaluation that's text-only sized means the image was dropped.
+        evaluated = data.get("prompt_eval_count")
+        if isinstance(evaluated, int) and 0 < evaluated < 600:
+            raise ExtractorUnavailable(
+                f"Ollama native API processed only {evaluated} prompt tokens "
+                "— image was dropped; refusing a blind extraction."
+            )
+        text = (data.get("message") or {}).get("content") or ""
+        try:
+            return _parse_vision_response(text)
+        except ValueError as exc:
+            raise ExtractorUnavailable(
+                f"Ollama native API returned malformed JSON: {exc}"
+            ) from exc
+
+
 def _qwen_record(
     item_dir: Path, truth: dict[str, Any]
 ) -> dict[str, Any]:
-    """Call Qwen3-VL on each panel and merge the results."""
+    """Call Qwen3-VL on each panel and merge the results.
+
+    For an Ollama base URL the native /api/chat transport goes first —
+    Ollama's OpenAI-compat endpoint has been observed dropping the
+    image from multimodal requests (the client guard refuses those
+    blind extractions) and alternating transports forces runner
+    reloads. Non-Ollama servers (vLLM, LM Studio) don't expose
+    /api/chat; the native attempt fails fast and the OpenAI-compat
+    client takes over. Prompts are identical on both transports.
+    """
     from app.services.anthropic_client import ExtractorUnavailable
     from app.services.qwen_vl import QwenVLExtractor
 
     extractor = QwenVLExtractor()  # raises ExtractorUnavailable if no base_url
+    native = _OllamaNativeExtractor()
     panels: dict[str, Any] = {}
     for surface in ("front", "back"):
         path = item_dir / f"{surface}.jpg"
         if not path.exists():
             continue
         data = path.read_bytes()
+        kwargs = dict(
+            media_type=_detect_media_type(data),
+            beverage_type=truth.get("beverage_type"),
+            container_size_ml=truth.get("container_size_ml"),
+            is_imported=truth.get("is_imported", False),
+            producer_record=truth.get("application") or None,
+        )
         try:
-            ext = extractor.extract(
-                data,
-                media_type=_detect_media_type(data),
-                beverage_type=truth.get("beverage_type"),
-                container_size_ml=truth.get("container_size_ml"),
-                is_imported=truth.get("is_imported", False),
-                producer_record=truth.get("application") or None,
+            ext = native.extract(data, **kwargs)
+        except ExtractorUnavailable as exc:
+            print(
+                f"  native /api/chat transport refused {surface}.jpg "
+                f"({str(exc)[:120]}); retrying via OpenAI-compat",
             )
-        except ExtractorUnavailable:
-            raise
+            ext = extractor.extract(data, **kwargs)
         except Exception as exc:
             raise ExtractorUnavailable(
                 f"Qwen3-VL extraction failed on {surface}.jpg: {exc}"

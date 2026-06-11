@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "id": "lbl-0009",
+  "beverage_type": "spirits",
+  "container_size_ml": 100,
+  "is_imported": true,
+  "source_kind": "wikimedia_commons",
+  "split": "train",
+  "capture_conditions": {
+    "lighting": "studio",
+    "surface": "dry",
+    "container": "100ml_spirits_mini",
+    "device": "Wikimedia upload (Chris Woodrich, CC BY 4.0)",
+    "notes": "Studio shot of a Mexican-market 100 ml mini, front face only; front/back duplicates. 'HECHO EN MEXICO' is the COO statement. Producer block is in Spanish (POR: TEQUILERA CORRALEJO, S.A. DE C.V. ...) — exercises non-English name/address extraction. Mexican-market bottle carries no US Government Warning at all: health-warning rule is a genuine FAIL, not an advisory. Net contents printed as 'CONT. NET. 100 ml'."
+  },
+  "ground_truth": {
+    "spirits.brand_name.matches_application": "pass",
+    "spirits.class_type.matches_application": "pass",
+    "spirits.alcohol_content.format": "pass",
+    "spirits.alcohol_content.matches_application": "pass",
+    "spirits.net_contents.matches_application": "pass",
+    "spirits.name_address.presence": "pass",
+    "spirits.country_of_origin.presence_if_imported": "pass",
+    "spirits.health_warning.compliance": "fail",
+    "spirits.age_statement.format": "pass"
+  },
+  "label_spec": {
+    "brand": "CORRALEJO",
+    "class_type": "TEQUILA AÑEJO",
+    "abv": "38% Alc. Vol.",
+    "net_contents": "CONT. NET. 100 ml",
+    "name_address": "POR: TEQUILERA CORRALEJO, S.A. DE C.V. Domicilio Conocido s/n, Ex-Hacienda Corralejo, Pénjamo, Guanajuato C.P. 36927 R.F.C. TCO-950909-8G6",
+    "health_warning_text": null,
+    "country": "Mexico",
+    "age_statement": null
+  },
+  "application": {
+    "brand_name": "CORRALEJO",
+    "class_type": "TEQUILA AÑEJO",
+    "alcohol_content": "38%",
+    "net_contents": "100 mL"
+  },
+  "gold_extracted_fields": {
+    "brand_name": {
+      "value": "CORRALEJO"
+    },
+    "class_type": {
+      "value": "TEQUILA AÑEJO"
+    },
+    "alcohol_content": {
+      "value": "38% Alc. Vol."
+    },
+    "net_contents": {
+      "value": "CONT. NET. 100 ml"
+    },
+    "name_address": {
+      "value": "POR: TEQUILERA CORRALEJO, S.A. DE C.V. Domicilio Conocido s/n, Ex-Hacienda Corralejo, Pénjamo, Guanajuato C.P. 36927 R.F.C. TCO-950909-8G6"
+    },
+    "country_of_origin": {
+      "value": "HECHO EN MEXICO"
+    },
+    "health_warning": {
+      "value": null,
+      "unreadable": false
+    },
+    "age_statement": {
+      "value": null
+    }
+  },
+  "annotator": "rosskuehl@gmail.com",
+  "annotated_at": "2026-06-11",
+  "two_annotator_check": false
+}

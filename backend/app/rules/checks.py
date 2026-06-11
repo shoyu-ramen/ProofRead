@@ -490,16 +490,23 @@ def check_age_statement(params: dict, ctx: ExtractionContext) -> CheckResult:
     is_required = _is_straight_whiskey_class(class_type_value)
 
     if age_value is None or not age_value.strip():
-        # No age statement on the label.
+        # No age statement on the label. For straight whiskey that is
+        # compliant if and only if the spirit is 4+ years old (27 CFR
+        # 5.40(a)(2)) — omission is itself an implicit 4yr+ claim, and
+        # the label alone cannot prove the age either way. Failing every
+        # age-statement-less straight bourbon would flag most compliant
+        # bottlings on the market, so surface an ADVISORY instead of a
+        # confident FAIL (fail-honestly: don't claim what we can't see).
         if is_required:
             return CheckResult(
-                outcome=CheckOutcome.FAIL,
+                outcome=CheckOutcome.ADVISORY,
                 finding=(
-                    "Straight whiskey labels require an age statement under "
-                    "27 CFR 5.40 when bottled at less than four years old; "
-                    "none was found on this label."
+                    "Straight whiskey with no age statement: compliant only "
+                    "if the spirit is 4+ years old (27 CFR 5.40). Verify the "
+                    "age of the youngest spirit in the bottling; under 4 "
+                    "years an age statement is required."
                 ),
-                expected="An age statement (e.g. 'Aged 4 Years').",
+                expected="An age statement (e.g. 'Aged 4 Years') if under 4 years old.",
             )
         return CheckResult(outcome=CheckOutcome.PASS)
 

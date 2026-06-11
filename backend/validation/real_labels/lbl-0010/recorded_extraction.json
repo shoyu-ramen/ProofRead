@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "model_provider": "synth_from_truth",
+  "fields": {
+    "brand_name": {
+      "value": "JIM BEAM",
+      "bbox": null,
+      "confidence": 0.99,
+      "source_image_id": "front"
+    },
+    "class_type": {
+      "value": "KENTUCKY STRAIGHT BOURBON",
+      "bbox": null,
+      "confidence": 0.99,
+      "source_image_id": "front"
+    },
+    "alcohol_content": {
+      "value": "alk. 40% obj.",
+      "bbox": null,
+      "confidence": 0.99,
+      "source_image_id": "front"
+    },
+    "net_contents": {
+      "value": "700 ml",
+      "bbox": null,
+      "confidence": 0.99,
+      "source_image_id": "front"
+    },
+    "name_address": {
+      "value": "JAMES B. BEAM DISTILLING CO",
+      "bbox": null,
+      "confidence": 0.99,
+      "source_image_id": "front"
+    },
+    "country_of_origin": {
+      "value": null,
+      "bbox": null,
+      "confidence": 0.0,
+      "source_image_id": null
+    },
+    "health_warning": {
+      "value": null,
+      "bbox": null,
+      "confidence": 0.0,
+      "source_image_id": null
+    },
+    "age_statement": {
+      "value": null,
+      "bbox": null,
+      "confidence": 0.0,
+      "source_image_id": null
+    }
+  },
+  "unreadable_fields": [],
+  "application": {
+    "image_quality": "good",
+    "image_quality_notes": "synth_from_truth stub: capture quality assumed good for plumbing validation only. Real recordings carry the live model's verdict.",
+    "model_provider": "synth_from_truth",
+    "beverage_type_observed": "spirits",
+    "model_observations": null
+  },
+  "abv_pct": 40.0,
+  "raw_ocr_texts": {}
+}

@@ -154,6 +154,33 @@ def test_warning_with_titlecase_prefix_fails():
     assert "capitals" in (result.finding or "").lower()
 
 
+def test_age_statement_missing_on_straight_whiskey_is_advisory():
+    """Rule v2: omission is an implicit 4yr+ claim the label can't prove.
+
+    Wild Turkey 81 / Jim Beam (real-corpus lbl-0007/lbl-0010) are
+    compliant straight bourbons with no age statement — a confident
+    FAIL would flag most bottlings on the market. ADVISORY tells the
+    reviewer to verify the age instead.
+    """
+    rules = [r for r in load_rules("spirits") if r.id == "spirits.age_statement.format"]
+    engine = RuleEngine(rules)
+    ctx = _full_context(field_overrides={"age_statement": None})
+    [result] = engine.evaluate(ctx)
+    assert result.status == CheckOutcome.ADVISORY
+    assert "4+ years" in (result.finding or "")
+    assert result.rule_version == 2
+
+
+def test_age_statement_malformed_on_straight_whiskey_still_fails():
+    rules = [r for r in load_rules("spirits") if r.id == "spirits.age_statement.format"]
+    engine = RuleEngine(rules)
+    ctx = _full_context(
+        field_overrides={"age_statement": ExtractedField(value="matured a while")},
+    )
+    [result] = engine.evaluate(ctx)
+    assert result.status == CheckOutcome.FAIL
+
+
 def test_country_of_origin_required_when_imported():
     rules = [
         r for r in load_rules("spirits")

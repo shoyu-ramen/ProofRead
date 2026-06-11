@@ -232,6 +232,90 @@ def test_verify_qwen_raises_extractor_unavailable_on_garbage_json(monkeypatch):
         extractor.extract(_png_bytes())
 
 
+def test_verify_qwen_salvages_json_from_reasoning_channel(monkeypatch):
+    """Thinking-mode builds can exhaust output budget before any content.
+
+    Ollama's qwen3-vl puts chain-of-thought in `message.reasoning` and
+    returned content='' on full-label extractions (observed recording
+    the round-2 corpus). The think text ends with the JSON the model
+    was about to commit — salvage it instead of failing the extraction.
+    """
+    envelope = {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "reasoning": (
+                        "Let me read the label carefully. The brand is at the "
+                        "top... I'll output:\n" + _good_verify_payload()
+                    ),
+                }
+            }
+        ]
+    }
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: A002
+        return _FakeResponse(payload=envelope)
+
+    monkeypatch.setattr(verify_qwen_mod.httpx, "post", fake_post)
+    monkeypatch.setattr(settings, "qwen_vl_base_url", "http://localhost:8000/v1")
+
+    extractor = verify_qwen_mod.QwenVLExtractor()
+    result = extractor.extract(_png_bytes())
+    assert result.fields["brand_name"].value == "Old Tom Distillery"
+
+
+def test_verify_qwen_refuses_blind_extraction_when_image_dropped(monkeypatch):
+    """A degraded Ollama can silently drop the image and answer blind.
+
+    Observed live: usage.prompt_tokens=351 (text only — a processed
+    label image adds hundreds of vision tokens) while the model
+    fabricated a plausible brand/address/warning at high confidence.
+    The guard must refuse rather than hand the rule engine fiction.
+    """
+    envelope = _wrap_choices(_good_verify_payload())
+    envelope["usage"] = {"prompt_tokens": 351, "completion_tokens": 200}
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: A002
+        return _FakeResponse(payload=envelope)
+
+    monkeypatch.setattr(verify_qwen_mod.httpx, "post", fake_post)
+    monkeypatch.setattr(settings, "qwen_vl_base_url", "http://localhost:8000/v1")
+
+    extractor = verify_qwen_mod.QwenVLExtractor()
+    with pytest.raises(ExtractorUnavailable, match="dropped the image"):
+        extractor.extract(_png_bytes())
+
+
+def test_verify_qwen_accepts_normal_usage_with_image(monkeypatch):
+    envelope = _wrap_choices(_good_verify_payload())
+    envelope["usage"] = {"prompt_tokens": 2054, "completion_tokens": 300}
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: A002
+        return _FakeResponse(payload=envelope)
+
+    monkeypatch.setattr(verify_qwen_mod.httpx, "post", fake_post)
+    monkeypatch.setattr(settings, "qwen_vl_base_url", "http://localhost:8000/v1")
+
+    extractor = verify_qwen_mod.QwenVLExtractor()
+    result = extractor.extract(_png_bytes())
+    assert result.fields["brand_name"].value == "Old Tom Distillery"
+
+
+def test_verify_qwen_still_fails_when_content_and_reasoning_empty(monkeypatch):
+    envelope = {"choices": [{"message": {"content": "", "reasoning": "   "}}]}
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: A002
+        return _FakeResponse(payload=envelope)
+
+    monkeypatch.setattr(verify_qwen_mod.httpx, "post", fake_post)
+    monkeypatch.setattr(settings, "qwen_vl_base_url", "http://localhost:8000/v1")
+
+    extractor = verify_qwen_mod.QwenVLExtractor()
+    with pytest.raises(ExtractorUnavailable):
+        extractor.extract(_png_bytes())
+
+
 def test_verify_qwen_constructor_requires_base_url(monkeypatch):
     monkeypatch.setattr(settings, "qwen_vl_base_url", None)
     with pytest.raises(ExtractorUnavailable):

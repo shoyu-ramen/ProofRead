@@ -1,31 +1,37 @@
 {
-  "generated_at": "2026-06-11T14:09:15.222721+00:00",
+  "generated_at": "2026-06-11T16:16:40.583988+00:00",
   "composition": {
-    "total": 8,
+    "total": 15,
     "by_beverage": {
-      "beer": 6,
-      "wine": 1,
-      "spirits": 1
+      "beer": 9,
+      "spirits": 5,
+      "wine": 1
     },
     "by_source": {
       "beer": {
-        "cola_artwork": 6
-      },
-      "wine": {
-        "cola_artwork": 1
+        "cola_artwork": 6,
+        "wikimedia_commons": 3
       },
       "spirits": {
+        "wikimedia_commons": 4,
+        "cola_artwork": 1
+      },
+      "wine": {
         "cola_artwork": 1
       }
     },
     "by_split": {
       "beer": {
-        "test": 6
-      },
-      "wine": {
-        "test": 1
+        "test": 6,
+        "train": 2,
+        "dev": 1
       },
       "spirits": {
+        "train": 3,
+        "dev": 1,
+        "test": 1
+      },
+      "wine": {
         "test": 1
       }
     }
@@ -34,7 +40,7 @@
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0,
-    "items": 8
+    "items": 15
   },
   "detect_container": {
     "items_evaluated": 6,
@@ -42,7 +48,15 @@
     "container_type_accuracy": 1.0,
     "brand_match_rate": 0.6666666666666666,
     "net_contents_match_rate": 0.6666666666666666,
-    "skipped_no_recording": [],
+    "skipped_no_recording": [
+      "lbl-0007",
+      "lbl-0008",
+      "lbl-0009",
+      "lbl-0010",
+      "lbl-0011",
+      "lbl-0012",
+      "lbl-0013"
+    ],
     "skipped_placeholder": [
       "lbl-9001",
       "lbl-9002"
@@ -131,8 +145,8 @@
       },
       "rules": {
         "beer.brand_name.presence": {
-          "support": 6,
-          "tp": 6,
+          "support": 9,
+          "tp": 9,
           "fp": 0,
           "fn": 0,
           "tn": 0,
@@ -144,11 +158,11 @@
           "disagreements": []
         },
         "beer.class_type.presence": {
-          "support": 6,
-          "tp": 6,
+          "support": 9,
+          "tp": 8,
           "fp": 0,
           "fn": 0,
-          "tn": 0,
+          "tn": 1,
           "precision": 1.0,
           "recall": 1.0,
           "f1": 1.0,
@@ -157,8 +171,8 @@
           "disagreements": []
         },
         "beer.alcohol_content.format": {
-          "support": 6,
-          "tp": 6,
+          "support": 9,
+          "tp": 9,
           "fp": 0,
           "fn": 0,
           "tn": 0,
@@ -170,8 +184,8 @@
           "disagreements": []
         },
         "beer.net_contents.presence": {
-          "support": 6,
-          "tp": 6,
+          "support": 9,
+          "tp": 9,
           "fp": 0,
           "fn": 0,
           "tn": 0,
@@ -183,11 +197,11 @@
           "disagreements": []
         },
         "beer.name_address.presence": {
-          "support": 6,
-          "tp": 6,
+          "support": 9,
+          "tp": 8,
           "fp": 0,
           "fn": 0,
-          "tn": 0,
+          "tn": 1,
           "precision": 1.0,
           "recall": 1.0,
           "f1": 1.0,
@@ -196,24 +210,24 @@
           "disagreements": []
         },
         "beer.country_of_origin.presence_if_imported": {
-          "support": 0,
+          "support": 1,
           "tp": 0,
           "fp": 0,
           "fn": 0,
-          "tn": 0,
+          "tn": 1,
           "precision": 1.0,
           "recall": 1.0,
           "f1": 1.0,
           "advisory_count": 0,
-          "na_count": 6,
+          "na_count": 8,
           "disagreements": []
         },
         "beer.health_warning.exact_text": {
-          "support": 6,
+          "support": 9,
           "tp": 6,
           "fp": 0,
           "fn": 0,
-          "tn": 0,
+          "tn": 3,
           "precision": 1.0,
           "recall": 1.0,
           "f1": 1.0,
@@ -230,7 +244,7 @@
           "precision": 1.0,
           "recall": 1.0,
           "f1": 1.0,
-          "advisory_count": 6,
+          "advisory_count": 9,
           "na_count": 0,
           "disagreements": []
         }
@@ -279,8 +293,8 @@
       },
       "rules": {
         "spirits.brand_name.matches_application": {
-          "support": 1,
-          "tp": 1,
+          "support": 5,
+          "tp": 5,
           "fp": 0,
           "fn": 0,
           "tn": 0,
@@ -292,8 +306,8 @@
           "disagreements": []
         },
         "spirits.class_type.matches_application": {
-          "support": 1,
-          "tp": 1,
+          "support": 5,
+          "tp": 5,
           "fp": 0,
           "fn": 0,
           "tn": 0,
@@ -305,11 +319,11 @@
           "disagreements": []
         },
         "spirits.alcohol_content.format": {
-          "support": 1,
-          "tp": 1,
+          "support": 5,
+          "tp": 4,
           "fp": 0,
           "fn": 0,
-          "tn": 0,
+          "tn": 1,
           "precision": 1.0,
           "recall": 1.0,
           "f1": 1.0,
@@ -318,8 +332,8 @@
           "disagreements": []
         },
         "spirits.alcohol_content.matches_application": {
-          "support": 1,
-          "tp": 1,
+          "support": 5,
+          "tp": 5,
           "fp": 0,
           "fn": 0,
           "tn": 0,
@@ -331,8 +345,8 @@
           "disagreements": []
         },
         "spirits.net_contents.matches_application": {
-          "support": 1,
-          "tp": 1,
+          "support": 5,
+          "tp": 5,
           "fp": 0,
           "fn": 0,
           "tn": 0,
@@ -344,11 +358,11 @@
           "disagreements": []
         },
         "spirits.name_address.presence": {
-          "support": 1,
-          "tp": 1,
+          "support": 5,
+          "tp": 4,
           "fp": 0,
           "fn": 0,
-          "tn": 0,
+          "tn": 1,
           "precision": 1.0,
           "recall": 1.0,
           "f1": 1.0,
@@ -357,8 +371,8 @@
           "disagreements": []
         },
         "spirits.country_of_origin.presence_if_imported": {
-          "support": 0,
-          "tp": 0,
+          "support": 2,
+          "tp": 2,
           "fp": 0,
           "fn": 0,
           "tn": 0,
@@ -366,15 +380,15 @@
           "recall": 1.0,
           "f1": 1.0,
           "advisory_count": 0,
-          "na_count": 1,
+          "na_count": 3,
           "disagreements": []
         },
         "spirits.health_warning.compliance": {
-          "support": 1,
+          "support": 5,
           "tp": 1,
           "fp": 0,
           "fn": 0,
-          "tn": 0,
+          "tn": 4,
           "precision": 1.0,
           "recall": 1.0,
           "f1": 1.0,
@@ -383,11 +397,11 @@
           "disagreements": []
         },
         "spirits.age_statement.format": {
-          "support": 1,
-          "tp": 1,
+          "support": 5,
+          "tp": 3,
           "fp": 0,
           "fn": 0,
-          "tn": 0,
+          "tn": 2,
           "precision": 1.0,
           "recall": 1.0,
           "f1": 1.0,
@@ -400,8 +414,8 @@
   },
   "rules": {
     "beer.brand_name.presence": {
-      "support": 6,
-      "tp": 6,
+      "support": 9,
+      "tp": 9,
       "fp": 0,
       "fn": 0,
       "tn": 0,
@@ -413,11 +427,11 @@
       "disagreements": []
     },
     "beer.class_type.presence": {
-      "support": 6,
-      "tp": 6,
+      "support": 9,
+      "tp": 8,
       "fp": 0,
       "fn": 0,
-      "tn": 0,
+      "tn": 1,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
@@ -426,8 +440,8 @@
       "disagreements": []
     },
     "beer.alcohol_content.format": {
-      "support": 6,
-      "tp": 6,
+      "support": 9,
+      "tp": 9,
       "fp": 0,
       "fn": 0,
       "tn": 0,
@@ -439,8 +453,8 @@
       "disagreements": []
     },
     "beer.net_contents.presence": {
-      "support": 6,
-      "tp": 6,
+      "support": 9,
+      "tp": 9,
       "fp": 0,
       "fn": 0,
       "tn": 0,
@@ -452,11 +466,11 @@
       "disagreements": []
     },
     "beer.name_address.presence": {
-      "support": 6,
-      "tp": 6,
+      "support": 9,
+      "tp": 8,
       "fp": 0,
       "fn": 0,
-      "tn": 0,
+      "tn": 1,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
@@ -465,24 +479,24 @@
       "disagreements": []
     },
     "beer.country_of_origin.presence_if_imported": {
-      "support": 0,
+      "support": 1,
       "tp": 0,
       "fp": 0,
       "fn": 0,
-      "tn": 0,
+      "tn": 1,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
       "advisory_count": 0,
-      "na_count": 6,
+      "na_count": 8,
       "disagreements": []
     },
     "beer.health_warning.exact_text": {
-      "support": 6,
+      "support": 9,
       "tp": 6,
       "fp": 0,
       "fn": 0,
-      "tn": 0,
+      "tn": 3,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
@@ -499,7 +513,7 @@
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
-      "advisory_count": 6,
+      "advisory_count": 9,
       "na_count": 0,
       "disagreements": []
     },
@@ -530,8 +544,8 @@
       "disagreements": []
     },
     "spirits.brand_name.matches_application": {
-      "support": 1,
-      "tp": 1,
+      "support": 5,
+      "tp": 5,
       "fp": 0,
       "fn": 0,
       "tn": 0,
@@ -543,8 +557,8 @@
       "disagreements": []
     },
     "spirits.class_type.matches_application": {
-      "support": 1,
-      "tp": 1,
+      "support": 5,
+      "tp": 5,
       "fp": 0,
       "fn": 0,
       "tn": 0,
@@ -556,11 +570,11 @@
       "disagreements": []
     },
     "spirits.alcohol_content.format": {
-      "support": 1,
-      "tp": 1,
+      "support": 5,
+      "tp": 4,
       "fp": 0,
       "fn": 0,
-      "tn": 0,
+      "tn": 1,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
@@ -569,8 +583,8 @@
       "disagreements": []
     },
     "spirits.alcohol_content.matches_application": {
-      "support": 1,
-      "tp": 1,
+      "support": 5,
+      "tp": 5,
       "fp": 0,
       "fn": 0,
       "tn": 0,
@@ -582,8 +596,8 @@
       "disagreements": []
     },
     "spirits.net_contents.matches_application": {
-      "support": 1,
-      "tp": 1,
+      "support": 5,
+      "tp": 5,
       "fp": 0,
       "fn": 0,
       "tn": 0,
@@ -595,11 +609,11 @@
       "disagreements": []
     },
     "spirits.name_address.presence": {
-      "support": 1,
-      "tp": 1,
+      "support": 5,
+      "tp": 4,
       "fp": 0,
       "fn": 0,
-      "tn": 0,
+      "tn": 1,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
@@ -608,8 +622,8 @@
       "disagreements": []
     },
     "spirits.country_of_origin.presence_if_imported": {
-      "support": 0,
-      "tp": 0,
+      "support": 2,
+      "tp": 2,
       "fp": 0,
       "fn": 0,
       "tn": 0,
@@ -617,15 +631,15 @@
       "recall": 1.0,
       "f1": 1.0,
       "advisory_count": 0,
-      "na_count": 1,
+      "na_count": 3,
       "disagreements": []
     },
     "spirits.health_warning.compliance": {
-      "support": 1,
+      "support": 5,
       "tp": 1,
       "fp": 0,
       "fn": 0,
-      "tn": 0,
+      "tn": 4,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
@@ -634,11 +648,11 @@
       "disagreements": []
     },
     "spirits.age_statement.format": {
-      "support": 1,
-      "tp": 1,
+      "support": 5,
+      "tp": 3,
       "fp": 0,
       "fn": 0,
-      "tn": 0,
+      "tn": 2,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
@@ -703,6 +717,69 @@
       "failing_rules": []
     },
     {
+      "id": "lbl-0007",
+      "beverage": "spirits",
+      "source_kind": "wikimedia_commons",
+      "split": "train",
+      "rules_applicable": 9,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
+      "id": "lbl-0008",
+      "beverage": "spirits",
+      "source_kind": "wikimedia_commons",
+      "split": "dev",
+      "rules_applicable": 9,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
+      "id": "lbl-0009",
+      "beverage": "spirits",
+      "source_kind": "wikimedia_commons",
+      "split": "train",
+      "rules_applicable": 9,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
+      "id": "lbl-0010",
+      "beverage": "spirits",
+      "source_kind": "wikimedia_commons",
+      "split": "train",
+      "rules_applicable": 9,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
+      "id": "lbl-0011",
+      "beverage": "beer",
+      "source_kind": "wikimedia_commons",
+      "split": "train",
+      "rules_applicable": 7,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
+      "id": "lbl-0012",
+      "beverage": "beer",
+      "source_kind": "wikimedia_commons",
+      "split": "dev",
+      "rules_applicable": 7,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
+      "id": "lbl-0013",
+      "beverage": "beer",
+      "source_kind": "wikimedia_commons",
+      "split": "train",
+      "rules_applicable": 7,
+      "failure_count": 0,
+      "failing_rules": []
+    },
+    {
       "id": "lbl-9001",
       "beverage": "wine",
       "source_kind": "cola_artwork",
@@ -721,18 +798,5 @@
       "failing_rules": []
     }
   ],
-  "coverage_gaps": [
-    {
-      "beverage": "beer",
-      "rule": "beer.country_of_origin.presence_if_imported",
-      "na_count": 6,
-      "items_in_beverage": 6
-    },
-    {
-      "beverage": "spirits",
-      "rule": "spirits.country_of_origin.presence_if_imported",
-      "na_count": 1,
-      "items_in_beverage": 1
-    }
-  ]
+  "coverage_gaps": []
 }

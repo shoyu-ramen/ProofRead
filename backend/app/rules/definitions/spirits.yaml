@@ -47,20 +47,28 @@
         record_key: class_type
 
 - id: spirits.alcohol_content.format
-  version: 1
+  # v2: accept the "BY"/space connectors between Alc and Vol
+  # ("40.5% ALC BY VOL", "38% Alc. Vol.") that 27 CFR 5.65(a)(1)
+  # market formats use — v1 demanded a literal slash and failed
+  # compliant labels (real-corpus lbl-0007 Wild Turkey, lbl-0009
+  # Corralejo). Foreign-language-only statements ("alk. 40% obj.",
+  # lbl-0010) still fail: no Alc/Vol/ABV marker.
+  version: 2
   beverage_types: [spirits]
   citation: 27 CFR 5.37
   description: Alcohol content statement must be in valid TTB format
   severity: required
   fix_suggestion: |
     State alcohol content as a percentage with the suffix "Alc./Vol." or
-    equivalent (e.g. "45% Alc./Vol."). The proof figure may also appear
-    in parentheses (e.g. "(90 Proof)").
+    equivalent (e.g. "45% Alc./Vol.", "40.5% ALC BY VOL"). The proof
+    figure may also appear in parentheses (e.g. "(90 Proof)").
   checks:
     - type: regex
       params:
         field: alcohol_content
-        pattern: '\d+(\.\d+)?\s*%\s*(Alc\.?\s*\/\s*Vol\.?|ABV|ALCOHOL)'
+        # Mirrors the connector tolerance in beer.alcohol_content.format —
+        # keep the two in sync if either broadens further.
+        pattern: '\d+(\.\d+)?\s*%\s*(Alc\.?(\s*\/|\s+By)?\s*Vol(ume)?\.?|ABV|ALCOHOL)'
         flags: i
 
 - id: spirits.alcohol_content.matches_application
@@ -152,19 +160,26 @@
         max_body_edit_distance: 5
 
 - id: spirits.age_statement.format
-  version: 1
+  # v2: a straight-whiskey label with NO age statement now surfaces an
+  # ADVISORY ("verify the spirit is 4+ years old"), not a FAIL —
+  # omission is an implicit 4yr+ claim under 5.40(a)(2) and the label
+  # alone cannot prove the age either way. Malformed age statements on
+  # straight whiskey still FAIL. Surfaced by real-corpus lbl-0007 /
+  # lbl-0010 (Wild Turkey 81, Jim Beam: compliant straight bourbons
+  # with no age statement).
+  version: 2
   beverage_types: [spirits]
   citation: https://www.ecfr.gov/current/title-27/chapter-I/subchapter-A/part-5/subpart-D/section-5.40
   # The rule's effective severity is decided inside the check itself
   # based on `class_type`: when the label declares "Straight" + a
-  # whiskey designator (Bourbon, Rye, Whiskey, etc.), an age statement
-  # is REQUIRED for products under four years old (27 CFR 5.40), so
-  # missing/wrong format produces FAIL. For other spirits it is
-  # ADVISORY — extracted age statements are still format-checked, but a
-  # missing one does not fail the report. The rule is declared
-  # `required` here so the engine's REQUIRED-rule downgrade machinery
-  # remains in play; the check itself emits ADVISORY directly when the
-  # class doesn't trigger the requirement.
+  # whiskey designator (Bourbon, Rye, Whiskey, etc.), a present-but-
+  # malformed age statement produces FAIL and a missing one produces
+  # ADVISORY. For other spirits it is ADVISORY — extracted age
+  # statements are still format-checked, but a missing one does not
+  # fail the report. The rule is declared `required` so the engine's
+  # REQUIRED-rule downgrade machinery remains in play; the check itself
+  # emits ADVISORY directly when the class doesn't trigger the
+  # requirement.
   severity: required
   description: |
     Age statement format is validated when present, and required for
