@@ -13,7 +13,32 @@ result (see `RuleEngine.evaluate`).
 
 from __future__ import annotations
 
+import re
+
 from app.rules.types import ExtractedField
+
+# Origin statements that declare *domestic* (US) production. Vision models
+# routinely extract "MADE IN USA" / "PRODUCT OF U.S.A." into
+# `country_of_origin` — that is an origin statement, but not an import
+# declaration, and must not flip `is_imported`. US territories count as
+# domestic for TTB purposes (a USVI rum is not an import).
+_DOMESTIC_TOKENS = frozenset({"USA", "US"})
+_DOMESTIC_PHRASES = ("UNITED STATES",)
+
+
+def _is_domestic_origin(text: str) -> bool:
+    """True when an origin statement names the US rather than a foreign country.
+
+    Periods are stripped before tokenising so "U.S.A." reads as "USA";
+    matching is token/phrase-based so "BUSAN" or "PRODUCT OF RUSSIA"
+    can't substring-match a domestic marker.
+    """
+    normalized = re.sub(r"[^A-Z0-9 ]", " ", text.upper().replace(".", ""))
+    tokens = set(normalized.split())
+    if tokens & _DOMESTIC_TOKENS:
+        return True
+    collapsed = " ".join(normalized.split())
+    return any(phrase in collapsed for phrase in _DOMESTIC_PHRASES)
 
 
 def infer_is_imported(
@@ -27,8 +52,10 @@ def infer_is_imported(
       * ``effective_imported`` — the value the rule engine should use when
         evaluating ``applies_if: is_imported == True`` guards. The
         user's claim wins unless the label clearly indicates imported
-        (a non-empty ``country_of_origin`` field) and they claimed
-        domestic — in which case we flip to True so the rule fires.
+        (a ``country_of_origin`` field naming a *foreign* origin) and
+        they claimed domestic — in which case we flip to True so the
+        rule fires. A domestic origin statement ("MADE IN USA") is
+        consistent with a domestic claim and never flips.
       * ``divergence`` — a short reason code when we flipped the flag,
         ``None`` otherwise. The orchestrator surfaces this as a
         ``claim_consistency`` ADVISORY so the user sees why the rule was
@@ -42,11 +69,9 @@ def infer_is_imported(
     on a missing field.
     """
     coo = extracted_fields.get("country_of_origin")
-    has_country = (
-        coo is not None
-        and coo.value is not None
-        and coo.value.strip() != ""
-    )
-    if has_country and not claimed_imported:
+    coo_value = (coo.value or "").strip() if coo is not None else ""
+    if coo_value and not claimed_imported:
+        if _is_domestic_origin(coo_value):
+            return claimed_imported, None
         return True, "label_indicates_imported"
     return claimed_imported, None

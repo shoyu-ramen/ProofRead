@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-13T19:09:50.355799+00:00",
+  "generated_at": "2026-06-11T14:09:15.222721+00:00",
   "composition": {
     "total": 8,
     "by_beverage": {
@@ -32,8 +32,8 @@
   },
   "overall": {
     "precision": 1.0,
-    "recall": 0.9347826086956522,
-    "f1": 0.9662921348314606,
+    "recall": 1.0,
+    "f1": 1.0,
     "items": 8
   },
   "detect_container": {
@@ -126,8 +126,8 @@
     "beer": {
       "overall": {
         "precision": 1.0,
-        "recall": 0.9166666666666666,
-        "f1": 0.9565217391304348
+        "recall": 1.0,
+        "f1": 1.0
       },
       "rules": {
         "beer.brand_name.presence": {
@@ -171,22 +171,16 @@
         },
         "beer.net_contents.presence": {
           "support": 6,
-          "tp": 5,
+          "tp": 6,
           "fp": 0,
-          "fn": 1,
+          "fn": 0,
           "tn": 0,
           "precision": 1.0,
-          "recall": 0.8333333333333334,
-          "f1": 0.9090909090909091,
+          "recall": 1.0,
+          "f1": 1.0,
           "advisory_count": 0,
           "na_count": 0,
-          "disagreements": [
-            {
-              "item": "lbl-0003",
-              "predicted": "fail",
-              "expected": "pass"
-            }
-          ]
+          "disagreements": []
         },
         "beer.name_address.presence": {
           "support": 6,
@@ -212,37 +206,20 @@
           "f1": 1.0,
           "advisory_count": 0,
           "na_count": 6,
-          "disagreements": [
-            {
-              "item": "lbl-0002",
-              "predicted": "pass",
-              "expected": "na"
-            }
-          ]
+          "disagreements": []
         },
         "beer.health_warning.exact_text": {
           "support": 6,
-          "tp": 4,
+          "tp": 6,
           "fp": 0,
-          "fn": 2,
+          "fn": 0,
           "tn": 0,
           "precision": 1.0,
-          "recall": 0.6666666666666666,
-          "f1": 0.8,
+          "recall": 1.0,
+          "f1": 1.0,
           "advisory_count": 0,
           "na_count": 0,
-          "disagreements": [
-            {
-              "item": "lbl-0002",
-              "predicted": "fail",
-              "expected": "pass"
-            },
-            {
-              "item": "lbl-0003",
-              "predicted": "fail",
-              "expected": "pass"
-            }
-          ]
+          "disagreements": []
         },
         "beer.health_warning.size": {
           "support": 0,
@@ -463,22 +440,16 @@
     },
     "beer.net_contents.presence": {
       "support": 6,
-      "tp": 5,
+      "tp": 6,
       "fp": 0,
-      "fn": 1,
+      "fn": 0,
       "tn": 0,
       "precision": 1.0,
-      "recall": 0.8333333333333334,
-      "f1": 0.9090909090909091,
+      "recall": 1.0,
+      "f1": 1.0,
       "advisory_count": 0,
       "na_count": 0,
-      "disagreements": [
-        {
-          "item": "lbl-0003",
-          "predicted": "fail",
-          "expected": "pass"
-        }
-      ]
+      "disagreements": []
     },
     "beer.name_address.presence": {
       "support": 6,
@@ -504,37 +475,20 @@
       "f1": 1.0,
       "advisory_count": 0,
       "na_count": 6,
-      "disagreements": [
-        {
-          "item": "lbl-0002",
-          "predicted": "pass",
-          "expected": "na"
-        }
-      ]
+      "disagreements": []
     },
     "beer.health_warning.exact_text": {
       "support": 6,
-      "tp": 4,
+      "tp": 6,
       "fp": 0,
-      "fn": 2,
+      "fn": 0,
       "tn": 0,
       "precision": 1.0,
-      "recall": 0.6666666666666666,
-      "f1": 0.8,
+      "recall": 1.0,
+      "f1": 1.0,
       "advisory_count": 0,
       "na_count": 0,
-      "disagreements": [
-        {
-          "item": "lbl-0002",
-          "predicted": "fail",
-          "expected": "pass"
-        },
-        {
-          "item": "lbl-0003",
-          "predicted": "fail",
-          "expected": "pass"
-        }
-      ]
+      "disagreements": []
     },
     "beer.health_warning.size": {
       "support": 0,
@@ -709,11 +663,8 @@
       "source_kind": "cola_artwork",
       "split": "test",
       "rules_applicable": 7,
-      "failure_count": 2,
-      "failing_rules": [
-        "beer.country_of_origin.presence_if_imported",
-        "beer.health_warning.exact_text"
-      ]
+      "failure_count": 0,
+      "failing_rules": []
     },
     {
       "id": "lbl-0003",
@@ -721,11 +672,8 @@
       "source_kind": "cola_artwork",
       "split": "test",
       "rules_applicable": 7,
-      "failure_count": 2,
-      "failing_rules": [
-        "beer.net_contents.presence",
-        "beer.health_warning.exact_text"
-      ]
+      "failure_count": 0,
+      "failing_rules": []
     },
     {
       "id": "lbl-0004",

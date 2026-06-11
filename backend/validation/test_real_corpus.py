@@ -78,20 +78,17 @@ def test_replay_runs_end_to_end(seed_corpus):
       * 6 items evaluated.
       * Non-empty score table.
       * The advisory rule registers 6 advisory_counts (one per item).
-      * The canonical Health Warning rule scores precision=1.0 (the
-        rule never false-positives — if it did, the rule engine /
-        recording plumbing would be broken). Recall is intentionally
-        not asserted because the rule uses a case-sensitive match
-        against the mixed-case canonical text, but two beer labels in
-        the seed corpus (lbl-0002, lbl-0003) print the warning in ALL
-        CAPS and the model faithfully transcribes the printed case —
-        legitimate signal for the rule pack, not a plumbing failure.
+      * The canonical Health Warning rule scores precision=1.0 and
+        recall=1.0. Historical note: rule v1 did a case-sensitive
+        match and false-negatived the ALL-CAPS renderings on
+        lbl-0002/lbl-0003; rule v2 (warning_compliance) accepts them,
+        so recall is asserted again.
 
-    Other rules may have legitimate annotator-vs-rule-engine disagreements
-    (e.g. `beer.net_contents.presence` rejects "1 PINT" because the regex
-    doesn't list that unit, while the annotator correctly marked PASS).
-    Those are signal for the rule pack, not plumbing failures, so they
-    are surfaced via stdout rather than failing the test.
+    New corpus items may surface legitimate annotator-vs-rule-engine
+    disagreements on other rules. Those are signal for the rule pack,
+    not plumbing failures, so they are surfaced via stdout rather than
+    failing the test (the regression gate vs the committed baseline is
+    what fails CI when a previously-green rule moves).
     """
     report = measure(
         seed_corpus,
@@ -110,6 +107,11 @@ def test_replay_runs_end_to_end(seed_corpus):
     assert hw_text.precision == 1.0, (
         f"canonical Health Warning rule should never false-positive; "
         f"got precision={hw_text.precision:.3f}, "
+        f"disagreements={hw_text.disagreements}"
+    )
+    assert hw_text.recall == 1.0, (
+        f"rule v2 (warning_compliance) must accept the ALL-CAPS renderings "
+        f"on lbl-0002/lbl-0003; got recall={hw_text.recall:.3f}, "
         f"disagreements={hw_text.disagreements}"
     )
 
@@ -205,28 +207,21 @@ def test_spirits_replay_runs_end_to_end(spirits_fixture):
 # ----------------------------------------------------------------------------
 
 
-# Per-rule floors. Set lower than the day-0 plan's 0.85 because today's
-# corpus is six COLA items where a single rule-pack vs. annotator
-# disagreement (lbl-0003 "1 PINT" — TTB-recognised, but the rule's
-# regex doesn't list it) costs ~17% recall. On a 100-item corpus the
-# same single bug would cost ~1% and 0.85 would clear comfortably.
+# Per-rule floors, at the day-0 plan's 0.85. The rule-pack gaps that
+# originally forced lower floors are fixed:
+#   * `beer.net_contents.presence` v3 accepts pint/quart/gallon
+#     (27 CFR 7.65(b)), so lbl-0003's "1 PINT" passes.
+#   * `beer.health_warning.exact_text` v2 uses the warning_compliance
+#     check (caps prefix verbatim, body case-insensitive with edit
+#     tolerance), so the ALL-CAPS renderings on lbl-0002/lbl-0003 pass.
+#   * `infer_is_imported` no longer flips on domestic origin statements
+#     ("MADE IN USA" on lbl-0002), so country-of-origin stays NA.
 #
-# Recall floor is further relaxed once we switched the recordings from
-# synth_from_truth stubs to real Claude vision output: two beer labels
-# (lbl-0002, lbl-0003) print the Government Warning in ALL CAPS, the
-# model faithfully transcribes the printed case, and the rule
-# `beer.health_warning.exact_text` does a case-sensitive equality check
-# against the mixed-case canonical text. That's a rule-pack gap, not
-# a model regression — the floor accepts it for now.
-#
-# TODO: tighten to 0.85 once either (a) the rule pack accepts "pint(s)"
-# as a TTB unit (production change in `app/rules/definitions/beer.yaml`
-# + `app/services/extractors/beer.py:NET_CONTENTS_RE`), (b) the rule
-# `beer.health_warning.exact_text` normalises case before comparing,
-# or (c) the corpus grows past ~50 items and the small-corpus
-# statistical floor stops biting.
-PRECISION_FLOOR = 0.80
-RECALL_FLOOR = 0.60
+# On today's six-item corpus one new false negative on a 6-support rule
+# lands at recall 0.833 and trips the gate — that is intentional: any
+# single new disagreement should be root-caused, not absorbed.
+PRECISION_FLOOR = 0.85
+RECALL_FLOOR = 0.85
 
 
 @pytest.fixture(scope="module")

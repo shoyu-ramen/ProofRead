@@ -191,6 +191,24 @@ def test_volume_passes_for_fl_oz_to_ml():
     assert res.outcome == CheckOutcome.PASS
 
 
+def test_volume_passes_for_pint_to_ml():
+    """1 PINT ≈ 473 mL — 27 CFR 7.65(b) customary unit, real labels use it."""
+    ctx = _vol_ctx("1 PINT", "473 mL")
+    res = check_cross_reference_volume(
+        {"field": "net_contents", "record_key": "net_contents", "tolerance": 0.02}, ctx
+    )
+    assert res.outcome == CheckOutcome.PASS
+
+
+def test_volume_passes_for_dual_pint_fl_oz_statement():
+    """Combined statements like "1 PINT/16 FL OZ." parse on the first unit."""
+    ctx = _vol_ctx("1 PINT/16 FL OZ.", "473 mL")
+    res = check_cross_reference_volume(
+        {"field": "net_contents", "record_key": "net_contents", "tolerance": 0.02}, ctx
+    )
+    assert res.outcome == CheckOutcome.PASS
+
+
 def test_volume_fails_on_substantive_mismatch():
     ctx = _vol_ctx("750 mL", "375 mL")
     res = check_cross_reference_volume(

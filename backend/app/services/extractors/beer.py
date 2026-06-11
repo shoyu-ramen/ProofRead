@@ -62,8 +62,12 @@ ABV_RE = re.compile(
     r"\d+(?:\.\d+)?\s*%\s*(?:ABV|ALC\.?|ALCOHOL\b)?",
     re.IGNORECASE,
 )
+# Mirrors the beer.net_contents.presence pattern in
+# app/rules/definitions/beer.yaml — keep in sync if you broaden the
+# unit list. 27 CFR 7.65(b) permits pints/quarts/gallons for malt
+# beverages in addition to fluid ounces and metric units.
 NET_CONTENTS_RE = re.compile(
-    r"\d+(?:\.\d+)?\s*(?:ml|fl\.?\s*oz|fluid\s+ounces?|liters?|l)\b",
+    r"\d+(?:\.\d+)?\s*(?:ml|fl\.?\s*oz|fluid\s+ounces?|liters?|litres?|l|pints?|pt|quarts?|qt|gallons?|gal)\b",
     re.IGNORECASE,
 )
 NAME_ADDRESS_RE = re.compile(

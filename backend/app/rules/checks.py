@@ -190,6 +190,16 @@ _VOLUME_TO_ML = {
     "fl. oz.": 29.5735,
     "floz": 29.5735,
     "oz": 29.5735,
+    # 27 CFR 7.65(b) US customary units for malt beverages.
+    "pints": 473.176,
+    "pint": 473.176,
+    "pt": 473.176,
+    "quarts": 946.353,
+    "quart": 946.353,
+    "qt": 946.353,
+    "gallons": 3785.41,
+    "gallon": 3785.41,
+    "gal": 3785.41,
 }
 
 

@@ -45,16 +45,22 @@ def test_compliant_label_has_no_failures(compliant_label_text):
     assert report.overall in {"pass", "advisory"}
 
 
-def test_label_with_typo_in_health_warning_fails(compliant_label_text):
+def test_label_with_typo_in_health_warning_warns(compliant_label_text):
+    """Rule v2: a small body typo (edit distance ≤ 5) is WARN, not FAIL.
+
+    Mirrors the spirits warning_compliance semantics — tiny OCR-scale
+    deltas are reviewer judgment calls. Missing or heavily-mangled
+    warnings still FAIL (covered below).
+    """
     bad_text = compliant_label_text.replace("Surgeon", "Sergent")
     front_text = "ANYTOWN ALE\nINDIA PALE ALE\n5.5% ABV\n12 FL OZ"
     scan, ocr = _make_scan({"front": front_text, "back": bad_text})
 
     report = process_scan(scan, ocr, skip_capture_quality=True)
 
-    assert report.overall == "fail"
+    assert report.overall == "warn"
     hw = next(r for r in report.rule_results if r.rule_id == "beer.health_warning.exact_text")
-    assert hw.status == CheckOutcome.FAIL
+    assert hw.status == CheckOutcome.WARN
     assert hw.expected is not None
     assert hw.fix_suggestion is not None
 

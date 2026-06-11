@@ -118,7 +118,14 @@ def test_scan_lifecycle_compliant_label_passes(db_setup, temp_storage):
     assert body["extractor"]  # populated
 
 
-def test_scan_lifecycle_typo_in_warning_fails(db_setup, temp_storage):
+def test_scan_lifecycle_typo_in_warning_warns(db_setup, temp_storage):
+    """A small typo in the Health Warning body downgrades to WARN.
+
+    Rule v2 (warning_compliance) treats body deltas within the edit
+    tolerance as reviewer judgment calls — "Sergent" is edit distance 3
+    from "Surgeon" — matching the spirits rule's semantics. Larger
+    deltas and a missing/title-case warning still FAIL.
+    """
     front = "ANYTOWN ALE\nINDIA PALE ALE\n5.5% ABV\n12 FL OZ"
     bad_back = (
         "Brewed and bottled by Anytown Brewing Co., Anytown, ST\n"
@@ -139,14 +146,14 @@ def test_scan_lifecycle_typo_in_warning_fails(db_setup, temp_storage):
 
     finalize = client.post(f"/v1/scans/{scan_id}/finalize")
     assert finalize.status_code == 200
-    assert finalize.json()["overall"] == "fail"
+    assert finalize.json()["overall"] == "warn"
 
     report = client.get(f"/v1/scans/{scan_id}/report")
     hw = next(
         r for r in report.json()["rule_results"]
         if r["rule_id"] == "beer.health_warning.exact_text"
     )
-    assert hw["status"] == "fail"
+    assert hw["status"] == "warn"
     assert hw["citation"] == "27 CFR 16.21"
     assert hw["expected"]
     assert hw["fix_suggestion"]

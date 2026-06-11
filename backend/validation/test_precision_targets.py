@@ -99,22 +99,26 @@ def test_perfect_mock_yields_perfect_scores(corpus):
         )
 
 
-def test_typo_cases_actually_fail_under_perfect_ocr(corpus):
-    """The 10 typo cases must produce `fail` on the Health Warning rule.
+def test_typo_cases_are_flagged_under_perfect_ocr(corpus):
+    """The 10 typo cases must not score `pass` on the Health Warning rule.
 
     Under perfect-mock OCR, the typo string flows verbatim from the
     synthesizer to the rule engine; if the rule fails to detect the
     Levenshtein-distance-1 substitution, the test corpus has lost its
     signal value and the harness is misconfigured.
+
+    Rule v2 (warning_compliance) surfaces a distance-1 body delta as
+    WARN rather than FAIL — still not-`pass`, so it lands in the TN
+    cell of the binary scoring model either way.
     """
     typo_items = [item for item in corpus if item.category == "hw_typo"]
     assert len(typo_items) == 10
 
     report = measure(typo_items)
     score = report.rule_scores["beer.health_warning.exact_text"]
-    # All 10 should be detected as failures (TN, since expected != pass).
+    # All 10 should be flagged (TN, since predicted != pass and expected != pass).
     assert score.tn == 10, (
-        f"Expected all 10 typo cases to be flagged as fail; got TP={score.tp}, "
+        f"Expected all 10 typo cases to be flagged; got TP={score.tp}, "
         f"FP={score.fp}, FN={score.fn}, TN={score.tn}"
     )
 
