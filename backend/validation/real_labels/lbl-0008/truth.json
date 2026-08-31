@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "lbl-0008",
+  "beverage_type": "spirits",
+  "container_size_ml": 1750,
+  "is_imported": true,
+  "source_kind": "wikimedia_commons",
+  "split": "dev",
+  "capture_conditions": {
+    "lighting": "indoor_store",
+    "surface": "dry",
+    "container": "1750ml_handle",
+    "device": "Wikimedia upload (Bri, CC BY-SA 4.0)",
+    "notes": "Store-shelf photo; the annotated subject is the right-front 1.75L bottle (a second, partially cropped 1L bottle of the same brand sits front-left — note for detect-container ambiguity). front/back duplicates of one frame. 'IMPORTED FROM CANADA' is the country-of-origin statement: first non-NA support for spirits COO in the corpus. Importer name/address is on the unphotographed back -> advisory. Blended (not straight) whisky: no age statement required."
+  },
+  "ground_truth": {
+    "spirits.brand_name.matches_application": "pass",
+    "spirits.class_type.matches_application": "pass",
+    "spirits.alcohol_content.format": "pass",
+    "spirits.alcohol_content.matches_application": "pass",
+    "spirits.net_contents.matches_application": "pass",
+    "spirits.name_address.presence": "advisory",
+    "spirits.country_of_origin.presence_if_imported": "pass",
+    "spirits.health_warning.compliance": "advisory",
+    "spirits.age_statement.format": "pass"
+  },
+  "label_spec": {
+    "brand": "CANADIAN MIST",
+    "class_type": "Blended Canadian Whisky",
+    "abv": "40% ALC/VOL (80 PROOF)",
+    "net_contents": "1.75L",
+    "name_address": null,
+    "health_warning_text": null,
+    "country": "Canada",
+    "age_statement": null
+  },
+  "application": {
+    "brand_name": "CANADIAN MIST",
+    "class_type": "Blended Canadian Whisky",
+    "alcohol_content": "40%",
+    "net_contents": "1.75 L"
+  },
+  "gold_extracted_fields": {
+    "brand_name": {
+      "value": "CANADIAN MIST"
+    },
+    "class_type": {
+      "value": "Blended Canadian Whisky"
+    },
+    "alcohol_content": {
+      "value": "40% ALC/VOL (80 PROOF)"
+    },
+    "net_contents": {
+      "value": "1.75L"
+    },
+    "name_address": {
+      "value": null,
+      "unreadable": true
+    },
+    "country_of_origin": {
+      "value": "IMPORTED FROM CANADA"
+    },
+    "health_warning": {
+      "value": null,
+      "unreadable": true
+    },
+    "age_statement": {
+      "value": null
+    }
+  },
+  "annotator": "rosskuehl@gmail.com",
+  "annotated_at": "2026-06-11",
+  "two_annotator_check": false
+}

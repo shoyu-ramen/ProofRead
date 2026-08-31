@@ -1,0 +1,64 @@
+{
+  "schema_version": 2,
+  "id": "lbl-0011",
+  "beverage_type": "beer",
+  "container_size_ml": 473,
+  "is_imported": false,
+  "source_kind": "wikimedia_commons",
+  "split": "train",
+  "capture_conditions": {
+    "lighting": "bar_dim",
+    "surface": "dry",
+    "container": "16oz_can",
+    "device": "Wikimedia upload (Alt Content, CC BY-SA 3.0)",
+    "notes": "Low-light flash photo of a 16 oz can; front/back duplicates of one frame. Net contents printed as '1 PINT' — first photographic exercise of the 27 CFR 7.65(b) pint unit (rule v3). Producer band 'THE ALCHEMIST-VERMONT' wraps out of frame on both edges; name visible, full bottler statement is not (v1 presence rule needs only the field). Government Warning is on the unphotographed side -> advisory."
+  },
+  "ground_truth": {
+    "beer.brand_name.presence": "pass",
+    "beer.class_type.presence": "pass",
+    "beer.alcohol_content.format": "pass",
+    "beer.net_contents.presence": "pass",
+    "beer.name_address.presence": "pass",
+    "beer.country_of_origin.presence_if_imported": "na",
+    "beer.health_warning.exact_text": "advisory",
+    "beer.health_warning.size": "advisory"
+  },
+  "label_spec": {
+    "brand": "HEADY TOPPER",
+    "class_type": "ALE",
+    "abv": "ALC. 8% BY VOL",
+    "net_contents": "1 PINT",
+    "name_address": "THE ALCHEMIST-VERMONT",
+    "health_warning_text": null,
+    "country": null
+  },
+  "application": {},
+  "gold_extracted_fields": {
+    "brand_name": {
+      "value": "HEADY TOPPER"
+    },
+    "class_type": {
+      "value": "ALE"
+    },
+    "alcohol_content": {
+      "value": "ALC. 8% BY VOL"
+    },
+    "net_contents": {
+      "value": "1 PINT"
+    },
+    "name_address": {
+      "value": "THE ALCHEMIST-VERMONT"
+    },
+    "country_of_origin": {
+      "value": null,
+      "unreadable": false
+    },
+    "health_warning": {
+      "value": null,
+      "unreadable": true
+    }
+  },
+  "annotator": "rosskuehl@gmail.com",
+  "annotated_at": "2026-06-11",
+  "two_annotator_check": false
+}

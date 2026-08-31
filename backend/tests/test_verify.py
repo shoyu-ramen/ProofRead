@@ -537,9 +537,13 @@ def test_e2e_spirits_pass_with_age_statement():
     assert report.extracted["age_statement"]["value"] == "Aged 4 Years"
 
 
-def test_e2e_spirits_fail_when_straight_whiskey_missing_age():
-    """A straight whiskey label with no age statement FAILs on the age
-    rule (severity becomes REQUIRED via class_type detection)."""
+def test_e2e_spirits_advisory_when_straight_whiskey_missing_age():
+    """A straight whiskey label with no age statement surfaces an ADVISORY.
+
+    Rule v2: omission is an implicit 4yr+ claim (27 CFR 5.40(a)(2)) the
+    label alone can't prove — the reviewer is told to verify the age
+    rather than the report claiming non-compliance it can't see.
+    """
     extracted = {
         "brand_name": "Old Tom Distillery",
         "class_type": "Kentucky Straight Bourbon Whiskey",
@@ -555,7 +559,8 @@ def test_e2e_spirits_fail_when_straight_whiskey_missing_age():
         for r in report.rule_results
         if r.rule_id == "spirits.age_statement.format"
     )
-    assert age_result.status.value == "fail", age_result.finding
+    assert age_result.status.value == "advisory", age_result.finding
+    assert "4+ years" in (age_result.finding or "")
 
 
 def test_e2e_beer_does_not_load_wine_or_spirits_rules():

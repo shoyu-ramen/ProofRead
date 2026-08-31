@@ -68,11 +68,19 @@ def test_required_pass_when_age_present_and_well_formed(class_type: str):
     assert _evaluate(ctx).status == CheckOutcome.PASS
 
 
-def test_required_fail_when_age_missing_for_straight_whiskey():
+def test_advisory_when_age_missing_for_straight_whiskey():
+    """Rule v2: omission is an implicit 4yr+ claim (27 CFR 5.40(a)(2)).
+
+    The label alone cannot prove the age, and most compliant straight
+    bourbons carry no age statement — so a missing statement surfaces
+    an ADVISORY ("verify 4+ years"), not a confident FAIL. Surfaced by
+    real-corpus lbl-0007/lbl-0010 (Wild Turkey 81, Jim Beam).
+    """
     ctx = _ctx(class_type="Kentucky Straight Bourbon Whiskey", age_value=None)
     result = _evaluate(ctx)
-    assert result.status == CheckOutcome.FAIL
+    assert result.status == CheckOutcome.ADVISORY
     assert "age statement" in (result.finding or "").lower()
+    assert "4+ years" in (result.finding or "")
 
 
 def test_required_fail_when_age_value_is_malformed():
@@ -179,7 +187,7 @@ def test_age_unreadable_field_downgrades_to_advisory():
 
 def test_age_rule_metadata():
     rule = next(r for r in load_rules("spirits") if r.id == RULE_ID)
-    assert rule.version == 1
+    assert rule.version == 2
     assert rule.citation.startswith("https://")
     assert "ecfr.gov" in rule.citation
     assert rule.fix_suggestion is not None

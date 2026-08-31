@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "lbl-0010",
+  "beverage_type": "spirits",
+  "container_size_ml": 700,
+  "is_imported": false,
+  "source_kind": "wikimedia_commons",
+  "split": "train",
+  "capture_conditions": {
+    "lighting": "indoor_daylight",
+    "surface": "dry",
+    "container": "700ml_spirits_bottle",
+    "device": "Wikimedia upload (Olgierd Rudak, CC0)",
+    "notes": "Bottle lying diagonally on knit fabric — rotated text is the capture stressor. European-market (Polish) bottling: volume/ABV line reads '700 ml alk. 40% obj.' and there is no US Government Warning anywhere on the product -> health-warning rule is a genuine FAIL. US-made product (is_imported=false) so COO is NA. Producer name 'JAMES B. BEAM DISTILLING CO' visible on the neck label; street address not printed on the visible faces but the presence rule needs only the bottler name statement. The ABV statement is Polish-abbreviation-only ('alk. 40% obj.') with no English Alc/Vol/ABV marker, so alcohol_content.format is a genuine FAIL. Straight bourbon, no age statement: advisory."
+  },
+  "ground_truth": {
+    "spirits.brand_name.matches_application": "pass",
+    "spirits.class_type.matches_application": "pass",
+    "spirits.alcohol_content.format": "fail",
+    "spirits.alcohol_content.matches_application": "pass",
+    "spirits.net_contents.matches_application": "pass",
+    "spirits.name_address.presence": "pass",
+    "spirits.country_of_origin.presence_if_imported": "na",
+    "spirits.health_warning.compliance": "fail",
+    "spirits.age_statement.format": "advisory"
+  },
+  "label_spec": {
+    "brand": "JIM BEAM",
+    "class_type": "KENTUCKY STRAIGHT BOURBON",
+    "abv": "alk. 40% obj.",
+    "net_contents": "700 ml",
+    "name_address": "JAMES B. BEAM DISTILLING CO",
+    "health_warning_text": null,
+    "country": null,
+    "age_statement": null
+  },
+  "application": {
+    "brand_name": "JIM BEAM",
+    "class_type": "KENTUCKY STRAIGHT BOURBON",
+    "alcohol_content": "40%",
+    "net_contents": "700 mL"
+  },
+  "gold_extracted_fields": {
+    "brand_name": {
+      "value": "JIM BEAM"
+    },
+    "class_type": {
+      "value": "KENTUCKY STRAIGHT BOURBON"
+    },
+    "alcohol_content": {
+      "value": "alk. 40% obj."
+    },
+    "net_contents": {
+      "value": "700 ml"
+    },
+    "name_address": {
+      "value": "JAMES B. BEAM DISTILLING CO"
+    },
+    "country_of_origin": {
+      "value": null,
+      "unreadable": false
+    },
+    "health_warning": {
+      "value": null,
+      "unreadable": false
+    },
+    "age_statement": {
+      "value": null
+    }
+  },
+  "annotator": "rosskuehl@gmail.com",
+  "annotated_at": "2026-06-11",
+  "two_annotator_check": false
+}

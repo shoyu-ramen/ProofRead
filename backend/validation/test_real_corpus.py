@@ -34,7 +34,12 @@ _FIXTURES_ROOT = Path(__file__).resolve().parent / "tests_fixtures"
 
 @pytest.fixture(scope="module")
 def seed_corpus():
-    items = load_corpus(beverage_type="beer", require_recording=True)
+    """The six COLA seed items — the frozen `test` split of the beer corpus.
+
+    Wikimedia round-2 items land in `train`/`dev`, so the seed set is
+    addressed by split rather than "all beer items with recordings".
+    """
+    items = load_corpus(beverage_type="beer", split="test", require_recording=True)
     if not items:
         pytest.skip(
             "no real-labels beer items with recordings found; "
@@ -510,16 +515,19 @@ def test_corpus_does_not_regress_vs_baseline():
 def test_split_filter_isolates_test_items(seed_corpus):
     """The split filter is the holdout-policy control surface.
 
-    Loading by `split="train"` against the seed corpus must return zero
-    items (everything is `split: "test"` after migration). Loading by
-    `split="test"` returns all six. This is the contract the day-8 CI
-    gate relies on — break it and the test split leaks into dev.
+    The `test` split is the frozen six-item COLA holdout; Wikimedia
+    round-2 items are stamped `train` or `dev`. The splits must be
+    disjoint and the holdout must stay at exactly the six seed items —
+    break this and the test split leaks into dev/train.
     """
-    train_items = load_corpus(
-        beverage_type="beer", split="train", require_recording=True
-    )
+    train_items = load_corpus(beverage_type="beer", split="train")
+    dev_items = load_corpus(beverage_type="beer", split="dev")
     test_items = load_corpus(
         beverage_type="beer", split="test", require_recording=True
     )
-    assert train_items == []
     assert len(test_items) == 6
+    assert {i.id for i in test_items} == {f"lbl-000{n}" for n in range(1, 7)}
+    overlap = ({i.id for i in train_items} | {i.id for i in dev_items}) & {
+        i.id for i in test_items
+    }
+    assert not overlap, f"split leak between train/dev and the test holdout: {overlap}"

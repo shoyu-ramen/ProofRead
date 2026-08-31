@@ -133,6 +133,22 @@ behind `--i-know-this-costs-money`. Don't use it for routine
 re-recording; use it only for one-off comparisons against the
 production extractor.
 
+**Always check `model_provider` in the written recording.** The qwen
+path falls back to the synth stub on any extractor error, and the
+warning is one line that's easy to lose in piped output. A recording
+whose `model_provider` is `synth_from_truth` carries zero extractor
+signal — it just echoes the truth file.
+
+**Mixed provenance is expected while the corpus grows.** The COLA seed
+items (lbl-0001..0006) were recorded with Claude Opus; Wikimedia
+round-2 items (lbl-0007..0013) were recorded with local Qwen3-VL
+during an Anthropic billing outage. MEASUREMENTS.md reports the
+per-provider counts. When credits return, re-record the qwen items
+with `--mode anthropic --force` and regenerate the baseline in the
+same commit, and run `record_detect_container.py` for any item
+missing `recorded_detect_container.json` (that recorder is
+Anthropic-only and was skipped during the outage).
+
 ---
 
 ## 5. Smoke-check the new item
